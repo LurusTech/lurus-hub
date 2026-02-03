@@ -134,16 +134,13 @@ func authHelper(c *gin.Context, minRole int) {
 	c.Set("user_group", session.Get("group"))
 	c.Set("use_access_token", useAccessToken)
 
-	//userCache, err := model.GetUserCache(id.(int))
-	//if err != nil {
-	//	c.JSON(http.StatusOK, gin.H{
-	//		"success": false,
-	//		"message": err.Error(),
-	//	})
-	//	c.Abort()
-	//	return
-	//}
-	//userCache.WriteContext(c)
+	// Inject tenant context for v1 API tenant isolation
+	userId, _ := id.(int)
+	tenantId := "default"
+	if userCache, cacheErr := model.GetUserCache(userId); cacheErr == nil && userCache.TenantId != "" {
+		tenantId = userCache.TenantId
+	}
+	model.InjectTenantContext(c, tenantId, userId)
 
 	c.Next()
 }

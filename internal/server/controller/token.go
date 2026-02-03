@@ -1,13 +1,13 @@
 package controller
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/data/model"
+	"github.com/QuantumNous/lurus-api/internal/biz/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -143,65 +143,27 @@ func AddToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if len(token.Name) > 50 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "令牌名称过长",
-		})
+	if err := service.ValidateTokenName(token.Name); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
-	// 非无限额度时，检查额度值是否超出有效范围
-	if !token.UnlimitedQuota {
-		if token.RemainQuota < 0 {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "额度值不能为负数",
-			})
-			return
-		}
-		maxQuotaValue := int((1000000000 * common.QuotaPerUnit))
-		if token.RemainQuota > maxQuotaValue {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": fmt.Sprintf("额度值超出有效范围，最大值为 %d", maxQuotaValue),
-			})
-			return
-		}
-	}
-	key, err := common.GenerateKey()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "生成令牌失败",
-		})
-		common.SysLog("failed to generate token key: " + err.Error())
+	if err := service.ValidateTokenQuota(token.RemainQuota, token.UnlimitedQuota); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
-	cleanToken := model.Token{
-		UserId:             c.GetInt("id"),
-		Name:               token.Name,
-		Key:                key,
-		CreatedTime:        common.GetTimestamp(),
-		AccessedTime:       common.GetTimestamp(),
-		ExpiredTime:        token.ExpiredTime,
-		RemainQuota:        token.RemainQuota,
-		UnlimitedQuota:     token.UnlimitedQuota,
-		ModelLimitsEnabled: token.ModelLimitsEnabled,
-		ModelLimits:        token.ModelLimits,
-		AllowIps:           token.AllowIps,
-		Group:              token.Group,
-		CrossGroupRetry:    token.CrossGroupRetry,
-	}
-	err = cleanToken.Insert()
+	key, err := service.GenerateTokenKey()
 	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	tenantId := service.GetTenantIdFromContext(common.GetContextKeyString(c, "tenant_id"))
+
+	cleanToken := service.BuildCleanToken(c.GetInt("id"), tenantId, &token, key)
+	if err = cleanToken.Insert(); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
-	return
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }
 
 func DeleteToken(c *gin.Context) {
@@ -228,29 +190,13 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if len(token.Name) > 50 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "令牌名称过长",
-		})
+	if err := service.ValidateTokenName(token.Name); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
-	if !token.UnlimitedQuota {
-		if token.RemainQuota < 0 {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "额度值不能为负数",
-			})
-			return
-		}
-		maxQuotaValue := int((1000000000 * common.QuotaPerUnit))
-		if token.RemainQuota > maxQuotaValue {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": fmt.Sprintf("额度值超出有效范围，最大值为 %d", maxQuotaValue),
-			})
-			return
-		}
+	if err := service.ValidateTokenQuota(token.RemainQuota, token.UnlimitedQuota); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
 	}
 	cleanToken, err := model.GetTokenByIds(token.Id, userId)
 	if err != nil {
@@ -258,37 +204,17 @@ func UpdateToken(c *gin.Context) {
 		return
 	}
 	if token.Status == common.TokenStatusEnabled {
-		if cleanToken.Status == common.TokenStatusExpired && cleanToken.ExpiredTime <= common.GetTimestamp() && cleanToken.ExpiredTime != -1 {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "令牌已过期，无法启用，请先修改令牌过期时间，或者设置为永不过期",
-			})
-			return
-		}
-		if cleanToken.Status == common.TokenStatusExhausted && cleanToken.RemainQuota <= 0 && !cleanToken.UnlimitedQuota {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "令牌可用额度已用尽，无法启用，请先修改令牌剩余额度，或者设置为无限额度",
-			})
+		if err := service.CanEnableToken(cleanToken); err != nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 			return
 		}
 	}
 	if statusOnly != "" {
 		cleanToken.Status = token.Status
 	} else {
-		// If you add more fields, please also update token.Update()
-		cleanToken.Name = token.Name
-		cleanToken.ExpiredTime = token.ExpiredTime
-		cleanToken.RemainQuota = token.RemainQuota
-		cleanToken.UnlimitedQuota = token.UnlimitedQuota
-		cleanToken.ModelLimitsEnabled = token.ModelLimitsEnabled
-		cleanToken.ModelLimits = token.ModelLimits
-		cleanToken.AllowIps = token.AllowIps
-		cleanToken.Group = token.Group
-		cleanToken.CrossGroupRetry = token.CrossGroupRetry
+		service.ApplyTokenUpdate(cleanToken, &token)
 	}
-	err = cleanToken.Update()
-	if err != nil {
+	if err = cleanToken.Update(); err != nil {
 		common.ApiError(c, err)
 		return
 	}

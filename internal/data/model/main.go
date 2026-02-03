@@ -25,6 +25,12 @@ var commonFalseVal string
 var logKeyCol string
 var logGroupCol string
 
+// InitCol initializes DB-dialect-specific column name quoting.
+// Called automatically by chooseDB; exported for test setup with direct DB injection.
+func InitCol() {
+	initCol()
+}
+
 func initCol() {
 	// init common column names
 	if common.UsingPostgreSQL {

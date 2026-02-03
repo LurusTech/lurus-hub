@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -60,6 +61,10 @@ func SetupIntegrationRouter(t *testing.T) (*gin.Engine, func()) {
 	}
 	for _, tbl := range tables {
 		if err := db.AutoMigrate(tbl); err != nil {
+			// SQLite index names are global; duplicates across tables are safe to ignore.
+			if strings.Contains(err.Error(), "already exists") {
+				continue
+			}
 			t.Fatalf("auto migrate failed for %T: %v", tbl, err)
 		}
 	}
@@ -72,6 +77,7 @@ func SetupIntegrationRouter(t *testing.T) (*gin.Engine, func()) {
 
 	model.DB = db
 	model.LOG_DB = db
+	model.InitCol() // Initialize dialect-specific column quoting for SQLite
 	common.UsingSQLite = true
 	common.UsingPostgreSQL = false
 	common.RedisEnabled = false

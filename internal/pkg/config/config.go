@@ -1,0 +1,139 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"sync"
+	"time"
+)
+
+// Config is the centralized application configuration.
+// All values are loaded from environment variables with sensible defaults.
+type Config struct {
+	Server   ServerConfig
+	Relay    RelayConfig
+	Search   SearchConfig
+	Cron     CronConfig
+	Security SecurityConfig
+}
+
+// ServerConfig holds HTTP server related settings.
+type ServerConfig struct {
+	// GracefulShutdownTimeout is the max wait time for in-flight requests on shutdown.
+	GracefulShutdownTimeout time.Duration
+}
+
+// RelayConfig holds relay/streaming related settings.
+type RelayConfig struct {
+	// StreamScannerInitialBuffer is the initial buffer size for the SSE scanner (bytes).
+	StreamScannerInitialBuffer int
+	// StreamScannerMaxBuffer is the max buffer size for the SSE scanner (bytes).
+	// Can also be set via STREAM_SCANNER_MAX_BUFFER_MB env var (in MB).
+	StreamScannerMaxBuffer int
+	// PingInterval is the default interval between SSE keep-alive pings.
+	PingInterval time.Duration
+	// WriteTimeout is the timeout for individual write operations during streaming.
+	WriteTimeout time.Duration
+	// MaxPingDuration is the maximum total duration a ping goroutine will run.
+	MaxPingDuration time.Duration
+	// GoroutineShutdownTimeout is the max wait time for streaming goroutines to exit.
+	GoroutineShutdownTimeout time.Duration
+	// StopChannelBuffer is the buffer size for the streaming stop channel.
+	StopChannelBuffer int
+}
+
+// SearchConfig holds Meilisearch related settings.
+type SearchConfig struct {
+	// SyncWorkerCount is the number of concurrent workers for Meilisearch sync.
+	SyncWorkerCount int
+}
+
+// CronConfig holds background cron job settings.
+type CronConfig struct {
+	// QuotaResetCheckInterval is the interval between daily quota reset checks.
+	QuotaResetCheckInterval time.Duration
+}
+
+// SecurityConfig holds security related settings.
+type SecurityConfig struct {
+	// SMSCodeExpiration is the TTL for SMS verification codes.
+	SMSCodeExpiration time.Duration
+}
+
+var (
+	globalConfig *Config
+	configOnce   sync.Once
+)
+
+// Get returns the global Config instance, initializing it from env vars on first call.
+func Get() *Config {
+	configOnce.Do(func() {
+		globalConfig = loadFromEnv()
+	})
+	return globalConfig
+}
+
+// loadFromEnv loads all configuration from environment variables with defaults.
+func loadFromEnv() *Config {
+	cfg := &Config{
+		Server: ServerConfig{
+			GracefulShutdownTimeout: envDuration("GRACEFUL_SHUTDOWN_TIMEOUT", 30*time.Second),
+		},
+		Relay: RelayConfig{
+			StreamScannerInitialBuffer: envInt("STREAM_SCANNER_INITIAL_BUFFER", 64<<10),   // 64KB
+			StreamScannerMaxBuffer:     envInt("STREAM_SCANNER_MAX_BUFFER", 64<<20),        // 64MB
+			PingInterval:               envDuration("RELAY_PING_INTERVAL", 10*time.Second),
+			WriteTimeout:               envDuration("RELAY_WRITE_TIMEOUT", 10*time.Second),
+			MaxPingDuration:            envDuration("RELAY_MAX_PING_DURATION", 30*time.Minute),
+			GoroutineShutdownTimeout:   envDuration("RELAY_GOROUTINE_SHUTDOWN_TIMEOUT", 5*time.Second),
+			StopChannelBuffer:          envInt("RELAY_STOP_CHANNEL_BUFFER", 3),
+		},
+		Search: SearchConfig{
+			SyncWorkerCount: envInt("MEILISEARCH_SYNC_WORKERS", 32),
+		},
+		Cron: CronConfig{
+			QuotaResetCheckInterval: envDuration("QUOTA_RESET_CHECK_INTERVAL", 1*time.Minute),
+		},
+		Security: SecurityConfig{
+			SMSCodeExpiration: envDuration("SMS_CODE_EXPIRATION", 5*time.Minute),
+		},
+	}
+	return cfg
+}
+
+// PrintEffective logs the effective configuration at startup.
+func (c *Config) PrintEffective() string {
+	return fmt.Sprintf(
+		"Config: relay.ping_interval=%s relay.write_timeout=%s relay.max_ping_duration=%s relay.scanner_buffer=%dKB/%dMB",
+		c.Relay.PingInterval,
+		c.Relay.WriteTimeout,
+		c.Relay.MaxPingDuration,
+		c.Relay.StreamScannerInitialBuffer/1024,
+		c.Relay.StreamScannerMaxBuffer/(1024*1024),
+	)
+}
+
+// --- env helpers ---
+
+func envInt(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return defaultVal
+}
+
+func envDuration(key string, defaultVal time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+		// Also try as seconds (integer)
+		if n, err := strconv.Atoi(v); err == nil {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return defaultVal
+}

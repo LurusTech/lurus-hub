@@ -213,3 +213,147 @@ func GenerateID() string {
 	// In production, use: github.com/google/uuid
 	return "tenant-" + time.Now().Format("20060102150405")
 }
+
+// ============================================================================
+// Tenant Statistics Functions
+// ============================================================================
+
+// TenantStats contains comprehensive statistics for a tenant
+type TenantStats struct {
+	TenantID            string  `json:"tenant_id"`
+	UserCount           int64   `json:"user_count"`
+	MaxUsers            int     `json:"max_users"`
+	MaxQuota            int64   `json:"max_quota"`
+	TokenCount          int64   `json:"token_count"`
+	ChannelCount        int64   `json:"channel_count"`
+	TotalQuotaUsed      int64   `json:"total_quota_used"`
+	TotalQuotaRemaining int64   `json:"total_quota_remaining"`
+	ActiveSubscriptions int64   `json:"active_subscriptions"`
+	TotalTopUpAmount    float64 `json:"total_topup_amount"`
+	TotalRedemptions    int64   `json:"total_redemptions"`
+	LogCount            int64   `json:"log_count"`
+	LastActivityAt      int64   `json:"last_activity_at"`
+}
+
+// GetTenantStats retrieves comprehensive statistics for a tenant
+func GetTenantStats(tenantID string) (*TenantStats, error) {
+	stats := &TenantStats{TenantID: tenantID}
+	var err error
+
+	// Get tenant info for max_users and max_quota
+	tenant, err := GetTenantByID(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	stats.MaxUsers = tenant.MaxUsers
+	stats.MaxQuota = tenant.MaxQuota
+
+	// User count (from identity mappings)
+	stats.UserCount, _ = GetTenantUserCount(tenantID)
+
+	// Token count
+	stats.TokenCount, _ = GetTenantTokenCount(tenantID)
+
+	// Channel count
+	stats.ChannelCount, _ = GetTenantChannelCount(tenantID)
+
+	// Quota statistics
+	usedQuota, remainingQuota, _ := GetTenantQuotaStats(tenantID)
+	stats.TotalQuotaUsed = usedQuota
+	stats.TotalQuotaRemaining = remainingQuota
+
+	// Subscription count
+	stats.ActiveSubscriptions, _ = GetTenantActiveSubscriptionCount(tenantID)
+
+	// TopUp total amount
+	stats.TotalTopUpAmount, _ = GetTenantTotalTopUpAmount(tenantID)
+
+	// Redemption count
+	stats.TotalRedemptions, _ = GetTenantRedemptionCount(tenantID)
+
+	// Log count
+	stats.LogCount, _ = GetTenantLogCount(tenantID)
+
+	// Last activity (most recent log)
+	stats.LastActivityAt, _ = GetTenantLastActivityTime(tenantID)
+
+	return stats, nil
+}
+
+// GetTenantTokenCount returns the number of tokens in a tenant
+func GetTenantTokenCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&Token{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// GetTenantChannelCount returns the number of channels in a tenant
+func GetTenantChannelCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&Channel{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// GetTenantQuotaStats returns used and remaining quota for a tenant
+func GetTenantQuotaStats(tenantID string) (usedQuota int64, remainingQuota int64, err error) {
+	// Sum used_quota and remain_quota from tokens
+	type QuotaResult struct {
+		UsedQuota   int64 `json:"used_quota"`
+		RemainQuota int64 `json:"remain_quota"`
+	}
+	var result QuotaResult
+
+	err = DB.Model(&Token{}).
+		Select("COALESCE(SUM(used_quota), 0) as used_quota, COALESCE(SUM(remain_quota), 0) as remain_quota").
+		Where("tenant_id = ?", tenantID).
+		Scan(&result).Error
+
+	return result.UsedQuota, result.RemainQuota, err
+}
+
+// GetTenantActiveSubscriptionCount returns the number of active subscriptions in a tenant
+func GetTenantActiveSubscriptionCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&Subscription{}).
+		Where("tenant_id = ? AND status = ?", tenantID, 1). // status 1 = active
+		Count(&count).Error
+	return count, err
+}
+
+// GetTenantTotalTopUpAmount returns the total top-up amount for a tenant (in currency units)
+func GetTenantTotalTopUpAmount(tenantID string) (float64, error) {
+	var total *float64
+	err := DB.Model(&TopUp{}).
+		Select("COALESCE(SUM(amount), 0)").
+		Where("tenant_id = ? AND status = ?", tenantID, "success").
+		Scan(&total).Error
+
+	if total == nil {
+		return 0, err
+	}
+	return *total, err
+}
+
+// GetTenantRedemptionCount returns the number of redemption codes in a tenant
+func GetTenantRedemptionCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&Redemption{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// GetTenantLogCount returns the number of log entries for a tenant
+func GetTenantLogCount(tenantID string) (int64, error) {
+	var count int64
+	err := LOG_DB.Model(&Log{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// GetTenantLastActivityTime returns the timestamp of the most recent activity (log entry) for a tenant
+func GetTenantLastActivityTime(tenantID string) (int64, error) {
+	var lastActivity int64
+	err := LOG_DB.Model(&Log{}).
+		Select("COALESCE(MAX(created_at), 0)").
+		Where("tenant_id = ?", tenantID).
+		Scan(&lastActivity).Error
+	return lastActivity, err
+}

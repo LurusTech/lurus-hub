@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,19 +18,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	loggerINFO  = "INFO"
-	loggerWarn  = "WARN"
-	loggerError = "ERR"
-	loggerDebug = "DEBUG"
-)
-
 const maxLogCount = 1000000
 
 var logCount int
 var setupLogLock sync.Mutex
 var setupLogWorking bool
 
+// SetupLogger configures file-based logging with rotation
 func SetupLogger() {
 	defer func() {
 		setupLogWorking = false
@@ -38,7 +32,7 @@ func SetupLogger() {
 	if *common.LogDir != "" {
 		ok := setupLogLock.TryLock()
 		if !ok {
-			log.Println("setup log is already working")
+			slog.Info("setup log is already working")
 			return
 		}
 		defer func() {
@@ -47,45 +41,50 @@ func SetupLogger() {
 		logPath := filepath.Join(*common.LogDir, fmt.Sprintf("oneapi-%s.log", time.Now().Format("20060102150405")))
 		fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			log.Fatal("failed to open log file")
+			slog.Error("failed to open log file", "error", err)
+			os.Exit(1)
 		}
 		gin.DefaultWriter = io.MultiWriter(os.Stdout, fd)
 		gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, fd)
+
+		// Update slog writers as well
+		common.SetSlogWriter(gin.DefaultWriter)
+		common.SetSlogErrWriter(gin.DefaultErrorWriter)
 	}
 }
 
+// LogInfo logs an info message with request context
 func LogInfo(ctx context.Context, msg string) {
-	logHelper(ctx, loggerINFO, msg)
+	common.LogInfo(ctx, msg)
+	checkLogRotation()
 }
 
+// LogWarn logs a warning message with request context
 func LogWarn(ctx context.Context, msg string) {
-	logHelper(ctx, loggerWarn, msg)
+	common.LogWarn(ctx, msg)
+	checkLogRotation()
 }
 
+// LogError logs an error message with request context
 func LogError(ctx context.Context, msg string) {
-	logHelper(ctx, loggerError, msg)
+	common.LogError(ctx, msg)
+	checkLogRotation()
 }
 
+// LogDebug logs a debug message with request context
+// Only logs when DebugEnabled is true
 func LogDebug(ctx context.Context, msg string, args ...any) {
 	if common.DebugEnabled {
 		if len(args) > 0 {
 			msg = fmt.Sprintf(msg, args...)
 		}
-		logHelper(ctx, loggerDebug, msg)
+		common.LogDebug(ctx, msg)
+		checkLogRotation()
 	}
 }
 
-func logHelper(ctx context.Context, level string, msg string) {
-	writer := gin.DefaultErrorWriter
-	if level == loggerINFO {
-		writer = gin.DefaultWriter
-	}
-	id := ctx.Value(common.RequestIdKey)
-	if id == nil {
-		id = "SYSTEM"
-	}
-	now := time.Now()
-	_, _ = fmt.Fprintf(writer, "[%s] %v | %s | %s \n", level, now.Format("2006/01/02 - 15:04:05"), id, msg)
+// checkLogRotation checks if log rotation is needed
+func checkLogRotation() {
 	logCount++ // we don't need accurate count, so no lock here
 	if logCount > maxLogCount && !setupLogWorking {
 		logCount = 0
@@ -96,8 +95,9 @@ func logHelper(ctx context.Context, level string, msg string) {
 	}
 }
 
+// LogQuota formats quota for display based on display type setting
 func LogQuota(quota int) string {
-	// 新逻辑：根据额度展示类型输出
+	// New logic: output based on quota display type
 	q := float64(quota)
 	switch operation_setting.GetQuotaDisplayType() {
 	case operation_setting.QuotaDisplayTypeCNY:
@@ -123,6 +123,7 @@ func LogQuota(quota int) string {
 	}
 }
 
+// FormatQuota formats quota value based on display type setting
 func FormatQuota(quota int) string {
 	q := float64(quota)
 	switch operation_setting.GetQuotaDisplayType() {
@@ -149,7 +150,7 @@ func FormatQuota(quota int) string {
 	}
 }
 
-// LogJson 仅供测试使用 only for test
+// LogJson logs an object as JSON (for testing only)
 func LogJson(ctx context.Context, msg string, obj any) {
 	jsonStr, err := json.Marshal(obj)
 	if err != nil {
@@ -157,4 +158,32 @@ func LogJson(ctx context.Context, msg string, obj any) {
 		return
 	}
 	LogDebug(ctx, fmt.Sprintf("%s | %s", msg, string(jsonStr)))
+}
+
+// Structured logging helpers with key-value pairs
+
+// LogInfoKV logs an info message with key-value pairs
+func LogInfoKV(ctx context.Context, msg string, args ...any) {
+	common.LogInfo(ctx, msg, args...)
+	checkLogRotation()
+}
+
+// LogWarnKV logs a warning message with key-value pairs
+func LogWarnKV(ctx context.Context, msg string, args ...any) {
+	common.LogWarn(ctx, msg, args...)
+	checkLogRotation()
+}
+
+// LogErrorKV logs an error message with key-value pairs
+func LogErrorKV(ctx context.Context, msg string, args ...any) {
+	common.LogError(ctx, msg, args...)
+	checkLogRotation()
+}
+
+// LogDebugKV logs a debug message with key-value pairs
+func LogDebugKV(ctx context.Context, msg string, args ...any) {
+	if common.DebugEnabled {
+		common.LogDebug(ctx, msg, args...)
+		checkLogRotation()
+	}
 }

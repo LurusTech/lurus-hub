@@ -1,37 +1,57 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 )
 
-// StartSubscriptionCronJobs starts background jobs for subscription management
+// StartSubscriptionCronJobs starts background jobs for subscription management.
+// Deprecated: Use StartSubscriptionCronJobsWithContext instead.
 func StartSubscriptionCronJobs() {
+	StartSubscriptionCronJobsWithContext(context.Background())
+}
+
+// StartSubscriptionCronJobsWithContext starts background jobs for subscription management with context support.
+// All goroutines exit when ctx is cancelled.
+func StartSubscriptionCronJobsWithContext(ctx context.Context) {
 	// Check expired subscriptions every 5 minutes
-	go subscriptionExpiryChecker()
+	common.SafeGoWithContext(ctx, subscriptionExpiryCheckerWithContext)
 
 	// Cleanup stale pending subscriptions every hour
-	go stalePendingSubscriptionCleaner()
+	common.SafeGoWithContext(ctx, stalePendingSubscriptionCleanerWithContext)
 
 	// Process auto-renewals every hour
-	go autoRenewalProcessor()
+	common.SafeGoWithContext(ctx, autoRenewalProcessorWithContext)
 
 	common.SysLog("Subscription cron jobs started")
 }
 
-// subscriptionExpiryChecker periodically checks and expires subscriptions
-func subscriptionExpiryChecker() {
+// subscriptionExpiryCheckerWithContext periodically checks and expires subscriptions with context support
+func subscriptionExpiryCheckerWithContext(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
 	// Run immediately on start
 	processExpiredSubscriptions()
 
-	for range ticker.C {
-		processExpiredSubscriptions()
+	for {
+		select {
+		case <-ctx.Done():
+			common.SysLog("Subscription expiry checker stopped")
+			return
+		case <-ticker.C:
+			processExpiredSubscriptions()
+		}
 	}
+}
+
+// subscriptionExpiryChecker periodically checks and expires subscriptions
+// Deprecated: Use subscriptionExpiryCheckerWithContext instead.
+func subscriptionExpiryChecker() {
+	subscriptionExpiryCheckerWithContext(context.Background())
 }
 
 // processExpiredSubscriptions finds and expires all overdue subscriptions
@@ -87,18 +107,35 @@ func ProcessSubscriptionRenewals() {
 	}
 }
 
-// stalePendingSubscriptionCleaner cleans up pending subscriptions older than 24 hours
-func stalePendingSubscriptionCleaner() {
+// stalePendingSubscriptionCleanerWithContext cleans up pending subscriptions older than 24 hours with context support
+func stalePendingSubscriptionCleanerWithContext(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
 	// Run immediately on start (with delay to allow system to stabilize)
-	time.Sleep(30 * time.Second)
-	cleanupStalePendingSubscriptions()
-
-	for range ticker.C {
+	select {
+	case <-ctx.Done():
+		common.SysLog("Stale pending subscription cleaner stopped before initial run")
+		return
+	case <-time.After(30 * time.Second):
 		cleanupStalePendingSubscriptions()
 	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			common.SysLog("Stale pending subscription cleaner stopped")
+			return
+		case <-ticker.C:
+			cleanupStalePendingSubscriptions()
+		}
+	}
+}
+
+// stalePendingSubscriptionCleaner cleans up pending subscriptions older than 24 hours
+// Deprecated: Use stalePendingSubscriptionCleanerWithContext instead.
+func stalePendingSubscriptionCleaner() {
+	stalePendingSubscriptionCleanerWithContext(context.Background())
 }
 
 // cleanupStalePendingSubscriptions marks old pending subscriptions as expired
@@ -137,18 +174,35 @@ func cleanupStalePendingSubscriptions() {
 	}
 }
 
-// autoRenewalProcessor handles automatic subscription renewals
-func autoRenewalProcessor() {
+// autoRenewalProcessorWithContext handles automatic subscription renewals with context support
+func autoRenewalProcessorWithContext(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
 	// Run immediately on start (with delay)
-	time.Sleep(1 * time.Minute)
-	ProcessSubscriptionRenewals()
-
-	for range ticker.C {
+	select {
+	case <-ctx.Done():
+		common.SysLog("Auto renewal processor stopped before initial run")
+		return
+	case <-time.After(1 * time.Minute):
 		ProcessSubscriptionRenewals()
 	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			common.SysLog("Auto renewal processor stopped")
+			return
+		case <-ticker.C:
+			ProcessSubscriptionRenewals()
+		}
+	}
+}
+
+// autoRenewalProcessor handles automatic subscription renewals
+// Deprecated: Use autoRenewalProcessorWithContext instead.
+func autoRenewalProcessor() {
+	autoRenewalProcessorWithContext(context.Background())
 }
 
 // SendExpirationWarning sends warning to users whose subscriptions are expiring soon

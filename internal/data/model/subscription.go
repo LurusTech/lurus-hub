@@ -13,7 +13,8 @@ import (
 type Subscription struct {
 	Id       int    `json:"id" gorm:"primaryKey;autoIncrement"`
 	UserId   int    `json:"user_id" gorm:"index;not null"`
-	PlanCode string `json:"plan_code" gorm:"type:varchar(32);not null"` // weekly/monthly/quarterly/yearly
+	TenantId string `json:"tenant_id" gorm:"type:varchar(36);index;default:'default'"` // Tenant isolation
+	PlanCode string `json:"plan_code" gorm:"type:varchar(32);not null"`                // weekly/monthly/quarterly/yearly
 	PlanName string `json:"plan_name" gorm:"type:varchar(64);not null"`
 	Status   string `json:"status" gorm:"type:varchar(16);default:'active'"` // active/expired/cancelled/pending
 

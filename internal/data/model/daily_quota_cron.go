@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"strconv"
 	"time"
 
@@ -14,21 +15,34 @@ const (
 	DailyQuotaResetBatchSize = 100
 )
 
-// StartDailyQuotaResetCron starts the daily quota reset cron job
-// This should be called once when the application starts
+// StartDailyQuotaResetCron starts the daily quota reset cron job.
+// Deprecated: Use StartDailyQuotaResetCronWithContext instead.
 func StartDailyQuotaResetCron() {
+	StartDailyQuotaResetCronWithContext(context.Background())
+}
+
+// StartDailyQuotaResetCronWithContext starts the daily quota reset cron job with context support.
+// The goroutine exits when ctx is cancelled.
+func StartDailyQuotaResetCronWithContext(ctx context.Context) {
 	common.SysLog("Starting daily quota reset cron job")
 
 	ticker := time.NewTicker(time.Duration(DailyQuotaResetInterval) * time.Second)
 
-	go func() {
+	common.SafeGoWithContext(ctx, func(c context.Context) {
+		defer ticker.Stop()
 		// Run immediately on startup
 		processDailyQuotaResets()
 
-		for range ticker.C {
-			processDailyQuotaResets()
+		for {
+			select {
+			case <-c.Done():
+				common.SysLog("Daily quota reset cron stopped")
+				return
+			case <-ticker.C:
+				processDailyQuotaResets()
+			}
 		}
-	}()
+	})
 }
 
 // processDailyQuotaResets processes daily quota resets for all users that need it

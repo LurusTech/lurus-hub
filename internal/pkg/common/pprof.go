@@ -18,7 +18,7 @@ func Monitor() {
 			panic(err)
 		}
 		if percent[0] > 80 {
-			fmt.Println("cpu usage too high")
+			SysLog("cpu usage too high, starting pprof capture")
 			// write pprof file
 			if _, err := os.Stat("./pprof"); os.IsNotExist(err) {
 				err := os.Mkdir("./pprof", os.ModePerm)
@@ -62,7 +62,7 @@ func MonitorWithContext(ctx context.Context) {
 				continue
 			}
 			if percent[0] > 80 {
-				fmt.Println("cpu usage too high")
+				SysLog("cpu usage too high, starting pprof capture")
 				if _, err := os.Stat("./pprof"); os.IsNotExist(err) {
 					if err := os.Mkdir("./pprof", os.ModePerm); err != nil {
 						SysLog("创建pprof文件夹失败 " + err.Error())

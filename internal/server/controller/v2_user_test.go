@@ -148,7 +148,7 @@ func TestUpdateSelfV2_DisplayNameTooLong(t *testing.T) {
 	AssertV2Status(t, w, http.StatusBadRequest)
 	resp := ParseV2Response(t, w)
 	if msg, ok := resp["message"].(string); ok {
-		if msg != "Display name too long (max 50 characters)" {
+		if msg != "显示名称不能超过50个字符" {
 			t.Errorf("unexpected error message: %s", msg)
 		}
 	}
@@ -204,4 +204,59 @@ func TestGetSelfV2_DifferentUsers(t *testing.T) {
 	if data["username"] != ctx.AdminUser.Username {
 		t.Errorf("expected admin username, got %v", data["username"])
 	}
+}
+
+func TestGetSelfV2_UserNotFound(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Request with a user ID that doesn't exist in DB
+	headers := map[string]string{
+		"X-Test-Tenant-ID": ctx.TenantID,
+		"X-Test-User-ID":   "99999",
+	}
+	w := V2Request(ctx.Router, http.MethodGet, "/api/v2/test-tenant/user/me", nil, headers)
+
+	AssertV2Status(t, w, http.StatusNotFound)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "User not found" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestUpdateSelfV2_UserNotFound(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Request as a non-existent user
+	headers := map[string]string{
+		"X-Test-Tenant-ID": ctx.TenantID,
+		"X-Test-User-ID":   "99999",
+	}
+	body := map[string]string{
+		"display_name": "Ghost User",
+	}
+	w := V2Request(ctx.Router, http.MethodPut, "/api/v2/test-tenant/user/me", body, headers)
+
+	AssertV2Status(t, w, http.StatusNotFound)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "User not found" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestUpdateSelfV2_EmptyBody(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Send request with empty JSON body — no fields to update, should still succeed
+	body := map[string]string{}
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPut, "/api/v2/test-tenant/user/me", body, nil)
+
+	// Empty body with valid JSON should succeed (no updates applied)
+	AssertV2Status(t, w, http.StatusOK)
 }

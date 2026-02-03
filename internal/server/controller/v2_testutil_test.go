@@ -66,6 +66,12 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 	}
 	for _, tbl := range tables {
 		if err := db.AutoMigrate(tbl); err != nil {
+			// SQLite uses global index names (unlike PostgreSQL which scopes to table).
+			// Multiple models share the same composite index name (e.g., idx_tenant_user),
+			// causing "already exists" errors that are safe to ignore during migration.
+			if strings.Contains(err.Error(), "already exists") {
+				continue
+			}
 			t.Fatalf("auto migrate failed for %T: %v", tbl, err)
 		}
 	}
@@ -79,6 +85,7 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 
 	model.DB = db
 	model.LOG_DB = db
+	model.InitCol() // Initialize dialect-specific column quoting for SQLite
 	common.UsingSQLite = true
 	common.UsingPostgreSQL = false
 	common.RedisEnabled = false

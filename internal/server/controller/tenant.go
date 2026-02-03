@@ -346,13 +346,13 @@ func SuspendTenant(c *gin.Context) {
 	})
 }
 
-// GetTenantStats retrieves statistics for a tenant (Platform Admin only)
+// GetTenantStats retrieves comprehensive statistics for a tenant (Platform Admin only)
 // Route: GET /api/v2/admin/tenants/:id/stats
 func GetTenantStats(c *gin.Context) {
 	tenantID := c.Param("id")
 
-	// Check if tenant exists
-	tenant, err := model.GetTenantByID(tenantID)
+	// Get comprehensive tenant statistics
+	stats, err := model.GetTenantStats(tenantID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"success": false,
@@ -361,26 +361,9 @@ func GetTenantStats(c *gin.Context) {
 		return
 	}
 
-	// Get tenant statistics
-	userCount, _ := model.GetTenantUserCount(tenantID)
-
-	// TODO: Add more statistics
-	// - Total quota used
-	// - Total API requests
-	// - Active subscriptions
-	// - Total revenue
-	// - Channel count
-	// - Log count
-
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data": gin.H{
-			"tenant_id":  tenant.Id,
-			"user_count": userCount,
-			"max_users":  tenant.MaxUsers,
-			"max_quota":  tenant.MaxQuota,
-			// Add more stats here
-		},
+		"data":    stats,
 	})
 }
 

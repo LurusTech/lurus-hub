@@ -83,8 +83,15 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 		return
 	}
 
+	// Get tenant ID from context (defaults to "default" for v1 API)
+	tenantId := common.GetContextKeyString(c, "tenant_id")
+	if tenantId == "" {
+		tenantId = "default"
+	}
+
 	topUp := &model.TopUp{
 		UserId:        id,
+		TenantId:      tenantId,
 		Amount:        req.Amount,
 		Money:         chargedMoney,
 		TradeNo:       referenceId,

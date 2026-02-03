@@ -111,7 +111,7 @@ func TestCreateTokenV2_NameTooLong(t *testing.T) {
 	AssertV2Status(t, w, http.StatusBadRequest)
 	resp := ParseV2Response(t, w)
 	if msg, ok := resp["message"].(string); ok {
-		if msg != "Token name too long (max 50 characters)" {
+		if msg != "令牌名称过长" {
 			t.Errorf("unexpected error message: %s", msg)
 		}
 	}
@@ -132,7 +132,7 @@ func TestCreateTokenV2_NegativeQuota(t *testing.T) {
 	AssertV2Status(t, w, http.StatusBadRequest)
 	resp := ParseV2Response(t, w)
 	if msg, ok := resp["message"].(string); ok {
-		if msg != "Quota value cannot be negative" {
+		if msg != "额度值不能为负数" {
 			t.Errorf("unexpected error message: %s", msg)
 		}
 	}
@@ -197,7 +197,7 @@ func TestUpdateTokenV2_ExpiredToEnabled(t *testing.T) {
 	AssertV2Status(t, w, http.StatusBadRequest)
 	resp := ParseV2Response(t, w)
 	if msg, ok := resp["message"].(string); ok {
-		if msg != "Cannot enable expired token, please update expiration time first" {
+		if msg != "令牌已过期，无法启用，请先修改令牌过期时间，或者设置为永不过期" {
 			t.Errorf("unexpected error message: %s", msg)
 		}
 	}
@@ -318,5 +318,94 @@ func TestListTokensV2_UserIsolation(t *testing.T) {
 	total = int(data["total"].(float64))
 	if total != 1 {
 		t.Errorf("expected 1 token for admin user, got %d", total)
+	}
+}
+
+func TestUpdateTokenV2_InvalidID(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	body := map[string]interface{}{
+		"name": "Updated Name",
+	}
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPut, "/api/v2/test-tenant/tokens/invalid", body, nil)
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Invalid token ID" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestUpdateTokenV2_TokenNotFound(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	body := map[string]interface{}{
+		"name": "Ghost Token",
+	}
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPut, "/api/v2/test-tenant/tokens/99999", body, nil)
+
+	AssertV2Status(t, w, http.StatusNotFound)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Token not found" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestUpdateTokenV2_NameValidation(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	token := SeedV2Token(t, ctx, ctx.NormalUser.Id, "Original Name")
+
+	// Name exceeding 50 chars
+	longName := make([]byte, 51)
+	for i := range longName {
+		longName[i] = 'x'
+	}
+
+	body := map[string]interface{}{
+		"name": string(longName),
+	}
+	path := fmt.Sprintf("/api/v2/test-tenant/tokens/%d", token.Id)
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPut, path, body, nil)
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	// Service layer returns Chinese error message
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "令牌名称过长" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestCreateTokenV2_UnlimitedQuota(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	body := map[string]interface{}{
+		"name":            "Unlimited Token",
+		"unlimited_quota": true,
+		"remain_quota":    0,
+	}
+
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPost, "/api/v2/test-tenant/tokens", body, nil)
+
+	AssertV2Status(t, w, http.StatusCreated)
+	resp := AssertV2Success(t, w)
+
+	data := resp["data"].(map[string]interface{})
+	if data["name"] != "Unlimited Token" {
+		t.Errorf("expected name='Unlimited Token', got %v", data["name"])
+	}
+	key, ok := data["key"].(string)
+	if !ok || key == "" {
+		t.Error("expected key to be returned on token creation")
 	}
 }

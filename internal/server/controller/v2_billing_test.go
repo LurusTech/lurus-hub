@@ -338,3 +338,69 @@ func TestSubscribeV2_AllPlanCodes(t *testing.T) {
 		ctx.DB.Where("user_id = ?", ctx.NormalUser.Id).Delete(&model.Subscription{})
 	}
 }
+
+func TestCancelSubscriptionV2_InvalidID(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPost, "/api/v2/test-tenant/billing/subscriptions/invalid/cancel", nil, nil)
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Invalid subscription ID" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestCancelSubscriptionV2_NotFound(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPost, "/api/v2/test-tenant/billing/subscriptions/99999/cancel", nil, nil)
+
+	AssertV2Status(t, w, http.StatusNotFound)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Subscription not found" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestGetTopUpsV2_Pagination(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Create 15 topups
+	for i := 0; i < 15; i++ {
+		SeedV2TopUp(t, ctx, ctx.NormalUser.Id, common.TopUpStatusPending)
+	}
+
+	// Get first page
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodGet, "/api/v2/test-tenant/billing/topups?page=1&page_size=10", nil, nil)
+	AssertV2Status(t, w, http.StatusOK)
+	resp := AssertV2Success(t, w)
+
+	data := resp["data"].(map[string]interface{})
+	topups := data["topups"].([]interface{})
+	if len(topups) != 10 {
+		t.Errorf("expected 10 topups on first page, got %d", len(topups))
+	}
+
+	total := int(data["total"].(float64))
+	if total != 15 {
+		t.Errorf("expected total=15, got %d", total)
+	}
+
+	// Get second page
+	w = V2RequestAsUser(ctx, ctx.NormalUser, http.MethodGet, "/api/v2/test-tenant/billing/topups?page=2&page_size=10", nil, nil)
+	resp = AssertV2Success(t, w)
+
+	data = resp["data"].(map[string]interface{})
+	topups = data["topups"].([]interface{})
+	if len(topups) != 5 {
+		t.Errorf("expected 5 topups on second page, got %d", len(topups))
+	}
+}

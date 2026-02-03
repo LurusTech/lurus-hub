@@ -13,7 +13,8 @@ import (
 
 type TopUp struct {
 	Id            int     `json:"id"`
-	UserId        int     `json:"user_id" gorm:"index"`
+	UserId        int     `json:"user_id" gorm:"index;index:idx_tenant_user,priority:2"`
+	TenantId      string  `json:"tenant_id" gorm:"type:varchar(36);index;index:idx_tenant_user,priority:1;default:'default'"` // Tenant isolation
 	Amount        int64   `json:"amount"`
 	Money         float64 `json:"money"`
 	TradeNo       string  `json:"trade_no" gorm:"unique;type:varchar(255);index"`
@@ -68,7 +69,9 @@ func Recharge(referenceId string, customerId string) (err error) {
 		refCol = `"trade_no"`
 	}
 
-	err = DB.Transaction(func(tx *gorm.DB) error {
+	// Use WithoutTenantIsolation for webhook processing since we don't have user context
+	// The topup record itself contains the tenant_id for verification
+	err = WithoutTenantIsolation(DB).Transaction(func(tx *gorm.DB) error {
 		err := tx.Set("gorm:query_option", "FOR UPDATE").Where(refCol+" = ?", referenceId).First(topUp).Error
 		if err != nil {
 			return errors.New("充值订单不存在")
@@ -76,6 +79,16 @@ func Recharge(referenceId string, customerId string) (err error) {
 
 		if topUp.Status != common.TopUpStatusPending {
 			return errors.New("充值订单状态错误")
+		}
+
+		// Verify user belongs to the same tenant as the topup
+		var user User
+		if err := tx.Where("id = ?", topUp.UserId).First(&user).Error; err != nil {
+			return errors.New("用户不存在")
+		}
+		if user.TenantId != topUp.TenantId {
+			common.SysError(fmt.Sprintf("Tenant mismatch in Recharge: topup.TenantId=%s, user.TenantId=%s", topUp.TenantId, user.TenantId))
+			return errors.New("租户验证失败")
 		}
 
 		topUp.CompleteTime = common.GetTimestamp()
@@ -318,7 +331,8 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 		refCol = `"trade_no"`
 	}
 
-	err = DB.Transaction(func(tx *gorm.DB) error {
+	// Use WithoutTenantIsolation for webhook processing since we don't have user context
+	err = WithoutTenantIsolation(DB).Transaction(func(tx *gorm.DB) error {
 		err := tx.Set("gorm:query_option", "FOR UPDATE").Where(refCol+" = ?", referenceId).First(topUp).Error
 		if err != nil {
 			return errors.New("充值订单不存在")
@@ -326,6 +340,16 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 
 		if topUp.Status != common.TopUpStatusPending {
 			return errors.New("充值订单状态错误")
+		}
+
+		// Verify user belongs to the same tenant as the topup
+		var user User
+		if err := tx.Where("id = ?", topUp.UserId).First(&user).Error; err != nil {
+			return errors.New("用户不存在")
+		}
+		if user.TenantId != topUp.TenantId {
+			common.SysError(fmt.Sprintf("Tenant mismatch in RechargeCreem: topup.TenantId=%s, user.TenantId=%s", topUp.TenantId, user.TenantId))
+			return errors.New("租户验证失败")
 		}
 
 		topUp.CompleteTime = common.GetTimestamp()
@@ -345,13 +369,6 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 
 		// 如果有客户邮箱，尝试更新用户邮箱（仅当用户邮箱为空时）
 		if customerEmail != "" {
-			// 先检查用户当前邮箱是否为空
-			var user User
-			err = tx.Where("id = ?", topUp.UserId).First(&user).Error
-			if err != nil {
-				return err
-			}
-
 			// 如果用户邮箱为空，则更新为支付时使用的邮箱
 			if user.Email == "" {
 				updateFields["email"] = customerEmail

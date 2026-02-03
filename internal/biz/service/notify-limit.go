@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"sync"
@@ -8,13 +9,14 @@ import (
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/bytedance/gopkg/util/gopool"
 )
 
 // notifyLimitStore is used for in-memory rate limiting when Redis is disabled
 var (
 	notifyLimitStore sync.Map
 	cleanupOnce      sync.Once
+	cleanupCtx       context.Context
+	cleanupCancel    context.CancelFunc
 )
 
 type limitCount struct {
@@ -27,11 +29,34 @@ func getDuration() time.Duration {
 	return time.Duration(minute) * time.Minute
 }
 
-// startCleanupTask starts a background task to clean up expired entries
-func startCleanupTask() {
-	gopool.Go(func() {
-		for {
-			time.Sleep(time.Hour)
+// InitNotifyLimitCleanup initializes the cleanup task with context support.
+// Call this from main.go with a context that will be cancelled on shutdown.
+func InitNotifyLimitCleanup(ctx context.Context) {
+	cleanupOnce.Do(func() {
+		cleanupCtx, cleanupCancel = context.WithCancel(ctx)
+		go startCleanupTaskWithContext(cleanupCtx)
+	})
+}
+
+// StopNotifyLimitCleanup stops the cleanup task gracefully.
+func StopNotifyLimitCleanup() {
+	if cleanupCancel != nil {
+		cleanupCancel()
+	}
+}
+
+// startCleanupTaskWithContext starts a background task to clean up expired entries.
+// It respects context cancellation for graceful shutdown.
+func startCleanupTaskWithContext(ctx context.Context) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			common.SysLog("notify limit cleanup task stopped")
+			return
+		case <-ticker.C:
 			now := time.Now()
 			notifyLimitStore.Range(func(key, value interface{}) bool {
 				if limit, ok := value.(limitCount); ok {
@@ -42,7 +67,28 @@ func startCleanupTask() {
 				return true
 			})
 		}
-	})
+	}
+}
+
+// startCleanupTask starts a background task to clean up expired entries.
+// Deprecated: Use InitNotifyLimitCleanup with context instead.
+func startCleanupTask() {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			now := time.Now()
+			notifyLimitStore.Range(func(key, value interface{}) bool {
+				if limit, ok := value.(limitCount); ok {
+					if now.Sub(limit.Timestamp) >= getDuration() {
+						notifyLimitStore.Delete(key)
+					}
+				}
+				return true
+			})
+		}
+	}()
 }
 
 // CheckNotificationLimit checks if the user has exceeded their notification limit

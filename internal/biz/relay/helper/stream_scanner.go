@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/config"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	relaycommon "github.com/QuantumNous/lurus-api/internal/biz/relay/common"
@@ -21,17 +22,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	InitialScannerBufferSize    = 64 << 10 // 64KB (64*1024)
-	DefaultMaxScannerBufferSize = 64 << 20 // 64MB (64*1024*1024) default SSE buffer size
-	DefaultPingInterval         = 10 * time.Second
-)
-
 func getScannerBufferSize() int {
 	if constant.StreamScannerMaxBufferMB > 0 {
 		return constant.StreamScannerMaxBufferMB << 20
 	}
-	return DefaultMaxScannerBufferSize
+	return config.Get().Relay.StreamScannerMaxBuffer
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string) bool) {
@@ -49,8 +44,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
 
+	relayCfg := config.Get().Relay
+
 	var (
-		stopChan   = make(chan bool, 3) // 增加缓冲区避免阻塞
+		stopChan   = make(chan bool, relayCfg.StopChannelBuffer)
 		scanner    = bufio.NewScanner(resp.Body)
 		ticker     = time.NewTicker(streamingTimeout)
 		pingTicker *time.Ticker
@@ -62,7 +59,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
 	if pingInterval <= 0 {
-		pingInterval = DefaultPingInterval
+		pingInterval = relayCfg.PingInterval
 	}
 
 	if pingEnabled {
@@ -97,14 +94,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(relayCfg.GoroutineShutdownTimeout):
 			logger.LogError(c, "timeout waiting for goroutines to exit")
 		}
 
 		close(stopChan)
 	}()
 
-	scanner.Buffer(make([]byte, InitialScannerBufferSize), getScannerBufferSize())
+	scanner.Buffer(make([]byte, relayCfg.StreamScannerInitialBuffer), getScannerBufferSize())
 	scanner.Split(bufio.ScanLines)
 	SetEventStreamHeaders(c)
 
@@ -129,8 +126,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}()
 
 			// 添加超时保护，防止 goroutine 无限运行
-			maxPingDuration := 30 * time.Minute // 最大 ping 持续时间
-			pingTimeout := time.NewTimer(maxPingDuration)
+			pingTimeout := time.NewTimer(relayCfg.MaxPingDuration)
 			defer pingTimeout.Stop()
 
 			for {
@@ -153,7 +149,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 						if common.DebugEnabled {
 							println("ping data sent")
 						}
-					case <-time.After(10 * time.Second):
+					case <-time.After(relayCfg.WriteTimeout):
 						logger.LogError(c, "ping data send timeout")
 						return
 					case <-ctx.Done():
@@ -233,7 +229,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					if !success {
 						return
 					}
-				case <-time.After(10 * time.Second):
+				case <-time.After(relayCfg.WriteTimeout):
 					logger.LogError(c, "data handler timeout")
 					return
 				case <-ctx.Done():

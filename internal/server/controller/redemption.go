@@ -90,11 +90,18 @@ func AddRedemption(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	// Get tenant ID from context (defaults to "default" for v1 API)
+	tenantId := common.GetContextKeyString(c, "tenant_id")
+	if tenantId == "" {
+		tenantId = "default"
+	}
+
 	var keys []string
 	for i := 0; i < redemption.Count; i++ {
 		key := common.GetUUID()
 		cleanRedemption := model.Redemption{
 			UserId:      c.GetInt("id"),
+			TenantId:    tenantId,
 			Name:        redemption.Name,
 			Key:         key,
 			CreatedTime: common.GetTimestamp(),

@@ -105,9 +105,16 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 	reference := fmt.Sprintf("creem-api-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
 	referenceId := "ref_" + common.Sha1([]byte(reference))
 
+	// Get tenant ID from context (defaults to "default" for v1 API)
+	tenantId := common.GetContextKeyString(c, "tenant_id")
+	if tenantId == "" {
+		tenantId = "default"
+	}
+
 	// 先创建订单记录，使用产品配置的金额和充值额度
 	topUp := &model.TopUp{
 		UserId:     id,
+		TenantId:   tenantId,
 		Amount:     selectedProduct.Quota, // 充值额度
 		Money:      selectedProduct.Price, // 支付金额
 		TradeNo:    referenceId,

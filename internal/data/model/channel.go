@@ -20,11 +20,12 @@ import (
 
 type Channel struct {
 	Id                 int     `json:"id"`
+	TenantId           string  `json:"tenant_id" gorm:"type:varchar(36);index;index:idx_tenant_status,priority:1;default:'default'"` // Tenant isolation
 	Type               int     `json:"type" gorm:"default:0"`
 	Key                string  `json:"key" gorm:"not null"`
 	OpenAIOrganization *string `json:"openai_organization"`
 	TestModel          *string `json:"test_model"`
-	Status             int     `json:"status" gorm:"default:1"`
+	Status             int     `json:"status" gorm:"default:1;index:idx_tenant_status,priority:2"`
 	Name               string  `json:"name" gorm:"index"`
 	Weight             *uint   `json:"weight" gorm:"default:0"`
 	CreatedTime        int64   `json:"created_time" gorm:"bigint"`

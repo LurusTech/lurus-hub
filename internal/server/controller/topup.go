@@ -185,8 +185,16 @@ func RequestEpay(c *gin.Context) {
 		dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 		amount = dAmount.Div(dQuotaPerUnit).IntPart()
 	}
+
+	// Get tenant ID from context (defaults to "default" for v1 API)
+	tenantId := common.GetContextKeyString(c, "tenant_id")
+	if tenantId == "" {
+		tenantId = "default"
+	}
+
 	topUp := &model.TopUp{
 		UserId:        id,
+		TenantId:      tenantId,
 		Amount:        amount,
 		Money:         payMoney,
 		TradeNo:       tradeNo,

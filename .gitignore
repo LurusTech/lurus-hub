@@ -31,3 +31,16 @@ doc/database-credentials.md
 
 # Sensitive information file (DO NOT COMMIT!)
 重要信息.md
+
+# Coverage files
+cov_*.out
+coverage*
+*.out
+
+# IDE / tools
+.claude/
+nul
+
+# BMAD (managed at root level only)
+_bmad/
+_bmad-output/

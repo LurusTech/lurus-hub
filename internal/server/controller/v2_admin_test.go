@@ -353,3 +353,127 @@ func TestDeleteUserMappingV2_NotFound(t *testing.T) {
 
 	AssertV2Status(t, w, http.StatusNotFound)
 }
+
+func TestListUserMappingsV2_FilterByZitadelUser(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Create mappings with different zitadel user IDs
+	mapping1 := &model.UserIdentityMapping{
+		TenantID:      ctx.TenantID,
+		ZitadelUserID: "zitadel_filter_target",
+		LurusUserID:   ctx.NormalUser.Id,
+		Email:         "filter1@test.local",
+		IsActive:      true,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	mapping2 := &model.UserIdentityMapping{
+		TenantID:      ctx.TenantID,
+		ZitadelUserID: "zitadel_other_user",
+		LurusUserID:   ctx.AdminUser.Id,
+		Email:         "filter2@test.local",
+		IsActive:      true,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+	ctx.DB.Create(mapping1)
+	ctx.DB.Create(mapping2)
+
+	// Filter by zitadel_user_id
+	headers := map[string]string{
+		"X-Test-User-ID": strconv.Itoa(ctx.RootUser.Id),
+	}
+	w := V2Request(ctx.Router, http.MethodGet, "/api/v2/admin/mappings?zitadel_user_id=zitadel_filter_target", nil, headers)
+
+	AssertV2Status(t, w, http.StatusOK)
+	resp := AssertV2Success(t, w)
+
+	data := resp["data"].(map[string]interface{})
+	total := int(data["total"].(float64))
+	if total != 1 {
+		t.Errorf("expected 1 mapping for zitadel_filter_target, got %d", total)
+	}
+}
+
+func TestGetUserMappingV2_InvalidID(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	headers := map[string]string{
+		"X-Test-User-ID": strconv.Itoa(ctx.RootUser.Id),
+	}
+	w := V2Request(ctx.Router, http.MethodGet, "/api/v2/admin/mappings/invalid", nil, headers)
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Invalid mapping ID" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestGetSystemStatsV2_NonRootRejected(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Try as normal user (not root)
+	headers := map[string]string{
+		"X-Test-User-ID": strconv.Itoa(ctx.NormalUser.Id),
+	}
+	w := V2Request(ctx.Router, http.MethodGet, "/api/v2/admin/stats", nil, headers)
+
+	AssertV2Status(t, w, http.StatusForbidden)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Platform admin role required" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+
+	// Try as admin user (still not root)
+	headers["X-Test-User-ID"] = strconv.Itoa(ctx.AdminUser.Id)
+	w = V2Request(ctx.Router, http.MethodGet, "/api/v2/admin/stats", nil, headers)
+
+	AssertV2Status(t, w, http.StatusForbidden)
+}
+
+func TestListUserMappingsV2_NoFilter(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Create a few mappings
+	for i := 0; i < 3; i++ {
+		mapping := &model.UserIdentityMapping{
+			TenantID:      ctx.TenantID,
+			ZitadelUserID: fmt.Sprintf("zitadel_nofilter_%d", i),
+			LurusUserID:   ctx.NormalUser.Id,
+			Email:         fmt.Sprintf("nofilter%d@test.local", i),
+			IsActive:      true,
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
+		}
+		ctx.DB.Create(mapping)
+	}
+
+	// List all without any filter
+	headers := map[string]string{
+		"X-Test-User-ID": strconv.Itoa(ctx.RootUser.Id),
+	}
+	w := V2Request(ctx.Router, http.MethodGet, "/api/v2/admin/mappings", nil, headers)
+
+	AssertV2Status(t, w, http.StatusOK)
+	resp := AssertV2Success(t, w)
+
+	data := resp["data"].(map[string]interface{})
+	total := int(data["total"].(float64))
+	if total < 3 {
+		t.Errorf("expected at least 3 mappings, got %d", total)
+	}
+
+	mappings := data["mappings"].([]interface{})
+	if len(mappings) < 3 {
+		t.Errorf("expected at least 3 mappings in response, got %d", len(mappings))
+	}
+}

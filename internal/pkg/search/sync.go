@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -12,9 +13,22 @@ import (
 // 用于异步索引的工作池
 var asyncPool gopool.Pool
 
+// syncCtx and syncCancel for graceful shutdown
+var (
+	syncCtx    context.Context
+	syncCancel context.CancelFunc
+)
+
 // InitSync initializes the sync mechanism
 // 初始化同步机制
 func InitSync() error {
+	return InitSyncWithContext(context.Background())
+}
+
+// InitSyncWithContext initializes the sync mechanism with context support.
+// The context should be cancelled on application shutdown.
+// 使用 context 支持初始化同步机制。应用关闭时应取消 context。
+func InitSyncWithContext(ctx context.Context) error {
 	if !IsEnabled() || !SyncEnabled {
 		return nil
 	}
@@ -28,11 +42,20 @@ func InitSync() error {
 	// Start scheduled sync if interval > 0
 	// 如果间隔 > 0 则启动定时同步
 	if SyncInterval > 0 {
-		go ScheduledSync(SyncInterval)
+		syncCtx, syncCancel = context.WithCancel(ctx)
+		go ScheduledSyncWithContext(syncCtx, SyncInterval)
 		common.SysLog(fmt.Sprintf("Scheduled sync started with interval %d seconds", SyncInterval))
 	}
 
 	return nil
+}
+
+// StopSync stops the scheduled sync task gracefully.
+// 优雅停止定时同步任务。
+func StopSync() {
+	if syncCancel != nil {
+		syncCancel()
+	}
 }
 
 // SyncLogAsync asynchronously syncs a single log to Meilisearch
@@ -132,8 +155,15 @@ func SyncChannelAsync(channel *Channel) {
 }
 
 // ScheduledSync performs scheduled background sync
+// Deprecated: Use ScheduledSyncWithContext instead.
 // 执行定时后台同步
 func ScheduledSync(intervalSeconds int) {
+	ScheduledSyncWithContext(context.Background(), intervalSeconds)
+}
+
+// ScheduledSyncWithContext performs scheduled background sync with context support.
+// 使用 context 支持执行定时后台同步
+func ScheduledSyncWithContext(ctx context.Context, intervalSeconds int) {
 	if !IsEnabled() || !SyncEnabled {
 		return
 	}
@@ -141,20 +171,26 @@ func ScheduledSync(intervalSeconds int) {
 	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if Debug {
-			common.SysLog("Starting scheduled sync...")
-		}
+	for {
+		select {
+		case <-ctx.Done():
+			common.SysLog("scheduled sync stopped")
+			return
+		case <-ticker.C:
+			if Debug {
+				common.SysLog("Starting scheduled sync...")
+			}
 
-		// Sync recent logs (last hour)
-		// 同步最近的日志(最后一小时)
-		err := SyncRecentLogs(3600)
-		if err != nil {
-			common.SysLog(fmt.Sprintf("Scheduled log sync failed: %v", err))
-		}
+			// Sync recent logs (last hour)
+			// 同步最近的日志(最后一小时)
+			err := SyncRecentLogs(3600)
+			if err != nil {
+				common.SysLog(fmt.Sprintf("Scheduled log sync failed: %v", err))
+			}
 
-		if Debug {
-			common.SysLog("Scheduled sync completed")
+			if Debug {
+				common.SysLog("Scheduled sync completed")
+			}
 		}
 	}
 }

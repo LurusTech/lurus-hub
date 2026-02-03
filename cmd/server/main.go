@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/biz/service"
 	"github.com/QuantumNous/lurus-api/internal/data/model"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/config"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/pkg/search"
@@ -53,7 +54,7 @@ func main() {
 }
 
 func run(ctx context.Context, startTime time.Time) error {
-	if err := InitResources(); err != nil {
+	if err := InitResources(ctx); err != nil {
 		return fmt.Errorf("failed to initialize resources: %w", err)
 	}
 
@@ -148,9 +149,9 @@ func run(ctx context.Context, startTime time.Time) error {
 		model.InitBatchUpdater()
 	}
 
-	// Start daily quota reset cron job
+	// Start daily quota reset cron job with context for graceful shutdown
 	if os.Getenv("DAILY_QUOTA_ENABLED") != "false" {
-		model.StartDailyQuotaResetCron()
+		model.StartDailyQuotaResetCronWithContext(ctx)
 	}
 
 	// pprof server
@@ -195,11 +196,15 @@ func run(ctx context.Context, startTime time.Time) error {
 
 	// Initialize session store
 	store := cookie.NewStore([]byte(common.SessionSecret))
+	sessionSecure := os.Getenv("GIN_MODE") == "release"
+	if envSecure := os.Getenv("SESSION_SECURE"); envSecure != "" {
+		sessionSecure = envSecure == "true"
+	}
 	store.Options(sessions.Options{
 		Path:     "/",
 		MaxAge:   7776000, // 90 days
 		HttpOnly: true,
-		Secure:   false,
+		Secure:   sessionSecure,
 		SameSite: http.SameSiteLaxMode,
 	})
 	engine.Use(sessions.Sessions("session", store))
@@ -291,7 +296,7 @@ func InjectGoogleAnalytics() {
 	indexPage = bytes.ReplaceAll(indexPage, []byte("<!--Google Analytics-->\n"), []byte(analyticsInject))
 }
 
-func InitResources() error {
+func InitResources(ctx context.Context) error {
 	// Initialize resources here if needed
 	// This is a placeholder function for future resource initialization
 	err := godotenv.Load(".env")
@@ -304,7 +309,13 @@ func InitResources() error {
 	// 加载环境变量
 	common.InitEnv()
 
+	// Initialize structured logging from env vars (LOG_FORMAT, LOG_LEVEL)
+	common.InitSlog(common.SlogConfigFromEnv())
+
 	logger.SetupLogger()
+
+	// Load centralized config and log effective values
+	common.SysLog(config.Get().PrintEffective())
 
 	// Initialize model settings
 	ratio_setting.InitRatioSettings()
@@ -350,7 +361,7 @@ func InitResources() error {
 	} else if search.IsEnabled() {
 		// Initialize search sync mechanism
 		// 初始化搜索同步机制
-		err = search.InitSync()
+		err = search.InitSyncWithContext(ctx)
 		if err != nil {
 			common.SysError(fmt.Sprintf("Failed to initialize Meilisearch sync: %v", err))
 		}
@@ -362,7 +373,7 @@ func InitResources() error {
 
 	// Start subscription cron jobs
 	// 启动订阅定时任务
-	model.StartSubscriptionCronJobs()
+	model.StartSubscriptionCronJobsWithContext(ctx)
 
 	// Initialize Zitadel authentication (multi-tenant OAuth)
 	// 初始化 Zitadel 认证（多租户 OAuth）

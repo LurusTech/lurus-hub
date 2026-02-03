@@ -12,7 +12,8 @@ import (
 
 type Token struct {
 	Id                 int            `json:"id"`
-	UserId             int            `json:"user_id" gorm:"index"`
+	UserId             int            `json:"user_id" gorm:"index;index:idx_tenant_user,priority:2"`
+	TenantId           string         `json:"tenant_id" gorm:"type:varchar(36);index;index:idx_tenant_user,priority:1;default:'default'"` // Tenant isolation
 	Key                string         `json:"key" gorm:"type:char(48);uniqueIndex"`
 	Status             int            `json:"status" gorm:"default:1"`
 	Name               string         `json:"name" gorm:"index" `

@@ -374,16 +374,62 @@ function _MarkdownContent(props) {
       components={{
         pre: PreCode,
         code: CustomCode,
-        p: (pProps) => (
-          <p
-            {...pProps}
-            dir='auto'
-            style={{
-              lineHeight: '1.6',
-              color: isUserMessage ? 'white' : 'inherit',
-            }}
-          />
-        ),
+        img: (imgProps) => {
+          const { src, alt, ...rest } = imgProps;
+          const isDataUri = src && src.startsWith('data:');
+          return (
+            <img
+              src={src}
+              alt={alt || 'image'}
+              {...rest}
+              style={{
+                maxWidth: '100%',
+                height: 'auto',
+                borderRadius: '8px',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                margin: '12px 0',
+                display: 'block',
+              }}
+              loading={isDataUri ? 'eager' : 'lazy'}
+              onError={(e) => {
+                e.target.style.display = 'none';
+                if (e.target.nextSibling) {
+                  e.target.nextSibling.style.display = 'block';
+                }
+              }}
+            />
+          );
+        },
+        p: (pProps) => {
+          const { children, ...restPProps } = pProps;
+          // If the paragraph contains only an image, render without <p> wrapper
+          // to avoid HTML nesting issues and ensure proper image display
+          const childArray = React.Children.toArray(children);
+          if (
+            childArray.length === 1 &&
+            childArray[0]?.type === 'img'
+          ) {
+            return <>{children}</>;
+          }
+          if (
+            childArray.length === 1 &&
+            childArray[0]?.props?.src
+          ) {
+            return <>{children}</>;
+          }
+          return (
+            <p
+              {...restPProps}
+              dir='auto'
+              style={{
+                lineHeight: '1.6',
+                color: isUserMessage ? 'white' : 'inherit',
+              }}
+            >
+              {children}
+            </p>
+          );
+        },
         a: (aProps) => {
           const href = aProps.href || '';
           if (/\.(aac|mp3|opus|wav)$/.test(href)) {

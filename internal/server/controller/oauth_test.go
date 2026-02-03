@@ -20,9 +20,12 @@ func init() {
 // ============================================================================
 
 func TestOAuthState_GenerateAndParse(t *testing.T) {
-	state, err := generateOAuthState("my-tenant", "/dashboard")
+	state, nonce, err := generateOAuthState("my-tenant", "/dashboard")
 	if err != nil {
 		t.Fatalf("generateOAuthState() returned error: %v", err)
+	}
+	if nonce == "" {
+		t.Fatal("expected non-empty nonce from generateOAuthState")
 	}
 	if state == "" {
 		t.Fatal("expected non-empty state string")
@@ -47,13 +50,18 @@ func TestOAuthState_GenerateAndParse(t *testing.T) {
 }
 
 func TestOAuthState_UniqueNonce(t *testing.T) {
-	state1, err := generateOAuthState("tenant-a", "/page1")
+	state1, nonce1, err := generateOAuthState("tenant-a", "/page1")
 	if err != nil {
 		t.Fatalf("generateOAuthState() error: %v", err)
 	}
-	state2, err := generateOAuthState("tenant-a", "/page1")
+	state2, nonce2, err := generateOAuthState("tenant-a", "/page1")
 	if err != nil {
 		t.Fatalf("generateOAuthState() error: %v", err)
+	}
+
+	// Verify returned nonces are unique
+	if nonce1 == nonce2 {
+		t.Error("expected different nonces from generateOAuthState calls")
 	}
 
 	if state1 == state2 {

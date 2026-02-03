@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/biz/service"
 	"github.com/QuantumNous/lurus-api/internal/data/model"
-	"github.com/QuantumNous/lurus-api/internal/pkg/search"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 )
@@ -54,68 +54,30 @@ func GetUserLogs(c *gin.Context) {
 
 func SearchAllLogs(c *gin.Context) {
 	keyword := c.Query("keyword")
+	logType, _ := strconv.Atoi(c.Query("type"))
+	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+	username := c.Query("username")
+	tokenName := c.Query("token_name")
+	modelName := c.Query("model_name")
+	channelID, _ := strconv.Atoi(c.Query("channel"))
+	group := c.Query("group")
+	page, _ := strconv.Atoi(c.Query("page"))
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
 
-	// Try Meilisearch first if enabled
-	// 如果启用,优先尝试 Meilisearch
-	if search.IsEnabled() {
-		// Parse search parameters
-		// 解析搜索参数
-		logType, _ := strconv.Atoi(c.Query("type"))
-		startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
-		endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
-		username := c.Query("username")
-		tokenName := c.Query("token_name")
-		modelName := c.Query("model_name")
-		channelID, _ := strconv.Atoi(c.Query("channel"))
-		group := c.Query("group")
-		page, _ := strconv.Atoi(c.Query("page"))
-		pageSize, _ := strconv.Atoi(c.Query("page_size"))
-
-		if page == 0 {
-			page = 1
-		}
-		if pageSize == 0 {
-			pageSize = 10
-		}
-
-		params := search.SearchLogsParams{
-			Keyword:        keyword,
-			Type:           logType,
-			StartTimestamp: startTimestamp,
-			EndTimestamp:   endTimestamp,
-			Username:       username,
-			TokenName:      tokenName,
-			ModelName:      modelName,
-			ChannelID:      channelID,
-			Group:          group,
-			Page:           page,
-			PageSize:       pageSize,
-		}
-
-		logs, total, err := search.SearchLogs(params)
-		if err == nil {
-			// Success with Meilisearch
-			// Meilisearch 搜索成功
-			c.JSON(http.StatusOK, gin.H{
-				"success": true,
-				"message": "Search results from Meilisearch",
-				"data": gin.H{
-					"items": logs,
-					"total": total,
-					"page":  page,
-				},
-			})
-			return
-		}
-
-		// Log error but fall back to database
-		// 记录错误但降级到数据库
-		common.SysLog("Meilisearch search failed, falling back to database: " + err.Error())
-	}
-
-	// Fallback to database search
-	// 降级到数据库搜索
-	logs, err := model.SearchAllLogs(keyword)
+	result, err := service.SearchLogs(service.LogSearchParams{
+		Keyword:        keyword,
+		LogType:        logType,
+		StartTimestamp: startTimestamp,
+		EndTimestamp:   endTimestamp,
+		Username:       username,
+		TokenName:      tokenName,
+		ModelName:      modelName,
+		ChannelID:      channelID,
+		Group:          group,
+		Page:           page,
+		PageSize:       pageSize,
+	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -123,77 +85,40 @@ func SearchAllLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    logs,
+		"data": gin.H{
+			"items": result.Items,
+			"total": result.Total,
+			"page":  result.Page,
+		},
 	})
-	return
 }
 
 func SearchUserLogs(c *gin.Context) {
 	keyword := c.Query("keyword")
 	userId := c.GetInt("id")
+	username := c.GetString("username")
+	logType, _ := strconv.Atoi(c.Query("type"))
+	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+	tokenName := c.Query("token_name")
+	modelName := c.Query("model_name")
+	group := c.Query("group")
+	page, _ := strconv.Atoi(c.Query("page"))
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
 
-	// Try Meilisearch first if enabled
-	// 如果启用,优先尝试 Meilisearch
-	if search.IsEnabled() {
-		// Get username for filtering
-		// 获取用户名用于过滤
-		username := c.GetString("username")
-
-		// Parse search parameters
-		// 解析搜索参数
-		logType, _ := strconv.Atoi(c.Query("type"))
-		startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
-		endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
-		tokenName := c.Query("token_name")
-		modelName := c.Query("model_name")
-		group := c.Query("group")
-		page, _ := strconv.Atoi(c.Query("page"))
-		pageSize, _ := strconv.Atoi(c.Query("page_size"))
-
-		if page == 0 {
-			page = 1
-		}
-		if pageSize == 0 {
-			pageSize = 10
-		}
-
-		params := search.SearchLogsParams{
-			Keyword:        keyword,
-			Type:           logType,
-			StartTimestamp: startTimestamp,
-			EndTimestamp:   endTimestamp,
-			Username:       username, // Filter by current user
-			TokenName:      tokenName,
-			ModelName:      modelName,
-			Group:          group,
-			Page:           page,
-			PageSize:       pageSize,
-		}
-
-		logs, total, err := search.SearchLogs(params)
-		if err == nil {
-			// Success with Meilisearch
-			// Meilisearch 搜索成功
-			c.JSON(http.StatusOK, gin.H{
-				"success": true,
-				"message": "Search results from Meilisearch",
-				"data": gin.H{
-					"items": logs,
-					"total": total,
-					"page":  page,
-				},
-			})
-			return
-		}
-
-		// Log error but fall back to database
-		// 记录错误但降级到数据库
-		common.SysLog("Meilisearch search failed, falling back to database: " + err.Error())
-	}
-
-	// Fallback to database search
-	// 降级到数据库搜索
-	logs, err := model.SearchUserLogs(userId, keyword)
+	result, err := service.SearchLogs(service.LogSearchParams{
+		Keyword:        keyword,
+		UserId:         userId,
+		Username:       username,
+		LogType:        logType,
+		StartTimestamp: startTimestamp,
+		EndTimestamp:   endTimestamp,
+		TokenName:      tokenName,
+		ModelName:      modelName,
+		Group:          group,
+		Page:           page,
+		PageSize:       pageSize,
+	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -201,9 +126,12 @@ func SearchUserLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    logs,
+		"data": gin.H{
+			"items": result.Items,
+			"total": result.Total,
+			"page":  result.Page,
+		},
 	})
-	return
 }
 
 func GetLogByKey(c *gin.Context) {

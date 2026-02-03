@@ -287,3 +287,103 @@ func TestListChannelsV2_Pagination(t *testing.T) {
 		t.Errorf("expected 5 channels on second page, got %d", len(channels))
 	}
 }
+
+func TestListChannelsV2_KeywordSearch(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	SeedV2Channel(t, ctx, "Production GPT")
+	SeedV2Channel(t, ctx, "Staging GPT")
+	SeedV2Channel(t, ctx, "Production Claude")
+
+	// Search with keyword "GPT"
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodGet, "/api/v2/test-tenant/channels?keyword=GPT", nil, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusOK)
+	resp := ParseV2Response(t, w)
+	if resp["success"] != true {
+		t.Fatalf("expected success=true, got %v", resp["success"])
+	}
+	data, ok := resp["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected data object in response")
+	}
+	total := int(data["total"].(float64))
+	if total != 2 {
+		t.Errorf("expected 2 channels matching 'GPT', got %d", total)
+	}
+}
+
+func TestGetChannelV2_InvalidID(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodGet, "/api/v2/test-tenant/channels/invalid", nil, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Invalid channel ID" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestUpdateChannelV2_NotFound(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	body := map[string]interface{}{
+		"name": "Ghost Channel",
+	}
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodPut, "/api/v2/test-tenant/channels/99999", body, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusNotFound)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Channel not found" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestUpdateChannelV2_NameTooLong(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	channel := SeedV2Channel(t, ctx, "Original Channel")
+
+	longName := make([]byte, 101)
+	for i := range longName {
+		longName[i] = 'a'
+	}
+
+	body := map[string]interface{}{
+		"name": string(longName),
+	}
+	path := fmt.Sprintf("/api/v2/test-tenant/channels/%d", channel.Id)
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodPut, path, body, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Channel name too long (max 100 characters)" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestDeleteChannelV2_InvalidID(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodDelete, "/api/v2/test-tenant/channels/invalid", nil, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Invalid channel ID" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}

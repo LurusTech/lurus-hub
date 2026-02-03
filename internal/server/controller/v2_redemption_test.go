@@ -336,3 +336,68 @@ func TestListRedemptionsV2_Pagination(t *testing.T) {
 		t.Errorf("expected total=15, got %d", total)
 	}
 }
+
+func TestRedeemCodeV2_MissingCode(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Send request with empty code field
+	body := map[string]string{
+		"code": "",
+	}
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPost, "/api/v2/test-tenant/redeem", body, nil)
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+}
+
+func TestCreateRedemptionV2_QuotaExceedsMax(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Quota exceeds maximum allowed value (max = 1e9 * QuotaPerUnit = 5e14)
+	body := map[string]interface{}{
+		"name":  "Excessive Quota",
+		"quota": 999999999999999, // Above 5e14 max
+		"count": 1,
+	}
+
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodPost, "/api/v2/test-tenant/redemptions", body, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Quota value exceeds maximum allowed" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestDeleteRedemptionV2_InvalidID(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodDelete, "/api/v2/test-tenant/redemptions/invalid", nil, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Invalid redemption ID" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+func TestDeleteRedemptionV2_NotFound(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodDelete, "/api/v2/test-tenant/redemptions/99999", nil, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusNotFound)
+	resp := ParseV2Response(t, w)
+	if msg, ok := resp["message"].(string); ok {
+		if msg != "Redemption code not found" {
+			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}

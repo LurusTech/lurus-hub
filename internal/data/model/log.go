@@ -20,8 +20,9 @@ import (
 
 type Log struct {
 	Id               int    `json:"id" gorm:"index:idx_created_at_id,priority:1"`
-	UserId           int    `json:"user_id" gorm:"index"`
-	CreatedAt        int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:2;index:idx_created_at_type"`
+	UserId           int    `json:"user_id" gorm:"index;index:idx_tenant_user_created,priority:2"`
+	TenantId         string `json:"tenant_id" gorm:"type:varchar(36);index;index:idx_tenant_user_created,priority:1;default:'default'"` // Tenant isolation
+	CreatedAt        int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:2;index:idx_created_at_type;index:idx_tenant_user_created,priority:3"`
 	Type             int    `json:"type" gorm:"index:idx_created_at_type"`
 	Content          string `json:"content"`
 	Username         string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
@@ -447,4 +448,118 @@ func DeleteOldLog(ctx context.Context, targetTimestamp int64, limit int) (int64,
 	}
 
 	return total, nil
+}
+
+// ============================================================================
+// V2 API Log Query Functions with Tenant Support
+// ============================================================================
+
+// LogQueryParams contains parameters for log queries
+type LogQueryParams struct {
+	UserID     int    // Filter by user ID (0 for all users)
+	TenantID   string // Filter by tenant ID (required for tenant isolation)
+	LogType    int    // Filter by log type (0 for all types)
+	ModelName  string // Filter by model name
+	StartTime  int64  // Filter logs after this timestamp
+	EndTime    int64  // Filter logs before this timestamp
+	TokenName  string // Filter by token name
+	Username   string // Filter by username
+	Offset     int    // Pagination offset
+	Limit      int    // Pagination limit
+}
+
+// GetUserLogsWithParams retrieves logs for a user with tenant isolation
+func GetUserLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, err error) {
+	tx := LOG_DB.Model(&Log{})
+
+	// Apply tenant filter (required for isolation)
+	if params.TenantID != "" {
+		tx = tx.Where("tenant_id = ?", params.TenantID)
+	}
+
+	// Apply user filter
+	if params.UserID > 0 {
+		tx = tx.Where("user_id = ?", params.UserID)
+	}
+
+	// Apply type filter
+	if params.LogType > 0 {
+		tx = tx.Where("type = ?", params.LogType)
+	}
+
+	// Apply model name filter
+	if params.ModelName != "" {
+		tx = tx.Where("model_name = ?", params.ModelName)
+	}
+
+	// Apply time range filters
+	if params.StartTime > 0 {
+		tx = tx.Where("created_at >= ?", params.StartTime)
+	}
+	if params.EndTime > 0 {
+		tx = tx.Where("created_at <= ?", params.EndTime)
+	}
+
+	// Apply token name filter
+	if params.TokenName != "" {
+		tx = tx.Where("token_name = ?", params.TokenName)
+	}
+
+	// Count total matching records
+	err = tx.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Apply pagination and fetch results
+	err = tx.Order("created_at DESC").Offset(params.Offset).Limit(params.Limit).Find(&logs).Error
+	return logs, total, err
+}
+
+// GetTenantLogsWithParams retrieves all logs for a tenant (admin view)
+func GetTenantLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, err error) {
+	tx := LOG_DB.Model(&Log{})
+
+	// Apply tenant filter (required for isolation)
+	if params.TenantID != "" {
+		tx = tx.Where("tenant_id = ?", params.TenantID)
+	}
+
+	// Apply type filter
+	if params.LogType > 0 {
+		tx = tx.Where("type = ?", params.LogType)
+	}
+
+	// Apply model name filter
+	if params.ModelName != "" {
+		tx = tx.Where("model_name = ?", params.ModelName)
+	}
+
+	// Apply time range filters
+	if params.StartTime > 0 {
+		tx = tx.Where("created_at >= ?", params.StartTime)
+	}
+	if params.EndTime > 0 {
+		tx = tx.Where("created_at <= ?", params.EndTime)
+	}
+
+	// Apply token name filter
+	if params.TokenName != "" {
+		tx = tx.Where("token_name = ?", params.TokenName)
+	}
+
+	// Apply username filter
+	if params.Username != "" {
+		tx = tx.Where("username = ?", params.Username)
+	}
+
+	// Count total matching records
+	err = tx.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Apply pagination and fetch results
+	err = tx.Order("created_at DESC").Offset(params.Offset).Limit(params.Limit).Find(&logs).Error
+	return logs, total, err
 }

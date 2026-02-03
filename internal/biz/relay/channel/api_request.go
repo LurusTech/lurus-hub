@@ -11,6 +11,7 @@ import (
 	"time"
 
 	common2 "github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/config"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/biz/relay/common"
 	"github.com/QuantumNous/lurus-api/internal/biz/relay/constant"
@@ -167,7 +168,7 @@ func startPingKeepAlive(c *gin.Context, pingInterval time.Duration) context.Canc
 		}()
 
 		if pingInterval <= 0 {
-			pingInterval = helper.DefaultPingInterval
+			pingInterval = config.Get().Relay.PingInterval
 		}
 
 		ticker := time.NewTicker(pingInterval)

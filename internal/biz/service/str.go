@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+
 	goahocorasick "github.com/anknown/ahocorasick"
 )
 
@@ -64,7 +66,7 @@ func InitAc(dict []string) *goahocorasick.Machine {
 	m := new(goahocorasick.Machine)
 	runes := readRunes(dict)
 	if err := m.Build(runes); err != nil {
-		fmt.Println(err)
+		common.SysError("aho-corasick build error: " + err.Error())
 		return nil
 	}
 	return m

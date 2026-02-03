@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -69,6 +70,11 @@ type JWKSManager struct {
 	lastUpdate    time.Time
 	updateFailed  bool
 	refreshTicker *time.Ticker
+	// refreshing prevents concurrent refresh attempts (race condition fix)
+	refreshing    bool
+	refreshMu     sync.Mutex
+	// minRefreshInterval prevents too frequent refreshes on key not found
+	minRefreshInterval time.Duration
 }
 
 // zitadelHTTPClient is the HTTP client used for JWKS fetching.
@@ -124,11 +130,19 @@ func InitZitadelAuth() error {
 	return nil
 }
 
-// NewJWKSManager creates a new JWKS Manager instance
+// NewJWKSManager creates a new JWKS Manager instance.
+// Deprecated: Use NewJWKSManagerWithContext instead.
 func NewJWKSManager(jwksURI string) *JWKSManager {
+	return NewJWKSManagerWithContext(context.Background(), jwksURI)
+}
+
+// NewJWKSManagerWithContext creates a new JWKS Manager instance with context support.
+// The background refresh goroutine exits when ctx is cancelled.
+func NewJWKSManagerWithContext(ctx context.Context, jwksURI string) *JWKSManager {
 	m := &JWKSManager{
-		jwksURI:    jwksURI,
-		publicKeys: make(map[string]*rsa.PublicKey),
+		jwksURI:            jwksURI,
+		publicKeys:         make(map[string]*rsa.PublicKey),
+		minRefreshInterval: 30 * time.Second, // Prevent refresh more than once per 30 seconds
 	}
 
 	// Initial key fetch
@@ -138,8 +152,10 @@ func NewJWKSManager(jwksURI string) *JWKSManager {
 		m.updateFailed = true
 	}
 
-	// Start background refresh
-	go m.autoRefresh()
+	// Start background refresh with context
+	common.SafeGoWithContext(ctx, func(c context.Context) {
+		m.autoRefreshWithContext(c)
+	})
 
 	return m
 }
@@ -198,17 +214,29 @@ func (m *JWKSManager) refreshKeys() error {
 	return nil
 }
 
-// autoRefresh periodically refreshes JWKS keys
-func (m *JWKSManager) autoRefresh() {
+// autoRefreshWithContext periodically refreshes JWKS keys with context support
+func (m *JWKSManager) autoRefreshWithContext(ctx context.Context) {
 	m.refreshTicker = time.NewTicker(jwksRefreshInterval)
 	defer m.refreshTicker.Stop()
 
-	for range m.refreshTicker.C {
-		err := m.refreshKeys()
-		if err != nil {
-			common.SysError(fmt.Sprintf("Auto-refresh JWKS failed: %v", err))
+	for {
+		select {
+		case <-ctx.Done():
+			common.SysLog("JWKS auto-refresh stopped")
+			return
+		case <-m.refreshTicker.C:
+			err := m.refreshKeys()
+			if err != nil {
+				common.SysError(fmt.Sprintf("Auto-refresh JWKS failed: %v", err))
+			}
 		}
 	}
+}
+
+// autoRefresh periodically refreshes JWKS keys
+// Deprecated: Use autoRefreshWithContext instead.
+func (m *JWKSManager) autoRefresh() {
+	m.autoRefreshWithContext(context.Background())
 }
 
 // getKey retrieves an RSA public key by Key ID (kid)
@@ -221,6 +249,71 @@ func (m *JWKSManager) getKey(kid string) (*rsa.PublicKey, error) {
 	}
 
 	return nil, fmt.Errorf("public key not found for kid: %s", kid)
+}
+
+// tryRefreshKeys attempts to refresh keys with protection against concurrent refreshes
+// Returns true if refresh was performed (or already in progress), false if skipped due to rate limiting
+func (m *JWKSManager) tryRefreshKeys() (refreshed bool, err error) {
+	m.refreshMu.Lock()
+
+	// Check if already refreshing
+	if m.refreshing {
+		m.refreshMu.Unlock()
+		// Wait a bit for ongoing refresh to complete
+		time.Sleep(100 * time.Millisecond)
+		return true, nil // Assume ongoing refresh will succeed
+	}
+
+	// Check if refreshed too recently (rate limiting)
+	m.mu.RLock()
+	lastUpdate := m.lastUpdate
+	m.mu.RUnlock()
+
+	if time.Since(lastUpdate) < m.minRefreshInterval {
+		m.refreshMu.Unlock()
+		return false, nil // Skipped due to rate limiting
+	}
+
+	// Mark as refreshing
+	m.refreshing = true
+	m.refreshMu.Unlock()
+
+	// Ensure we clear the refreshing flag when done
+	defer func() {
+		m.refreshMu.Lock()
+		m.refreshing = false
+		m.refreshMu.Unlock()
+	}()
+
+	// Perform the actual refresh
+	err = m.refreshKeys()
+	return true, err
+}
+
+// getKeyWithRefresh retrieves a key, attempting to refresh if not found
+// This method safely handles concurrent refresh attempts
+func (m *JWKSManager) getKeyWithRefresh(kid string) (*rsa.PublicKey, error) {
+	// First attempt - try to get key
+	key, err := m.getKey(kid)
+	if err == nil {
+		return key, nil
+	}
+
+	// Key not found, try to refresh
+	refreshed, refreshErr := m.tryRefreshKeys()
+	if refreshErr != nil {
+		common.SysError(fmt.Sprintf("Failed to refresh JWKS: %v", refreshErr))
+		// Return original error if refresh failed
+		return nil, err
+	}
+
+	if !refreshed {
+		// Rate limited, return original error
+		return nil, fmt.Errorf("public key not found for kid: %s (refresh rate limited)", kid)
+	}
+
+	// Second attempt - try to get key after refresh
+	return m.getKey(kid)
 }
 
 // jwkToRSAPublicKey converts a JWK to RSA public key
@@ -301,20 +394,11 @@ func ZitadelAuth() gin.HandlerFunc {
 				return nil, errors.New("missing kid in token header")
 			}
 
-			// Get public key from JWKS Manager
-			publicKey, err := jwksManager.getKey(kid)
+			// Get public key from JWKS Manager with safe refresh on key not found
+			// Uses getKeyWithRefresh to prevent concurrent refresh race conditions
+			publicKey, err := jwksManager.getKeyWithRefresh(kid)
 			if err != nil {
-				// Try to refresh keys if key not found
-				refreshErr := jwksManager.refreshKeys()
-				if refreshErr != nil {
-					return nil, fmt.Errorf("failed to refresh JWKS: %w", err)
-				}
-
-				// Retry getting key after refresh
-				publicKey, err = jwksManager.getKey(kid)
-				if err != nil {
-					return nil, err
-				}
+				return nil, err
 			}
 
 			return publicKey, nil

@@ -200,9 +200,16 @@ func CreateSubscription(c *gin.Context) {
 	}
 	expiresAt := startTime.AddDate(0, 0, plan.Days)
 
+	// Get tenant ID from context (defaults to "default" for v1 API)
+	tenantId := common.GetContextKeyString(c, "tenant_id")
+	if tenantId == "" {
+		tenantId = "default"
+	}
+
 	// Create subscription record
 	sub := &model.Subscription{
 		UserId:        userId,
+		TenantId:      tenantId,
 		PlanCode:      plan.Code,
 		PlanName:      plan.Name,
 		Status:        model.SubscriptionStatusPending,
@@ -486,8 +493,15 @@ func AdminCreateSubscription(c *gin.Context) {
 	}
 	expiresAt := startTime.AddDate(0, 0, days)
 
+	// Get tenant ID from context (defaults to "default" for v1 API)
+	tenantId := common.GetContextKeyString(c, "tenant_id")
+	if tenantId == "" {
+		tenantId = "default"
+	}
+
 	sub := &model.Subscription{
 		UserId:        req.UserId,
+		TenantId:      tenantId,
 		PlanCode:      plan.Code,
 		PlanName:      plan.Name,
 		Status:        model.SubscriptionStatusActive,

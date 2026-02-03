@@ -454,6 +454,11 @@ func buildZitadelAuthURL(orgID string, state string, nonce string, pkceData *PKC
 		params.Set("organization", orgID)
 	}
 
+	// Force fresh login to avoid stale session interference
+	// (Zitadel's user selection can fail with AuthRequest.NotFound
+	// when an existing console session conflicts with the new auth request)
+	params.Set("prompt", "login")
+
 	// Add PKCE parameters if enabled
 	if pkceData != nil {
 		params.Set("code_challenge", pkceData.CodeChallenge)

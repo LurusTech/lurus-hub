@@ -238,9 +238,10 @@ func ZitadelCallback(c *gin.Context) {
 		return
 	}
 
-	// Validate ID token if present
+	// Validate ID token (required for user identity)
+	var claims *IDTokenClaims
 	if tokenResp.IDToken != "" {
-		claims, err := validateIDToken(tokenResp.IDToken, expectedNonce)
+		claims, err = validateIDToken(tokenResp.IDToken, expectedNonce)
 		if err != nil {
 			common.SysError(fmt.Sprintf("ID token validation failed: %v", err))
 			c.JSON(http.StatusUnauthorized, gin.H{
@@ -250,22 +251,103 @@ func ZitadelCallback(c *gin.Context) {
 			return
 		}
 
-		// Log successful validation (in debug mode)
 		if os.Getenv("ZITADEL_DEBUG_LOGGING") == "true" {
 			common.SysLog(fmt.Sprintf("ID token validated for user: %s (org: %s)", claims.Email, claims.OrgID))
 		}
+	}
+
+	if claims == nil || claims.Subject == "" {
+		common.SysError("ID token missing or does not contain subject claim")
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "ID token is required for authentication",
+		})
+		return
+	}
+
+	// Find or create tenant from Zitadel organization
+	tenant, err := model.GetTenantBySlug(stateData.TenantSlug)
+	if err != nil && os.Getenv("ZITADEL_AUTO_CREATE_TENANT") == "true" && claims.OrgID != "" {
+		orgDomain := claims.OrgDomain
+		if orgDomain == "" {
+			orgDomain = stateData.TenantSlug
+		}
+		orgName := orgDomain
+		tenant, err = model.CreateTenantFromZitadel(claims.OrgID, orgDomain, orgName)
+		if err != nil {
+			common.SysError(fmt.Sprintf("Failed to auto-create tenant: %v", err))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to create tenant",
+			})
+			return
+		}
+		common.SysLog(fmt.Sprintf("Auto-created tenant: %s (org: %s)", tenant.Slug, tenant.ZitadelOrgID))
+	}
+	if err != nil || tenant == nil {
+		common.SysError(fmt.Sprintf("Tenant not found: %s", stateData.TenantSlug))
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"message": "Tenant not found",
+		})
+		return
+	}
+
+	// Find or create local user from Zitadel identity
+	zitadelClaims := &model.ZitadelUserClaims{
+		Sub:               claims.Subject,
+		Email:             claims.Email,
+		EmailVerified:     claims.EmailVerified,
+		Name:              claims.Name,
+		PreferredUsername:  claims.PreferredUsername,
+		OrgID:             claims.OrgID,
+		OrgDomain:         claims.OrgDomain,
+	}
+
+	user, _, err := model.CreateUserFromZitadelClaims(zitadelClaims, tenant.Id)
+	if err != nil {
+		if os.Getenv("ZITADEL_AUTO_CREATE_USER") != "true" {
+			common.SysError(fmt.Sprintf("User not found and auto-create disabled: %v", err))
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": "User not registered for this tenant",
+			})
+			return
+		}
+		common.SysError(fmt.Sprintf("Failed to create user from Zitadel claims: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to create user account",
+		})
+		return
+	}
+
+	if user.Status != common.UserStatusEnabled {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "User account is disabled",
+		})
+		return
 	}
 
 	// Clear PKCE and nonce from session (one-time use)
 	session.Delete("pkce_code_verifier")
 	session.Delete("oauth_nonce")
 
-	// Create session (for v1 API compatibility)
+	// Set V1 session variables (required for frontend authentication)
+	session.Set("id", user.Id)
+	session.Set("username", user.Username)
+	session.Set("role", user.Role)
+	session.Set("status", user.Status)
+	session.Set("group", user.Group)
+
+	// Store OAuth tokens for V2 API use
 	session.Set("oauth_access_token", tokenResp.AccessToken)
 	session.Set("oauth_refresh_token", tokenResp.RefreshToken)
 	session.Set("oauth_id_token", tokenResp.IDToken)
 	session.Set("oauth_token_expires_at", time.Now().Add(time.Duration(tokenResp.ExpiresIn)*time.Second).Unix())
 	session.Set("tenant_slug", stateData.TenantSlug)
+
 	if err := session.Save(); err != nil {
 		common.SysError(fmt.Sprintf("Failed to save session: %v", err))
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -275,19 +357,12 @@ func ZitadelCallback(c *gin.Context) {
 		return
 	}
 
+	common.SysLog(fmt.Sprintf("OAuth login successful: user=%s (id=%d) tenant=%s", user.Username, user.Id, stateData.TenantSlug))
+
 	// Redirect to original URL
 	redirectURL := stateData.RedirectURL
 	if redirectURL == "" {
 		redirectURL = "/dashboard"
-	}
-
-	// Add tenant slug to redirect URL
-	if !strings.Contains(redirectURL, "tenant=") {
-		separator := "?"
-		if strings.Contains(redirectURL, "?") {
-			separator = "&"
-		}
-		redirectURL = redirectURL + separator + "tenant=" + stateData.TenantSlug
 	}
 
 	c.Redirect(http.StatusFound, redirectURL)

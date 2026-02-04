@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -246,12 +247,16 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 	// If password is required, generate a random strong password
 	user.Password = GenerateRandomPassword()
 
-	err = DB.Create(user).Error
+	// Use WithTenantID to inject tenant context for GORM beforeCreate hook
+	tenantDB := WithTenantID(DB, tenantID)
+
+	err = tenantDB.Create(user).Error
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Create identity mapping
+	// Create identity mapping (user_identity_mapping table does not have
+	// tenant isolation plugin — it manages tenant_id explicitly)
 	mapping, err := CreateUserMapping(
 		user.Id,
 		claims.Sub,
@@ -262,7 +267,7 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 	)
 	if err != nil {
 		// Rollback user creation if mapping fails
-		DB.Delete(user)
+		tenantDB.Delete(user)
 		return nil, nil, err
 	}
 
@@ -273,15 +278,16 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 func ensureUniqueUsername(baseUsername string, tenantID string) string {
 	username := baseUsername
 	suffix := 1
+	tenantDB := WithTenantID(DB, tenantID)
 
 	for {
 		var count int64
-		DB.Model(&User{}).Where("username = ? AND tenant_id = ?", username, tenantID).Count(&count)
+		tenantDB.Model(&User{}).Where("username = ?", username).Count(&count)
 		if count == 0 {
 			return username
 		}
-		username = baseUsername + "_" + string(rune(suffix))
 		suffix++
+		username = baseUsername + fmt.Sprintf("_%d", suffix)
 	}
 }
 

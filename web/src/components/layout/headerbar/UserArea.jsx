@@ -18,7 +18,6 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useRef } from 'react';
-import { Link } from 'react-router-dom';
 import { Avatar, Button, Dropdown, Typography } from '@douyinfe/semi-ui';
 import { ChevronDown } from 'lucide-react';
 import {
@@ -170,7 +169,7 @@ const UserArea = ({
 
     return (
       <div className='flex items-center'>
-        <Link to='/login' className='flex'>
+        <a href='/api/v2/lurus/auth/login?redirect_url=/oauth/zitadel' className='flex'>
           <Button
             theme='borderless'
             type='tertiary'
@@ -178,10 +177,10 @@ const UserArea = ({
           >
             <span className={loginButtonTextSpanClass}>{t('登录')}</span>
           </Button>
-        </Link>
+        </a>
         {showRegisterButton && (
           <div className='hidden md:block'>
-            <Link to='/register' className='flex -ml-px'>
+            <a href='/api/v2/lurus/auth/login?redirect_url=/oauth/zitadel&register=true' className='flex -ml-px'>
               <Button
                 theme='solid'
                 type='primary'
@@ -189,7 +188,7 @@ const UserArea = ({
               >
                 <span className={registerButtonTextSpanClass}>{t('注册')}</span>
               </Button>
-            </Link>
+            </a>
           </div>
         )}
       </div>

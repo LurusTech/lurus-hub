@@ -26,6 +26,10 @@ func SetApiV2Router(router *gin.Engine) {
 		// OAuth 回调 - 处理 Zitadel OAuth 回调
 		apiV2.GET("/oauth/callback", controller.ZitadelCallback)
 
+		// Session info - returns current user data for frontend after OAuth callback
+		// Session 信息 - OAuth 回调后返回当前用户数据供前端使用
+		apiV2.GET("/auth/session-info", controller.GetSessionInfo)
+
 		// OAuth logout - logs out from Zitadel
 		// OAuth 登出 - 从 Zitadel 登出
 		apiV2.POST("/oauth/logout", controller.ZitadelLogout)

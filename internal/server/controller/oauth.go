@@ -154,8 +154,14 @@ func ZitadelLoginRedirect(c *gin.Context) {
 		return
 	}
 
+	// Determine prompt mode: "create" for registration, "login" for fresh login
+	prompt := "login"
+	if c.Query("register") == "true" {
+		prompt = "create"
+	}
+
 	// Build Zitadel authorization URL
-	authURL := buildZitadelAuthURL(tenant.ZitadelOrgID, state, nonce, pkceData)
+	authURL := buildZitadelAuthURL(tenant.ZitadelOrgID, state, nonce, pkceData, prompt)
 
 	// Redirect to Zitadel login page
 	c.Redirect(http.StatusFound, authURL)
@@ -359,13 +365,59 @@ func ZitadelCallback(c *gin.Context) {
 
 	common.SysLog(fmt.Sprintf("OAuth login successful: user=%s (id=%d) tenant=%s", user.Username, user.Id, stateData.TenantSlug))
 
-	// Redirect to original URL
+	// Redirect to frontend OAuth callback page to complete login
 	redirectURL := stateData.RedirectURL
-	if redirectURL == "" {
-		redirectURL = "/dashboard"
+	if redirectURL == "" || redirectURL == "/dashboard" {
+		redirectURL = "/oauth/zitadel"
 	}
 
 	c.Redirect(http.StatusFound, redirectURL)
+}
+
+// GetSessionInfo returns current session user info for frontend integration
+// after OAuth callback. No auth middleware required - session itself is the proof.
+// Route: GET /api/v2/auth/session-info
+func GetSessionInfo(c *gin.Context) {
+	session := sessions.Default(c)
+	id := session.Get("id")
+	if id == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "Not logged in",
+		})
+		return
+	}
+
+	userId, ok := id.(int)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "Invalid session",
+		})
+		return
+	}
+
+	user, err := model.GetUserById(userId, false)
+	if err != nil {
+		common.SysError(fmt.Sprintf("GetSessionInfo: failed to get user %d: %v", userId, err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to load user data",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"id":           user.Id,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"role":         user.Role,
+			"status":       user.Status,
+			"group":        user.Group,
+		},
+	})
 }
 
 // ZitadelLogout logs out user from Zitadel and clears session
@@ -506,7 +558,8 @@ func parseOAuthState(state string) (*OAuthStateData, error) {
 }
 
 // buildZitadelAuthURL builds the Zitadel authorization URL with PKCE and nonce support
-func buildZitadelAuthURL(orgID string, state string, nonce string, pkceData *PKCEData) string {
+// prompt: "login" for fresh login, "create" for registration
+func buildZitadelAuthURL(orgID string, state string, nonce string, pkceData *PKCEData, prompt string) string {
 	issuer := os.Getenv("ZITADEL_ISSUER")
 	clientID := os.Getenv("ZITADEL_CLIENT_ID")
 	redirectURI := os.Getenv("ZITADEL_REDIRECT_URI")
@@ -529,10 +582,12 @@ func buildZitadelAuthURL(orgID string, state string, nonce string, pkceData *PKC
 		params.Set("organization", orgID)
 	}
 
-	// Force fresh login to avoid stale session interference
-	// (Zitadel's user selection can fail with AuthRequest.NotFound
-	// when an existing console session conflicts with the new auth request)
-	params.Set("prompt", "login")
+	// Set prompt mode:
+	// "login" - force fresh login (avoids stale session interference)
+	// "create" - show registration form
+	if prompt != "" {
+		params.Set("prompt", prompt)
+	}
 
 	// Add PKCE parameters if enabled
 	if pkceData != nil {

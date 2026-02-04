@@ -46,6 +46,7 @@ import ModelPage from './pages/Model';
 import ModelDeploymentPage from './pages/ModelDeployment';
 import Playground from './pages/Playground';
 import OAuth2Callback from './components/auth/OAuth2Callback';
+import ZitadelCallback from './components/auth/ZitadelCallback';
 import PersonalSetting from './components/settings/PersonalSetting';
 import Setup from './pages/Setup';
 import SetupCheck from './components/layout/SetupCheck';
@@ -231,6 +232,14 @@ function App() {
           element={
             <Suspense fallback={<Loading></Loading>} key={location.pathname}>
               <OAuth2Callback type='linuxdo'></OAuth2Callback>
+            </Suspense>
+          }
+        />
+        <Route
+          path='/oauth/zitadel'
+          element={
+            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
+              <ZitadelCallback />
             </Suspense>
           }
         />

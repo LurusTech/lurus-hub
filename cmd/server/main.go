@@ -227,7 +227,7 @@ func run(ctx context.Context, startTime time.Time) error {
 			}
 		}
 		var err error
-		store, err = sessionredis.NewStore(10, "tcp", redisAddr, redisPassword, common.SessionSecret)
+		store, err = sessionredis.NewStore(10, "tcp", redisAddr, "", redisPassword, []byte(common.SessionSecret))
 		if err != nil {
 			common.SysLog("Failed to create Redis session store, falling back to cookie: " + err.Error())
 			store = cookie.NewStore([]byte(common.SessionSecret))

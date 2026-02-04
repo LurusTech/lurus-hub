@@ -28,6 +28,7 @@ import (
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
+	sessionredis "github.com/gin-contrib/sessions/redis"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"golang.org/x/sync/errgroup"
@@ -194,19 +195,50 @@ func run(ctx context.Context, startTime time.Time) error {
 	engine.Use(middleware.RequestId())
 	middleware.SetUpLogger(engine)
 
-	// Initialize session store
-	store := cookie.NewStore([]byte(common.SessionSecret))
+	// Initialize session store (Redis if available, cookie fallback)
 	sessionSecure := os.Getenv("GIN_MODE") == "release"
 	if envSecure := os.Getenv("SESSION_SECURE"); envSecure != "" {
 		sessionSecure = envSecure == "true"
 	}
-	store.Options(sessions.Options{
+	sessionOpts := sessions.Options{
 		Path:     "/",
 		MaxAge:   7776000, // 90 days
 		HttpOnly: true,
 		Secure:   sessionSecure,
 		SameSite: http.SameSiteLaxMode,
-	})
+	}
+	var store sessions.Store
+	if redisURL := os.Getenv("REDIS_CONN_STRING"); redisURL != "" {
+		// Parse redis://host:port format to extract address and password
+		redisAddr := "127.0.0.1:6379"
+		redisPassword := ""
+		if strings.HasPrefix(redisURL, "redis://") {
+			parsed := strings.TrimPrefix(redisURL, "redis://")
+			// Handle redis://password@host:port or redis://host:port
+			if atIdx := strings.LastIndex(parsed, "@"); atIdx >= 0 {
+				redisPassword = parsed[:atIdx]
+				redisAddr = parsed[atIdx+1:]
+			} else {
+				redisAddr = parsed
+			}
+			// Remove trailing path if present
+			if slashIdx := strings.Index(redisAddr, "/"); slashIdx >= 0 {
+				redisAddr = redisAddr[:slashIdx]
+			}
+		}
+		var err error
+		store, err = sessionredis.NewStore(10, "tcp", redisAddr, redisPassword, common.SessionSecret)
+		if err != nil {
+			common.SysLog("Failed to create Redis session store, falling back to cookie: " + err.Error())
+			store = cookie.NewStore([]byte(common.SessionSecret))
+		} else {
+			common.SysLog("Session store: Redis (" + redisAddr + ")")
+		}
+	} else {
+		store = cookie.NewStore([]byte(common.SessionSecret))
+		common.SysLog("Session store: cookie")
+	}
+	store.Options(sessionOpts)
 	engine.Use(sessions.Sessions("session", store))
 
 	InjectUmamiAnalytics()

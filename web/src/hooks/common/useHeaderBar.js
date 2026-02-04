@@ -138,12 +138,16 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
 
   // Actions
   const logout = useCallback(async () => {
-    await API.get('/api/user/logout');
-    showSuccess(t('注销成功!'));
     userDispatch({ type: 'logout' });
     localStorage.removeItem('user');
-    navigate('/login');
-  }, [navigate, t, userDispatch]);
+    try {
+      await API.post('/api/v2/oauth/logout');
+    } catch (e) {
+      // Session may already be expired; continue with local cleanup
+    }
+    showSuccess(t('注销成功!'));
+    window.location.href = '/';
+  }, [t, userDispatch]);
 
   const handleLanguageChange = useCallback(
     (lang) => {

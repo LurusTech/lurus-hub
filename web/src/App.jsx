@@ -22,8 +22,7 @@ import { Route, Routes, useLocation } from 'react-router-dom';
 import Loading from './components/common/ui/Loading';
 import User from './pages/User';
 import { AuthRedirect, PrivateRoute, AdminRoute } from './helpers';
-import RegisterForm from './components/auth/RegisterForm';
-import LoginForm from './components/auth/LoginForm';
+import ZitadelRedirect from './components/auth/ZitadelRedirect';
 import NotFound from './pages/NotFound';
 import Forbidden from './pages/Forbidden';
 import Setting from './pages/Setting';
@@ -178,21 +177,17 @@ function App() {
         <Route
           path='/login'
           element={
-            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
-              <AuthRedirect>
-                <LoginForm />
-              </AuthRedirect>
-            </Suspense>
+            <AuthRedirect>
+              <ZitadelRedirect />
+            </AuthRedirect>
           }
         />
         <Route
           path='/register'
           element={
-            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
-              <AuthRedirect>
-                <RegisterForm />
-              </AuthRedirect>
-            </Suspense>
+            <AuthRedirect>
+              <ZitadelRedirect register />
+            </AuthRedirect>
           }
         />
         <Route

@@ -150,10 +150,9 @@ export function showError(error) {
     if (error.name === 'AxiosError') {
       switch (error.response.status) {
         case 401:
-          // 清除用户状态
+          // Clear user state and redirect to Zitadel OAuth login
           localStorage.removeItem('user');
-          // toast.error('错误：未登录或登录已过期，请重新登录！', showErrorOptions);
-          window.location.href = '/login?expired=true';
+          window.location.href = '/api/v2/lurus/auth/login?redirect_url=/oauth/zitadel';
           break;
         case 429:
           Toast.error('错误：请求次数过多，请稍后再试！');

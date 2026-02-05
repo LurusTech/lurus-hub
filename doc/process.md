@@ -4,19 +4,20 @@
 
 ---
 
-## 2026-02-05: Story 1.3 — V2 API Production Deployment
+## 2026-02-05: Epic 1 Complete — Multi-Tenant Production Launch
 
-Deployed clean architecture refactor to K3s production.
+Deployed V2 API with clean architecture refactor to K3s production.
 - Committed 434 files: `internal/{biz,data,server}` → `internal/{domain,app,adapter}`
 - Fixed SQLite test index collision (`idx_tenant_user`) in `SetupTestDB`
-- ArgoCD sync triggered, pod restarted successfully
+- ArgoCD sync triggered, pod 1/1 Running
 Verification:
 ```
 go test ./internal/... → PASS
 /api/status → 200
-/api/v2/lurus/auth/login → 302 to auth.lurus.cn (PKCE + state correct)
+/api/v2/lurus/auth/login → 302 to auth.lurus.cn
+DB: tenants (1 row), user_identity_mapping (1 row)
+V1 API: /api/user/self → 401 (expected)
 ```
-Remaining: E2E browser test for full OAuth callback flow.
 
 ---
 

@@ -1,0 +1,318 @@
+package repo
+
+import (
+	"errors"
+	"time"
+
+	"github.com/QuantumNous/lurus-api/internal/domain/entity"
+
+	"gorm.io/gorm"
+)
+
+type Tenant = entity.Tenant
+type TenantStats = entity.TenantStats
+
+// Re-export tenant status constants from entity
+const (
+	TenantStatusEnabled   = entity.TenantStatusEnabled
+	TenantStatusDisabled  = entity.TenantStatusDisabled
+	TenantStatusSuspended = entity.TenantStatusSuspended
+)
+
+// Re-export tenant plan type constants from entity
+const (
+	TenantPlanFree       = entity.TenantPlanFree
+	TenantPlanPro        = entity.TenantPlanPro
+	TenantPlanEnterprise = entity.TenantPlanEnterprise
+)
+
+// Re-export tenant context key constants from entity
+const (
+	TenantIDContextKey     = entity.TenantIDContextKey
+	SkipTenantIsolationKey = entity.SkipTenantIsolationKey
+)
+
+// GetTenantByID retrieves a tenant by its ID
+func GetTenantByID(id string) (*Tenant, error) {
+	var tenant Tenant
+	err := DB.Where("id = ?", id).First(&tenant).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("tenant not found")
+		}
+		return nil, err
+	}
+	return &tenant, nil
+}
+
+// GetTenantBySlug retrieves a tenant by its slug
+func GetTenantBySlug(slug string) (*Tenant, error) {
+	var tenant Tenant
+	err := DB.Where("slug = ?", slug).First(&tenant).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("tenant not found")
+		}
+		return nil, err
+	}
+	return &tenant, nil
+}
+
+// GetTenantByZitadelOrgID retrieves a tenant by Zitadel Organization ID
+func GetTenantByZitadelOrgID(orgID string) (*Tenant, error) {
+	var tenant Tenant
+	err := DB.Where("zitadel_org_id = ?", orgID).First(&tenant).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("tenant not found for Zitadel Org ID")
+		}
+		return nil, err
+	}
+	return &tenant, nil
+}
+
+// CreateTenantFromZitadel creates a new tenant from Zitadel Organization data
+// Auto-called when a user from a new Zitadel Organization logs in
+func CreateTenantFromZitadel(orgID string, orgDomain string, orgName string) (*Tenant, error) {
+	// Check if tenant already exists
+	existingTenant, _ := GetTenantByZitadelOrgID(orgID)
+	if existingTenant != nil {
+		return existingTenant, nil
+	}
+
+	// Generate tenant ID (can use orgID or generate new UUID)
+	tenantID := GenerateID() // You can implement this function or use orgID directly
+
+	tenant := &Tenant{
+		Id:           tenantID,
+		ZitadelOrgID: orgID,
+		Slug:         orgDomain, // Use Zitadel org domain as slug
+		Name:         orgName,
+		Status:       TenantStatusEnabled,
+		PlanType:     TenantPlanFree, // Default to free plan
+		MaxUsers:     100,
+		MaxQuota:     1000000, // 1M tokens
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	err := DB.Create(tenant).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return tenant, nil
+}
+
+// UpdateTenant updates tenant information
+func UpdateTenant(id string, updates map[string]interface{}) error {
+	updates["updated_at"] = time.Now()
+	return DB.Model(&Tenant{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// DisableTenant disables a tenant
+func DisableTenant(id string) error {
+	return UpdateTenant(id, map[string]interface{}{
+		"status": TenantStatusDisabled,
+	})
+}
+
+// EnableTenant enables a tenant
+func EnableTenant(id string) error {
+	return UpdateTenant(id, map[string]interface{}{
+		"status": TenantStatusEnabled,
+	})
+}
+
+// SuspendTenant suspends a tenant (for billing issues or violations)
+func SuspendTenant(id string) error {
+	return UpdateTenant(id, map[string]interface{}{
+		"status": TenantStatusSuspended,
+	})
+}
+
+// DeleteTenant soft deletes a tenant
+func DeleteTenant(id string) error {
+	return DB.Delete(&Tenant{}, "id = ?", id).Error
+}
+
+// ListTenants retrieves all tenants with pagination
+func ListTenants(offset int, limit int, status int) ([]*Tenant, int64, error) {
+	var tenants []*Tenant
+	var total int64
+
+	query := DB.Model(&Tenant{})
+
+	// Filter by status if provided
+	if status > 0 {
+		query = query.Where("status = ?", status)
+	}
+
+	// Get total count
+	err := query.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Get paginated results
+	err = query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&tenants).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return tenants, total, nil
+}
+
+// GetTenantUserCount returns the number of users in a tenant
+// by counting identity mappings (User model has no tenant_id column).
+func GetTenantUserCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&UserIdentityMapping{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// TenantCanAddUser checks if tenant can add more users (based on max_users limit)
+func TenantCanAddUser(t *Tenant) (bool, error) {
+	currentUserCount, err := GetTenantUserCount(t.Id)
+	if err != nil {
+		return false, err
+	}
+
+	return currentUserCount < int64(t.MaxUsers), nil
+}
+
+// GenerateID generates a unique ID for tenant
+// You can implement this using UUID library or custom logic
+func GenerateID() string {
+	// TODO: Implement UUID generation
+	// For now, using a placeholder
+	// In production, use: github.com/google/uuid
+	return "tenant-" + time.Now().Format("20060102150405")
+}
+
+// ============================================================================
+// Tenant Statistics Functions
+// ============================================================================
+
+// GetTenantStats retrieves comprehensive statistics for a tenant
+func GetTenantStats(tenantID string) (*TenantStats, error) {
+	stats := &TenantStats{TenantID: tenantID}
+	var err error
+
+	// Get tenant info for max_users and max_quota
+	tenant, err := GetTenantByID(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	stats.MaxUsers = tenant.MaxUsers
+	stats.MaxQuota = tenant.MaxQuota
+
+	// User count (from identity mappings)
+	stats.UserCount, _ = GetTenantUserCount(tenantID)
+
+	// Token count
+	stats.TokenCount, _ = GetTenantTokenCount(tenantID)
+
+	// Channel count
+	stats.ChannelCount, _ = GetTenantChannelCount(tenantID)
+
+	// Quota statistics
+	usedQuota, remainingQuota, _ := GetTenantQuotaStats(tenantID)
+	stats.TotalQuotaUsed = usedQuota
+	stats.TotalQuotaRemaining = remainingQuota
+
+	// Subscription count
+	stats.ActiveSubscriptions, _ = GetTenantActiveSubscriptionCount(tenantID)
+
+	// TopUp total amount
+	stats.TotalTopUpAmount, _ = GetTenantTotalTopUpAmount(tenantID)
+
+	// Redemption count
+	stats.TotalRedemptions, _ = GetTenantRedemptionCount(tenantID)
+
+	// Log count
+	stats.LogCount, _ = GetTenantLogCount(tenantID)
+
+	// Last activity (most recent log)
+	stats.LastActivityAt, _ = GetTenantLastActivityTime(tenantID)
+
+	return stats, nil
+}
+
+// GetTenantTokenCount returns the number of tokens in a tenant
+func GetTenantTokenCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&Token{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// GetTenantChannelCount returns the number of channels in a tenant
+func GetTenantChannelCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&Channel{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// GetTenantQuotaStats returns used and remaining quota for a tenant
+func GetTenantQuotaStats(tenantID string) (usedQuota int64, remainingQuota int64, err error) {
+	// Sum used_quota and remain_quota from tokens
+	type QuotaResult struct {
+		UsedQuota   int64 `json:"used_quota"`
+		RemainQuota int64 `json:"remain_quota"`
+	}
+	var result QuotaResult
+
+	err = DB.Model(&Token{}).
+		Select("COALESCE(SUM(used_quota), 0) as used_quota, COALESCE(SUM(remain_quota), 0) as remain_quota").
+		Where("tenant_id = ?", tenantID).
+		Scan(&result).Error
+
+	return result.UsedQuota, result.RemainQuota, err
+}
+
+// GetTenantActiveSubscriptionCount returns the number of active subscriptions in a tenant
+func GetTenantActiveSubscriptionCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&Subscription{}).
+		Where("tenant_id = ? AND status = ?", tenantID, 1). // status 1 = active
+		Count(&count).Error
+	return count, err
+}
+
+// GetTenantTotalTopUpAmount returns the total top-up amount for a tenant (in currency units)
+func GetTenantTotalTopUpAmount(tenantID string) (float64, error) {
+	var total *float64
+	err := DB.Model(&TopUp{}).
+		Select("COALESCE(SUM(amount), 0)").
+		Where("tenant_id = ? AND status = ?", tenantID, "success").
+		Scan(&total).Error
+
+	if total == nil {
+		return 0, err
+	}
+	return *total, err
+}
+
+// GetTenantRedemptionCount returns the number of redemption codes in a tenant
+func GetTenantRedemptionCount(tenantID string) (int64, error) {
+	var count int64
+	err := DB.Model(&Redemption{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// GetTenantLogCount returns the number of log entries for a tenant
+func GetTenantLogCount(tenantID string) (int64, error) {
+	var count int64
+	err := LOG_DB.Model(&Log{}).Where("tenant_id = ?", tenantID).Count(&count).Error
+	return count, err
+}
+
+// GetTenantLastActivityTime returns the timestamp of the most recent activity (log entry) for a tenant
+func GetTenantLastActivityTime(tenantID string) (int64, error) {
+	var lastActivity int64
+	err := LOG_DB.Model(&Log{}).
+		Select("COALESCE(MAX(created_at), 0)").
+		Where("tenant_id = ?", tenantID).
+		Scan(&lastActivity).Error
+	return lastActivity, err
+}

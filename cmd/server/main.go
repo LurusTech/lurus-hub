@@ -13,17 +13,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/biz/service"
-	"github.com/QuantumNous/lurus-api/internal/data/model"
+	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/config"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/pkg/search"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
-	"github.com/QuantumNous/lurus-api/internal/server/controller"
-	"github.com/QuantumNous/lurus-api/internal/server/middleware"
-	"github.com/QuantumNous/lurus-api/internal/server/router"
+	"github.com/QuantumNous/lurus-api/internal/adapter/handler"
+	"github.com/QuantumNous/lurus-api/internal/adapter/handler/router"
+	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
 	"github.com/QuantumNous/lurus-api/web"
 
 	"github.com/gin-contrib/sessions"
@@ -69,7 +69,7 @@ func run(ctx context.Context, startTime time.Time) error {
 
 	// Ensure database is closed on shutdown
 	defer func() {
-		if err := model.CloseDB(); err != nil {
+		if err := repo.CloseDB(); err != nil {
 			common.SysError("failed to close database: " + err.Error())
 		}
 	}()
@@ -89,30 +89,30 @@ func run(ctx context.Context, startTime time.Time) error {
 			defer func() {
 				if r := recover(); r != nil {
 					common.SysLog(fmt.Sprintf("InitChannelCache panic: %v, retrying once", r))
-					if _, _, fixErr := model.FixAbility(); fixErr != nil {
+					if _, _, fixErr := repo.FixAbility(); fixErr != nil {
 						common.SysError(fmt.Sprintf("InitChannelCache failed: %s", fixErr.Error()))
 					}
 				}
 			}()
-			model.InitChannelCache()
+			repo.InitChannelCache()
 		}()
 
 		// Background task: sync channel cache
 		g.Go(func() error {
-			model.SyncChannelCacheWithContext(ctx, common.SyncFrequency)
+			repo.SyncChannelCacheWithContext(ctx, common.SyncFrequency)
 			return nil
 		})
 	}
 
 	// Background task: sync options (hot reload config)
 	g.Go(func() error {
-		model.SyncOptionsWithContext(ctx, common.SyncFrequency)
+		repo.SyncOptionsWithContext(ctx, common.SyncFrequency)
 		return nil
 	})
 
 	// Background task: update quota dashboard data
 	g.Go(func() error {
-		model.UpdateQuotaDataWithContext(ctx)
+		repo.UpdateQuotaDataWithContext(ctx)
 		return nil
 	})
 
@@ -122,24 +122,24 @@ func run(ctx context.Context, startTime time.Time) error {
 			return fmt.Errorf("failed to parse CHANNEL_UPDATE_FREQUENCY: %w", err)
 		}
 		g.Go(func() error {
-			controller.AutomaticallyUpdateChannelsWithContext(ctx, frequency)
+			handler.AutomaticallyUpdateChannelsWithContext(ctx, frequency)
 			return nil
 		})
 	}
 
 	// Background task: automatically test channels
 	g.Go(func() error {
-		controller.AutomaticallyTestChannelsWithContext(ctx)
+		handler.AutomaticallyTestChannelsWithContext(ctx)
 		return nil
 	})
 
 	if common.IsMasterNode && constant.UpdateTask {
 		g.Go(func() error {
-			controller.UpdateMidjourneyTaskBulkWithContext(ctx)
+			handler.UpdateMidjourneyTaskBulkWithContext(ctx)
 			return nil
 		})
 		g.Go(func() error {
-			controller.UpdateTaskBulkWithContext(ctx)
+			handler.UpdateTaskBulkWithContext(ctx)
 			return nil
 		})
 	}
@@ -147,12 +147,12 @@ func run(ctx context.Context, startTime time.Time) error {
 	if os.Getenv("BATCH_UPDATE_ENABLED") == "true" {
 		common.BatchUpdateEnabled = true
 		common.SysLog("batch update enabled with interval " + strconv.Itoa(common.BatchUpdateInterval) + "s")
-		model.InitBatchUpdater()
+		repo.InitBatchUpdater()
 	}
 
 	// Start daily quota reset cron job with context for graceful shutdown
 	if os.Getenv("DAILY_QUOTA_ENABLED") != "false" {
-		model.StartDailyQuotaResetCronWithContext(ctx)
+		repo.StartDailyQuotaResetCronWithContext(ctx)
 	}
 
 	// pprof server
@@ -352,27 +352,27 @@ func InitResources(ctx context.Context) error {
 	// Initialize model settings
 	ratio_setting.InitRatioSettings()
 
-	service.InitHttpClient()
+	app.InitHttpClient()
 
-	service.InitTokenEncoders()
+	app.InitTokenEncoders()
 
 	// Initialize SQL Database
-	err = model.InitDB()
+	err = repo.InitDB()
 	if err != nil {
 		common.FatalLog("failed to initialize database: " + err.Error())
 		return err
 	}
 
-	model.CheckSetup()
+	repo.CheckSetup()
 
-	// Initialize options, should after model.InitDB()
-	model.InitOptionMap()
+	// Initialize options, should after repo.InitDB()
+	repo.InitOptionMap()
 
 	// 初始化模型
-	model.GetPricing()
+	repo.GetPricing()
 
 	// Initialize SQL Database
-	err = model.InitLogDB()
+	err = repo.InitLogDB()
 	if err != nil {
 		return err
 	}
@@ -401,11 +401,11 @@ func InitResources(ctx context.Context) error {
 
 	// Initialize subscription plans
 	// 初始化订阅计划
-	model.InitSubscriptionPlans()
+	repo.InitSubscriptionPlans()
 
 	// Start subscription cron jobs
 	// 启动订阅定时任务
-	model.StartSubscriptionCronJobsWithContext(ctx)
+	repo.StartSubscriptionCronJobsWithContext(ctx)
 
 	// Initialize Zitadel authentication (multi-tenant OAuth)
 	// 初始化 Zitadel 认证（多租户 OAuth）

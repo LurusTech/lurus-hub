@@ -41,6 +41,5 @@ coverage*
 .claude/
 nul
 
-# BMAD (managed at root level only)
+# BMAD framework (lives at root only)
 _bmad/
-_bmad-output/

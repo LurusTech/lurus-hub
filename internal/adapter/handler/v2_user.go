@@ -1,0 +1,153 @@
+package handler
+
+import (
+	"net/http"
+	"regexp"
+	"strings"
+
+	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
+
+	"github.com/gin-gonic/gin"
+)
+
+// emailRegex is a simple regex for basic email validation
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+
+// GetSelfV2 retrieves the current user's information (v2 API with tenant context)
+// Route: GET /api/v2/:tenant_slug/user/me
+func GetSelfV2(c *gin.Context) {
+	// Get tenant context from middleware
+	tenantCtx, err := middleware.GetTenantContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "Tenant context not found",
+		})
+		return
+	}
+
+	// Get user from database
+	user, err := repo.GetUserById(tenantCtx.UserID, false)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"message": "User not found",
+		})
+		return
+	}
+
+	// Get user's token count
+	tokenCount, _ := repo.CountUserTokens(user.Id)
+
+	// Build response (exclude sensitive fields)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"id":             user.Id,
+			"username":       user.Username,
+			"display_name":   user.DisplayName,
+			"email":          user.Email,
+			"role":           user.Role,
+			"status":         user.Status,
+			"quota":          user.Quota,
+			"used_quota":     user.UsedQuota,
+			"request_count":  user.RequestCount,
+			"group":          user.Group,
+			"aff_code":       user.AffCode,
+			"inviter_id":     user.InviterId,
+			"tenant_id":      tenantCtx.TenantID,
+			"token_count":    tokenCount,
+			"zitadel_user":   tenantCtx.ZitadelUserID,
+			"roles":          tenantCtx.Roles,
+		},
+	})
+}
+
+// UpdateSelfV2 updates the current user's information (v2 API with tenant context)
+// Route: PUT /api/v2/:tenant_slug/user/me
+func UpdateSelfV2(c *gin.Context) {
+	// Get tenant context from middleware
+	tenantCtx, err := middleware.GetTenantContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "Tenant context not found",
+		})
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request parameters",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// Get current user
+	user, err := repo.GetUserById(tenantCtx.UserID, false)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"message": "User not found",
+		})
+		return
+	}
+
+	// Update fields if provided
+	if req.DisplayName != "" {
+		if err := app.ValidateDisplayName(req.DisplayName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		user.DisplayName = req.DisplayName
+	}
+
+	if req.Email != "" {
+		// Validate email format
+		email := strings.TrimSpace(req.Email)
+		if !emailRegex.MatchString(email) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "Invalid email format",
+			})
+			return
+		}
+		user.Email = email
+	}
+
+	// Save changes
+	err = user.Update(false)
+	if err != nil {
+		common.SysError("Failed to update user: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to update user",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "User updated successfully",
+		"data": gin.H{
+			"id":           user.Id,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"email":        user.Email,
+		},
+	})
+}

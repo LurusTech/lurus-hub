@@ -42,7 +42,7 @@
 | 2.2 Relay Adaptor Test Coverage | E2 | P1 | ✅ Done | ~100+ subtests, 5 files |
 | 5.3 Operational Runbook | E5 | P2 | Backlog | deployment, database, tenant onboarding |
 
-**Acceptance**: biz/ test coverage ≥80%, Zitadel configured (if unblocked)
+**Acceptance**: app/ test coverage ≥80%, Zitadel configured (if unblocked)
 
 ---
 
@@ -105,8 +105,8 @@
 | SC-1 | Monthly uptime | ~98% | ≥99.5% | S3-S4 |
 | SC-2 | Gateway overhead p95 | ~80ms | <50ms | S3 |
 | SC-4 | Multi-tenant support | Code complete | Production | S2 |
-| SC-6 | Test coverage (biz/) | ~70% | ≥80% | S1 |
-| SC-7 | Test coverage (controller/) | ~50% | ≥50% | S2 |
+| SC-6 | Test coverage (app/) | ~70% | ≥80% | S1 |
+| SC-7 | Test coverage (adapter/handler/) | ~50% | ≥50% | S2 |
 | SC-8 | Active tenants | 1 (default) | 5+ | S2+ |
 
 ---

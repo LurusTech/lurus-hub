@@ -9,12 +9,20 @@ Frontend: React 18 + Vite + Semi UI (in `web/`, use **bun**).
 ```
 cmd/server/              # Entry point
 internal/
-├── biz/service/         # Business logic (service layer)
-├── biz/relay/           # AI model relay + adaptors
-├── data/model/          # GORM models
-├── server/controller/   # API controllers
-├── server/middleware/    # HTTP middleware
-├── server/router/       # Route definitions
+├── domain/entity/       # Domain entities (struct definitions, value objects)
+├── app/                 # Use case orchestration (business logic)
+│   ├── relay/           # AI model relay handlers
+│   └── passkey/         # Passkey authentication service
+├── adapter/
+│   ├── handler/         # HTTP handlers (controllers)
+│   │   └── router/      # Route definitions
+│   ├── middleware/       # HTTP middleware
+│   ├── repo/            # GORM repositories (data access)
+│   └── provider/        # AI vendor adaptors
+│       ├── common/      # Shared relay utilities
+│       ├── constant/    # Relay mode constants
+│       └── <vendor>/    # Per-vendor implementations
+├── lifecycle/           # Application lifecycle management
 └── pkg/                 # Shared utilities (config, logger, search, setting)
 web/                     # React frontend
 deploy/k8s/              # Kubernetes manifests
@@ -53,8 +61,7 @@ cd web && bun run typecheck && bun run lint && bun run test
 
 | Resource | Path |
 |----------|------|
-| PRD | `../_bmad-output/planning-artifacts/prd-api.md` |
-| Epics | `../_bmad-output/planning-artifacts/epics-api.md` |
-| Architecture | `../_bmad-output/planning-artifacts/architecture-api.md` |
-
-Worker rules: read assigned story → code in this dir only → do NOT modify `_bmad-output/`
+| PRD | `./_bmad-output/planning-artifacts/prd.md` |
+| Epics | `./_bmad-output/planning-artifacts/epics.md` |
+| Architecture | `./_bmad-output/planning-artifacts/architecture.md` |
+| Sprint Status | `./_bmad-output/planning-artifacts/sprint-status.yaml` |

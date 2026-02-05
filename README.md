@@ -305,13 +305,13 @@ GET /api/channel/search?keyword=openai&group=default&status=1
 
 | 模块 | 功能 | 文件位置 |
 |------|------|---------|
-| **API Gateway** | 请求路由、格式转换 | `relay/` |
-| **搜索引擎** | Meilisearch 集成 | `search/` |
-| **用户管理** | 认证、授权、用户组 | `controller/user.go`, `model/user.go` |
-| **令牌管理** | 令牌 CRUD、额度管理 | `controller/token.go`, `model/token.go` |
-| **渠道管理** | 渠道配置、测试、监控 | `controller/channel.go`, `model/channel.go` |
-| **日志系统** | 请求日志、审计日志 | `controller/log.go`, `model/log.go` |
-| **计费系统** | 额度计算、消费统计 | `model/pricing.go` |
+| **API Gateway** | 请求路由、格式转换 | `app/relay/`, `adapter/provider/` |
+| **搜索引擎** | Meilisearch 集成 | `pkg/search/` |
+| **用户管理** | 认证、授权、用户组 | `adapter/handler/user.go`, `adapter/repo/user.go` |
+| **令牌管理** | 令牌 CRUD、额度管理 | `adapter/handler/token.go`, `adapter/repo/token.go` |
+| **渠道管理** | 渠道配置、测试、监控 | `adapter/handler/channel.go`, `adapter/repo/channel.go` |
+| **日志系统** | 请求日志、审计日志 | `adapter/handler/log.go`, `adapter/repo/log.go` |
+| **计费系统** | 额度计算、消费统计 | `app/billing.go`, `adapter/repo/pricing.go` |
 
 ---
 

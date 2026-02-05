@@ -1,0 +1,205 @@
+package router
+
+import (
+	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
+	"github.com/QuantumNous/lurus-api/internal/adapter/handler"
+	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
+	"github.com/QuantumNous/lurus-api/internal/app/relay"
+	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+
+	"github.com/gin-gonic/gin"
+)
+
+func SetRelayRouter(router *gin.Engine) {
+	router.Use(middleware.CORS())
+	router.Use(middleware.DecompressRequestMiddleware())
+	router.Use(middleware.StatsMiddleware())
+	// https://platform.openai.com/docs/api-reference/introduction
+	modelsRouter := router.Group("/v1/models")
+	modelsRouter.Use(middleware.TokenAuth())
+	{
+		modelsRouter.GET("", func(c *gin.Context) {
+			switch {
+			case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
+				handler.ListModels(c, constant.ChannelTypeAnthropic)
+			case c.GetHeader("x-goog-api-key") != "" || c.Query("key") != "": // 单独的适配
+				handler.RetrieveModel(c, constant.ChannelTypeGemini)
+			default:
+				handler.ListModels(c, constant.ChannelTypeOpenAI)
+			}
+		})
+
+		modelsRouter.GET("/:model", func(c *gin.Context) {
+			switch {
+			case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
+				handler.RetrieveModel(c, constant.ChannelTypeAnthropic)
+			default:
+				handler.RetrieveModel(c, constant.ChannelTypeOpenAI)
+			}
+		})
+	}
+
+	geminiRouter := router.Group("/v1beta/models")
+	geminiRouter.Use(middleware.TokenAuth())
+	{
+		geminiRouter.GET("", func(c *gin.Context) {
+			handler.ListModels(c, constant.ChannelTypeGemini)
+		})
+	}
+
+	geminiCompatibleRouter := router.Group("/v1beta/openai/models")
+	geminiCompatibleRouter.Use(middleware.TokenAuth())
+	{
+		geminiCompatibleRouter.GET("", func(c *gin.Context) {
+			handler.ListModels(c, constant.ChannelTypeOpenAI)
+		})
+	}
+
+	playgroundRouter := router.Group("/pg")
+	playgroundRouter.Use(middleware.UserAuth(), middleware.Distribute())
+	{
+		playgroundRouter.POST("/chat/completions", handler.Playground)
+	}
+	relayV1Router := router.Group("/v1")
+	relayV1Router.Use(middleware.TokenAuth())
+	relayV1Router.Use(middleware.ModelRequestRateLimit())
+	{
+		// WebSocket 路由（统一到 Relay）
+		wsRouter := relayV1Router.Group("")
+		wsRouter.Use(middleware.Distribute())
+		wsRouter.GET("/realtime", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAIRealtime)
+		})
+	}
+	{
+		//http router
+		httpRouter := relayV1Router.Group("")
+		httpRouter.Use(middleware.Distribute())
+
+		// claude related routes
+		httpRouter.POST("/messages", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatClaude)
+		})
+
+		// chat related routes
+		httpRouter.POST("/completions", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAI)
+		})
+		httpRouter.POST("/chat/completions", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAI)
+		})
+
+		// response related routes
+		httpRouter.POST("/responses", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAIResponses)
+		})
+
+		// image related routes
+		httpRouter.POST("/edits", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAIImage)
+		})
+		httpRouter.POST("/images/generations", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAIImage)
+		})
+		httpRouter.POST("/images/edits", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAIImage)
+		})
+
+		// embedding related routes
+		httpRouter.POST("/embeddings", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatEmbedding)
+		})
+
+		// audio related routes
+		httpRouter.POST("/audio/transcriptions", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAIAudio)
+		})
+		httpRouter.POST("/audio/translations", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAIAudio)
+		})
+		httpRouter.POST("/audio/speech", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAIAudio)
+		})
+
+		// rerank related routes
+		httpRouter.POST("/rerank", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatRerank)
+		})
+
+		// gemini relay routes
+		httpRouter.POST("/engines/:model/embeddings", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatGemini)
+		})
+		httpRouter.POST("/models/*path", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatGemini)
+		})
+
+		// other relay routes
+		httpRouter.POST("/moderations", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatOpenAI)
+		})
+
+		// not implemented
+		httpRouter.POST("/images/variations", handler.RelayNotImplemented)
+		httpRouter.GET("/files", handler.RelayNotImplemented)
+		httpRouter.POST("/files", handler.RelayNotImplemented)
+		httpRouter.DELETE("/files/:id", handler.RelayNotImplemented)
+		httpRouter.GET("/files/:id", handler.RelayNotImplemented)
+		httpRouter.GET("/files/:id/content", handler.RelayNotImplemented)
+		httpRouter.POST("/fine-tunes", handler.RelayNotImplemented)
+		httpRouter.GET("/fine-tunes", handler.RelayNotImplemented)
+		httpRouter.GET("/fine-tunes/:id", handler.RelayNotImplemented)
+		httpRouter.POST("/fine-tunes/:id/cancel", handler.RelayNotImplemented)
+		httpRouter.GET("/fine-tunes/:id/events", handler.RelayNotImplemented)
+		httpRouter.DELETE("/models/:model", handler.RelayNotImplemented)
+	}
+
+	relayMjRouter := router.Group("/mj")
+	registerMjRouterGroup(relayMjRouter)
+
+	relayMjModeRouter := router.Group("/:mode/mj")
+	registerMjRouterGroup(relayMjModeRouter)
+	//relayMjRouter.Use()
+
+	relaySunoRouter := router.Group("/suno")
+	relaySunoRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	{
+		relaySunoRouter.POST("/submit/:action", handler.RelayTask)
+		relaySunoRouter.POST("/fetch", handler.RelayTask)
+		relaySunoRouter.GET("/fetch/:id", handler.RelayTask)
+	}
+
+	relayGeminiRouter := router.Group("/v1beta")
+	relayGeminiRouter.Use(middleware.TokenAuth())
+	relayGeminiRouter.Use(middleware.ModelRequestRateLimit())
+	relayGeminiRouter.Use(middleware.Distribute())
+	{
+		// Gemini API 路径格式: /v1beta/models/{model_name}:{action}
+		relayGeminiRouter.POST("/models/*path", func(c *gin.Context) {
+			handler.Relay(c, types.RelayFormatGemini)
+		})
+	}
+}
+
+func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
+	relayMjRouter.GET("/image/:id", relay.RelayMidjourneyImage)
+	relayMjRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	{
+		relayMjRouter.POST("/submit/action", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/shorten", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/modal", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/imagine", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/change", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/simple-change", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/describe", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/blend", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/edits", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/video", handler.RelayMidjourney)
+		relayMjRouter.POST("/notify", handler.RelayMidjourney)
+		relayMjRouter.GET("/task/:id/fetch", handler.RelayMidjourney)
+		relayMjRouter.GET("/task/:id/image-seed", handler.RelayMidjourney)
+		relayMjRouter.POST("/task/list-by-condition", handler.RelayMidjourney)
+		relayMjRouter.POST("/insight-face/swap", handler.RelayMidjourney)
+		relayMjRouter.POST("/submit/upload-discord-images", handler.RelayMidjourney)
+	}
+}

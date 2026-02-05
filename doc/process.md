@@ -1,6 +1,20 @@
 # Development Progress / 开发进度
 
-> Last Updated / 最后更新: 2026-02-03
+> Last Updated / 最后更新: 2026-02-04
+
+---
+
+## 2026-02-04: Architecture Migration — Hexagonal Restructure
+
+Migrated from Kratos-style (`biz/data/server`) to Hexagonal (`domain/app/adapter`). 7 phases completed.
+- `data/model` structs → `domain/entity/`, queries → `adapter/repo/`
+- `biz/service/` → `app/`
+- `server/controller/` → `adapter/handler/`, `server/router/` → `adapter/handler/router/`, `server/middleware/` → `adapter/middleware/`
+- `biz/relay/channel/` → `adapter/provider/`, `biz/relay/` handlers → `app/relay/`
+- Updated CLAUDE.md, README.md, architecture.md, prd.md, epics.md, plan.md
+Verification: `go build ./cmd/server` PASS, `go test ./...` PASS (pre-existing SQLite idx issue in repo only).
+
+> Note: Historical entries below reference old paths (`biz/`, `data/model/`, `server/controller/`). These are preserved as-is for accuracy.
 
 ---
 

@@ -1,6 +1,22 @@
 # Development Progress / 开发进度
 
-> Last Updated / 最后更新: 2026-02-04
+> Last Updated / 最后更新: 2026-02-05
+
+---
+
+## 2026-02-05: Story 1.3 — V2 API Production Deployment
+
+Deployed clean architecture refactor to K3s production.
+- Committed 434 files: `internal/{biz,data,server}` → `internal/{domain,app,adapter}`
+- Fixed SQLite test index collision (`idx_tenant_user`) in `SetupTestDB`
+- ArgoCD sync triggered, pod restarted successfully
+Verification:
+```
+go test ./internal/... → PASS
+/api/status → 200
+/api/v2/lurus/auth/login → 302 to auth.lurus.cn (PKCE + state correct)
+```
+Remaining: E2E browser test for full OAuth callback flow.
 
 ---
 

@@ -19,11 +19,11 @@ story_location: "_bmad-output/planning-artifacts/stories/"
 
 development_status:
   # Epic 1: Multi-Tenant Production Launch (P0)
-  epic-1: backlog
+  epic-1: in-progress
   1-1-configure-zitadel-instance: done
-  1-2-production-database-migrations: backlog
-  1-3-deploy-v2-api-to-k3s: backlog
-  1-4-e2e-multi-tenant-testing: backlog
+  1-2-production-database-migrations: done
+  1-3-deploy-v2-api-to-k3s: done
+  1-4-e2e-multi-tenant-testing: in-progress
   epic-1-retrospective: optional
 
   # Epic 2: Test Coverage & Quality Gate (P1)

@@ -54,14 +54,14 @@ spec:
                 secretKeyRef:
                   name: lurus-api-staging-secrets
                   key: SQL_DSN
-            # Redis (shared, different db)
+            # Redis (shared, different db) - cross-namespace reference
             - name: REDIS_CONN_STRING
-              value: "redis://redis:6379/1"  # Use db 1 for staging
+              value: "redis://redis.lurus-system.svc.cluster.local:6379/1"
             # MeiliSearch (shared instance, staging index prefix)
             - name: MEILISEARCH_ENABLED
               value: "true"
             - name: MEILISEARCH_HOST
-              value: "http://meilisearch:7700"
+              value: "http://meilisearch.lurus-system.svc.cluster.local:7700"
             - name: MEILISEARCH_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -94,11 +94,11 @@ spec:
               value: "true"
             - name: ZITADEL_ALLOWED_REDIRECT_DOMAINS
               value: "lurus.cn,staging-api.lurus.cn"
-            # Tracing (enabled for staging)
+            # Tracing (enabled for staging) - cross-namespace reference
             - name: OTEL_TRACING_ENABLED
               value: "true"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "jaeger:4318"
+              value: "jaeger.observability.svc.cluster.local:4318"
             - name: OTEL_EXPORTER_OTLP_INSECURE
               value: "true"
             - name: OTEL_TRACE_SAMPLE_RATE

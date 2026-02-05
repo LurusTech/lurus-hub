@@ -8,11 +8,13 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
+	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
 	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/app/relay"
@@ -179,7 +181,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+		channelSelectStart := time.Now()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
+		metrics.ChannelSelectDuration.Observe(time.Since(channelSelectStart).Seconds())
+
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
@@ -199,6 +204,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
 
+		// Record relay request metrics
+		relayStart := time.Now()
+		providerName := constant.GetChannelTypeName(channel.Type)
+
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
 			newAPIError = relay.WssHelper(c, relayInfo)
@@ -210,6 +219,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = relayHandler(c, relayInfo)
 		}
 
+		// Record metrics
+		relayDuration := time.Since(relayStart).Seconds()
+		status := "success"
+		if newAPIError != nil {
+			status = "error"
+		}
+		metrics.RecordRelayRequest(providerName, relayInfo.OriginModelName, status, relayDuration)
+
 		if newAPIError == nil {
 			return
 		}
@@ -219,6 +236,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+
+		// Record retry attempt
+		metrics.RetryAttempts.WithLabelValues(providerName, string(newAPIError.GetErrorCode())).Inc()
 	}
 
 	useChannel := c.GetStringSlice("use_channel")

@@ -35,15 +35,15 @@ development_status:
   epic-2-retrospective: optional
 
   # Epic 3: Gateway Performance & Reliability (P1)
-  epic-3: backlog
-  3-1-performance-benchmark-profiling: backlog
+  epic-3: in-progress
+  3-1-performance-benchmark-profiling: in-progress
   3-2-optimize-gateway-hot-paths: backlog
   3-3-ha-deployment-preparation: backlog
   epic-3-retrospective: optional
 
   # Epic 4: Observability Stack (P2)
-  epic-4: backlog
-  4-1-prometheus-metrics-endpoint: backlog
+  epic-4: in-progress
+  4-1-prometheus-metrics-endpoint: in-progress
   4-2-request-tracing: backlog
   4-3-alerting-rules: backlog
   epic-4-retrospective: optional

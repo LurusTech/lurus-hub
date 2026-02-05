@@ -8,11 +8,19 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/gin-gonic/gin"
 )
 
 func SetRouter(router *gin.Engine, buildFS embed.FS, indexPage []byte) {
+	// Add Prometheus metrics middleware
+	router.Use(metrics.Middleware())
+
+	// Expose /metrics endpoint for Prometheus scraping
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
 	SetApiRouter(router)
 	SetApiV2Router(router)  // Multi-tenant v2 API routes
 	SetDashboardRouter(router)

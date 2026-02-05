@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-02-05: Sprint 3 — Prometheus Metrics & Benchmarks
+
+**Story 4.1 (Prometheus Metrics)**: Added `/metrics` endpoint with 11 metric types.
+- Request counters, latency histograms, relay metrics, token usage, quota consumption
+- Instrumented relay handler, channel selection, retry logic
+
+**Story 3.1 (Performance Benchmarks)**: Created benchmark suite.
+Key results (i7-12700):
+| Operation | Latency | Allocs |
+|-----------|---------|--------|
+| Request validation | 6μs | 42 |
+| JSON serialize | 946ns | 2 |
+| JSON deserialize | 1.4μs | 13 |
+| Parallel requests | 3.2μs | 42 |
+| Stream chunk | 514ns | 3 |
+
+Verification: `go test -bench=. ./internal/adapter/handler/... → PASS`
+
+---
+
 ## 2026-02-05: Epic 1 Complete — Multi-Tenant Production Launch
 
 Deployed V2 API with clean architecture refactor to K3s production.

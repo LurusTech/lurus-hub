@@ -12,6 +12,7 @@ import (
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
+	"github.com/QuantumNous/lurus-api/internal/pkg/pool"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
 )
 
@@ -140,7 +141,10 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 		return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channels[0])
 	}
 
-	uniquePriorities := make(map[int]bool)
+	// Use pooled map to reduce allocations in hot path
+	uniquePriorities := pool.GetIntBoolMap()
+	defer pool.PutIntBoolMap(uniquePriorities)
+
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
 			uniquePriorities[int(channel.GetPriority())] = true
@@ -148,7 +152,12 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
 		}
 	}
-	var sortedUniquePriorities []int
+
+	// Use pooled slice for sorting priorities
+	sortedUniquePrioritiesPtr := pool.GetIntSlice()
+	defer pool.PutIntSlice(sortedUniquePrioritiesPtr)
+	sortedUniquePriorities := *sortedUniquePrioritiesPtr
+
 	for priority := range uniquePriorities {
 		sortedUniquePriorities = append(sortedUniquePriorities, priority)
 	}
@@ -158,6 +167,9 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 		retry = len(uniquePriorities) - 1
 	}
 	targetPriority := int64(sortedUniquePriorities[retry])
+
+	// Update the pooled slice before returning
+	*sortedUniquePrioritiesPtr = sortedUniquePriorities
 
 	// get the priority for the given retry number
 	var sumWeight = 0

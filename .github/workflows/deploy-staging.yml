@@ -1,0 +1,151 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Deployment reason"
+        required: false
+        default: "Manual deployment"
+
+# Prevent concurrent deployments
+concurrency:
+  group: staging-deployment
+  cancel-in-progress: false
+
+jobs:
+  # Build and push staging image
+  build:
+    name: Build Staging Image
+    runs-on: ubuntu-latest
+    # Only run on push to main or merged PR
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    permissions:
+      packages: write
+      contents: read
+    outputs:
+      image_tag: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Determine version
+        id: version
+        run: |
+          VERSION="staging-$(date +'%Y%m%d')-$(git rev-parse --short HEAD)"
+          echo "value=$VERSION" >> $GITHUB_OUTPUT
+          echo "Publishing staging version: $VERSION"
+
+      - name: Normalize GHCR repository
+        run: echo "GHCR_REPOSITORY=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push staging image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ env.GHCR_REPOSITORY }}:staging
+            ghcr.io/${{ env.GHCR_REPOSITORY }}:${{ steps.version.outputs.value }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+  # Deploy to staging environment
+  deploy:
+    name: Deploy to K3s Staging
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.STAGING_KUBECONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl get namespace lurus-staging || kubectl create namespace lurus-staging
+
+      - name: Apply staging manifests
+        run: |
+          kubectl apply -k deploy/k8s/staging/
+
+      - name: Rollout restart
+        run: |
+          kubectl -n lurus-staging rollout restart deployment/lurus-api
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n lurus-staging rollout status deployment/lurus-api --timeout=300s
+
+      - name: Verify deployment
+        run: |
+          # Wait for pod to be ready
+          kubectl -n lurus-staging wait --for=condition=ready pod -l app=lurus-api --timeout=120s
+
+          # Get pod status
+          kubectl -n lurus-staging get pods -l app=lurus-api
+
+      - name: Health check
+        run: |
+          # Port-forward and check health
+          kubectl -n lurus-staging port-forward svc/lurus-api 8850:8850 &
+          PF_PID=$!
+          sleep 5
+
+          # Check health endpoint
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8850/api/status || echo "000")
+
+          kill $PF_PID 2>/dev/null || true
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Health check failed with HTTP code: $HTTP_CODE"
+            exit 1
+          fi
+
+          echo "Staging deployment successful! Health check passed."
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## Staging Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag:** ${{ needs.build.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Namespace:** lurus-staging" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL:** https://staging-api.lurus.cn" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pod Status" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl -n lurus-staging get pods -l app=lurus-api 2>/dev/null || echo "Unable to get pod status"
+          echo '```' >> $GITHUB_STEP_SUMMARY

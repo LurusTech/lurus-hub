@@ -1,0 +1,20 @@
+# Staging service
+apiVersion: v1
+kind: Service
+metadata:
+  name: lurus-api
+  namespace: lurus-staging
+  labels:
+    app: lurus-api
+    app.kubernetes.io/name: lurus-api
+    app.kubernetes.io/part-of: lurus
+    environment: staging
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8850
+      targetPort: 3000
+      name: http
+  selector:
+    app: lurus-api
+    environment: staging

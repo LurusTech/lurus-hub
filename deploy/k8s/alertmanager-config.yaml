@@ -1,0 +1,121 @@
+# AlertmanagerConfig for Lurus API alert routing
+# Requires: Prometheus Operator (kube-prometheus-stack)
+#
+# This configuration routes alerts to webhook receivers (Bark, Gotify).
+#
+# Setup instructions:
+# 1. Create secrets for webhook URLs:
+#    kubectl -n lurus-system create secret generic alertmanager-webhook-urls \
+#      --from-literal=bark-url='https://api.day.app/YOUR_BARK_KEY' \
+#      --from-literal=gotify-url='https://gotify.example.com/message?token=YOUR_TOKEN'
+#
+# 2. Apply this config:
+#    kubectl apply -f alertmanager-config.yaml
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: lurus-api-alerts
+  namespace: lurus-system
+  labels:
+    app: lurus-api
+spec:
+  route:
+    # Default receiver for all alerts
+    receiver: lurus-default
+    # Group alerts by alertname to reduce noise
+    groupBy:
+      - alertname
+      - severity
+    # Wait before sending first notification
+    groupWait: 30s
+    # Wait between group notifications
+    groupInterval: 5m
+    # Repeat interval for unresolved alerts
+    repeatInterval: 4h
+    # Child routes for severity-based routing
+    routes:
+      # Critical alerts: immediate notification
+      - matchers:
+          - name: severity
+            value: critical
+        receiver: lurus-critical
+        groupWait: 10s
+        repeatInterval: 1h
+      # Warning alerts: normal grouping
+      - matchers:
+          - name: severity
+            value: warning
+        receiver: lurus-warning
+        repeatInterval: 4h
+
+  receivers:
+    # Default receiver (Bark + Gotify)
+    - name: lurus-default
+      webhookConfigs:
+        - url: 'http://alertmanager-bark-bridge:8080/bark'
+          sendResolved: true
+
+    # Critical alerts receiver
+    - name: lurus-critical
+      webhookConfigs:
+        # Bark for iOS push notification
+        - url: 'http://alertmanager-bark-bridge:8080/bark'
+          sendResolved: true
+          httpConfig:
+            basicAuth:
+              username:
+                name: alertmanager-webhook-urls
+                key: bark-username
+              password:
+                name: alertmanager-webhook-urls
+                key: bark-password
+        # Gotify for self-hosted notification
+        - url: 'http://alertmanager-gotify-bridge:8080/gotify'
+          sendResolved: true
+
+    # Warning alerts receiver
+    - name: lurus-warning
+      webhookConfigs:
+        - url: 'http://alertmanager-bark-bridge:8080/bark'
+          sendResolved: true
+
+  # Inhibition rules to reduce alert noise
+  inhibitRules:
+    # Inhibit warning if critical is firing for same alertname
+    - sourceMatch:
+        - name: severity
+          value: critical
+      targetMatch:
+        - name: severity
+          value: warning
+      equal:
+        - alertname
+    # Inhibit all alerts if pod is restarting (root cause)
+    - sourceMatch:
+        - name: alertname
+          value: LurusApiPodRestarts
+      targetMatch:
+        - name: team
+          value: platform
+      equal:
+        - namespace
+
+---
+# Optional: Simple webhook bridge deployment for Bark
+# This bridges Alertmanager webhooks to Bark API format
+# Alternatively, use a dedicated bark-alertmanager-webhook image
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-webhook-bridge-config
+  namespace: lurus-system
+data:
+  config.yaml: |
+    # Bark webhook bridge configuration
+    # This is a placeholder - replace with actual bark-alertmanager bridge config
+    bark:
+      enabled: true
+      # URL will be read from secret
+    gotify:
+      enabled: false

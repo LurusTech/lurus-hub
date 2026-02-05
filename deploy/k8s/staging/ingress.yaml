@@ -1,0 +1,57 @@
+# Staging IngressRoute for Traefik
+# Accessible at staging-api.lurus.cn
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: lurus-api-staging
+  namespace: lurus-staging
+  labels:
+    app: lurus-api
+    environment: staging
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`staging-api.lurus.cn`)
+      kind: Rule
+      services:
+        - name: lurus-api
+          port: 8850
+      middlewares:
+        - name: staging-auth
+          namespace: lurus-staging
+  tls:
+    certResolver: letsencrypt
+---
+# Optional: Basic auth middleware for staging protection
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: staging-auth
+  namespace: lurus-staging
+spec:
+  # Remove this middleware to disable basic auth
+  # Or configure basicAuth with htpasswd secret
+  chain:
+    middlewares: []
+    # Uncomment to enable basic auth:
+    # - name: staging-basic-auth
+---
+# HTTP to HTTPS redirect
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: lurus-api-staging-http
+  namespace: lurus-staging
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`staging-api.lurus.cn`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+          namespace: traefik
+      services:
+        - name: lurus-api
+          port: 8850

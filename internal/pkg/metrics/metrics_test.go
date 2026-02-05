@@ -62,3 +62,73 @@ func TestActiveConnections(t *testing.T) {
 		t.Errorf("expected %f, got %f", initial, final)
 	}
 }
+
+func TestRecordChannelError(t *testing.T) {
+	channelID := "ch-test-1"
+	channelName := "test-channel"
+	provider := "openai"
+
+	// Reset to known state
+	ResetChannelErrors(channelID, channelName, provider)
+
+	// Record multiple errors
+	RecordChannelError(channelID, channelName, provider, "timeout")
+	RecordChannelError(channelID, channelName, provider, "timeout")
+	RecordChannelError(channelID, channelName, provider, "rate_limit")
+
+	// Verify consecutive errors count
+	consecutive := testutil.ToFloat64(ChannelConsecutiveErrors.WithLabelValues(channelID, channelName, provider))
+	if consecutive != 3 {
+		t.Errorf("expected consecutive errors 3, got %f", consecutive)
+	}
+
+	// Verify total errors
+	timeoutErrors := testutil.ToFloat64(ChannelErrorsTotal.WithLabelValues(channelID, channelName, provider, "timeout"))
+	if timeoutErrors != 2 {
+		t.Errorf("expected timeout errors 2, got %f", timeoutErrors)
+	}
+
+	rateLimitErrors := testutil.ToFloat64(ChannelErrorsTotal.WithLabelValues(channelID, channelName, provider, "rate_limit"))
+	if rateLimitErrors != 1 {
+		t.Errorf("expected rate_limit errors 1, got %f", rateLimitErrors)
+	}
+}
+
+func TestResetChannelErrors(t *testing.T) {
+	channelID := "ch-test-2"
+	channelName := "test-channel-2"
+	provider := "claude"
+
+	// Add some errors
+	RecordChannelError(channelID, channelName, provider, "connection")
+	RecordChannelError(channelID, channelName, provider, "connection")
+
+	// Reset
+	ResetChannelErrors(channelID, channelName, provider)
+
+	// Verify consecutive errors is 0
+	consecutive := testutil.ToFloat64(ChannelConsecutiveErrors.WithLabelValues(channelID, channelName, provider))
+	if consecutive != 0 {
+		t.Errorf("expected consecutive errors 0 after reset, got %f", consecutive)
+	}
+}
+
+func TestSetChannelHealth(t *testing.T) {
+	channelID := "ch-health-1"
+	channelName := "health-test"
+	provider := "gemini"
+
+	// Set healthy
+	SetChannelHealth(channelID, channelName, provider, true)
+	health := testutil.ToFloat64(ChannelHealth.WithLabelValues(channelID, channelName, provider))
+	if health != 1 {
+		t.Errorf("expected health 1 for healthy, got %f", health)
+	}
+
+	// Set unhealthy
+	SetChannelHealth(channelID, channelName, provider, false)
+	health = testutil.ToFloat64(ChannelHealth.WithLabelValues(channelID, channelName, provider))
+	if health != 0 {
+		t.Errorf("expected health 0 for unhealthy, got %f", health)
+	}
+}

@@ -4,7 +4,52 @@
 
 ---
 
-## 2026-02-05: Sprint 3 — Prometheus Metrics & Benchmarks
+## 2026-02-05: Sprint 3 — Performance, Observability & Security
+
+**Story 5.2 (Staging Environment)**: Created pre-production staging infrastructure.
+- `deploy/k8s/staging/`: namespace, deployment, service, ingress, secrets template
+- `.github/workflows/deploy-staging.yml`: Auto-deploy on main push/PR merge
+- `doc/runbook/staging-environment.md`: Setup guide, verification, troubleshooting
+- URL: https://staging-api.lurus.cn, Redis DB=1, 100% trace sampling
+- Verification: `kubectl kustomize deploy/k8s/staging/ → valid`
+
+**Story 5.1 (OpenAPI Specification)**: Created comprehensive V2 API documentation.
+- `docs/openapi/api-v2.yaml`: 45 endpoints, 30+ schemas, OAuth/JWT auth
+- `docs/openapi/api-v2.json`: JSON format for tooling compatibility
+- `docs/openapi/index.html`: Swagger UI with V1/V2/Relay spec selector
+- Covers: OAuth, User, Channels, Tokens, Billing, Logs, Redemptions, Platform Admin
+- Verification: `swagger-cli validate → valid`
+
+**Story 4.3 (Alerting Rules)**: Added Prometheus alerting rules and ServiceMonitor.
+- `prometheus-rules.yaml`: 10 alert rules (error rate, latency, channel health, pod restarts)
+- `service-monitor.yaml`: Prometheus auto-discovery for /metrics endpoint
+- `alertmanager-config.yaml`: Alert routing to Bark/Gotify webhooks
+- New metrics: `channel_consecutive_errors`, `channel_errors_total`, helper functions
+- Verification: `go test ./internal/pkg/metrics/... → 7 tests PASS`, kustomize build valid
+
+**Story 4.2 (Request Tracing)**: Implemented OpenTelemetry distributed tracing.
+- `internal/pkg/tracing/`: Config, Init/Shutdown, Middleware, span helpers
+- Gin middleware: auto spans, X-Trace-Id header, context propagation
+- Helpers: RelaySpan, StartChannelSelectSpan, StartUpstreamSpan, StartAuthSpan
+- Env vars: OTEL_TRACING_ENABLED, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_TRACE_SAMPLE_RATE
+- Verification: `go test ./internal/pkg/tracing/... → 9 tests PASS`
+
+**Story 3.3 (HA Deployment)**: Configured multi-replica deployment with zero-downtime.
+- `deployment.yaml`: replicas=2, rollingUpdate (maxUnavailable=0), podAntiAffinity
+- `pdb.yaml`: PodDisruptionBudget (minAvailable=1)
+- `doc/runbook/ha-deployment.md`: comprehensive HA guide
+- Verification: `kubectl kustomize deploy/k8s/ → valid`
+
+**Story 2.4 (Security Regression Tests)**: Created comprehensive security test suite.
+- 34+ tests: tenant isolation, JWKS rotation, rate limiting, SQL injection, XSS, auth bypass
+- New file: `internal/adapter/security_test.go`
+- CI workflow: `.github/workflows/security-tests.yml`
+- Verification: `go test ./internal/adapter/... -run Security → PASS`
+
+**Story 3.2 (Gateway Hot Path Optimization)**: Added object pools (`internal/pkg/pool/`).
+- BufferPool, IntSlicePool, StringBuilderPool, MapPool
+- Applied to `GetRandomSatisfiedChannel` (channel_cache.go)
+- Benchmark: MultipleChannels 416ns/op, 2 allocs (down from 6+)
 
 **Story 4.1 (Prometheus Metrics)**: Added `/metrics` endpoint with 11 metric types.
 - Request counters, latency histograms, relay metrics, token usage, quota consumption

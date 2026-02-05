@@ -1,0 +1,2675 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Lurus API V2 - Multi-Tenant Gateway",
+    "description": "Lurus API V2 provides multi-tenant access to LLM API gateway services.\n\n## Authentication\n\nV2 API uses **Zitadel OAuth 2.0** for authentication:\n\n1. Redirect user to `GET /api/v2/{tenant_slug}/auth/login`\n2. User authenticates with Zitadel\n3. Callback redirects to `GET /api/v2/oauth/callback`\n4. Use session cookie or JWT for subsequent requests\n\n## Tenant Isolation\n\nAll tenant-specific endpoints are scoped by `{tenant_slug}` in the URL path.\nUsers can only access data within their assigned tenant.\n\n## Rate Limiting\n\n- Standard endpoints: 100 requests/minute per user\n- Relay endpoints: Based on quota allocation\n",
+    "version": "2.0.0",
+    "contact": {
+      "name": "Lurus Support",
+      "email": "support@lurus.cn"
+    },
+    "license": {
+      "name": "Proprietary",
+      "url": "https://lurus.cn/terms"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.lurus.cn",
+      "description": "Production"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "Local Development"
+    }
+  ],
+  "tags": [
+    {
+      "name": "OAuth",
+      "description": "OAuth 2.0 authentication flows"
+    },
+    {
+      "name": "User",
+      "description": "User profile management"
+    },
+    {
+      "name": "Channels",
+      "description": "LLM provider channel management"
+    },
+    {
+      "name": "Tokens",
+      "description": "API token management"
+    },
+    {
+      "name": "Billing",
+      "description": "Billing and subscriptions"
+    },
+    {
+      "name": "Logs",
+      "description": "Usage logs"
+    },
+    {
+      "name": "Redemptions",
+      "description": "Redemption codes"
+    },
+    {
+      "name": "Tenant Config",
+      "description": "Tenant configuration (Admin)"
+    },
+    {
+      "name": "Platform Admin",
+      "description": "Platform-level administration"
+    }
+  ],
+  "paths": {
+    "/api/v2/{tenant_slug}/auth/login": {
+      "get": {
+        "tags": [
+          "OAuth"
+        ],
+        "summary": "Initiate OAuth Login",
+        "description": "Redirects to Zitadel login page with PKCE challenge.\nAfter successful authentication, user is redirected to callback URL.\n",
+        "operationId": "zitadelLoginRedirect",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "name": "redirect_url",
+            "in": "query",
+            "description": "URL to redirect after successful login",
+            "schema": {
+              "type": "string",
+              "example": "/console"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to Zitadel login",
+            "headers": {
+              "Location": {
+                "description": "Zitadel authorization URL",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "description": "Tenant not found"
+          }
+        }
+      }
+    },
+    "/api/v2/oauth/callback": {
+      "get": {
+        "tags": [
+          "OAuth"
+        ],
+        "summary": "OAuth Callback",
+        "description": "Handles OAuth callback from Zitadel.\nExchanges authorization code for tokens and creates session.\n",
+        "operationId": "zitadelCallback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "description": "Authorization code from Zitadel",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "description": "State parameter for CSRF protection",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to original URL with session established"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/auth/session-info": {
+      "get": {
+        "tags": [
+          "OAuth"
+        ],
+        "summary": "Get Session Info",
+        "description": "Returns current user session data for frontend",
+        "operationId": "getSessionInfo",
+        "responses": {
+          "200": {
+            "description": "Session information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/oauth/logout": {
+      "post": {
+        "tags": [
+          "OAuth"
+        ],
+        "summary": "Logout",
+        "description": "Logs out from Zitadel and clears session",
+        "operationId": "zitadelLogout",
+        "responses": {
+          "200": {
+            "description": "Successfully logged out"
+          },
+          "302": {
+            "description": "Redirect to Zitadel logout URL"
+          }
+        }
+      }
+    },
+    "/api/v2/oauth/refresh": {
+      "post": {
+        "tags": [
+          "OAuth"
+        ],
+        "summary": "Refresh Access Token",
+        "description": "Refreshes the OAuth access token using refresh token",
+        "operationId": "refreshAccessToken",
+        "responses": {
+          "200": {
+            "description": "New access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/user/me": {
+      "get": {
+        "tags": [
+          "User"
+        ],
+        "summary": "Get Current User",
+        "description": "Returns the current authenticated user's profile",
+        "operationId": "getSelfV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "User"
+        ],
+        "summary": "Update Current User",
+        "description": "Updates the current user's profile",
+        "operationId": "updateSelfV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated user profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/channels": {
+      "get": {
+        "tags": [
+          "Channels"
+        ],
+        "summary": "List Channels",
+        "description": "Lists all available LLM provider channels",
+        "operationId": "listChannelsV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/Page"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "description": "Search keyword",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of channels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Channels"
+        ],
+        "summary": "Create Channel",
+        "description": "Creates a new LLM provider channel (Admin only)",
+        "operationId": "createChannelV2",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Channel created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/channels/{id}": {
+      "get": {
+        "tags": [
+          "Channels"
+        ],
+        "summary": "Get Channel",
+        "description": "Gets a specific channel by ID",
+        "operationId": "getChannelV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/ChannelId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Channel details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Channels"
+        ],
+        "summary": "Update Channel",
+        "description": "Updates a channel (Admin only)",
+        "operationId": "updateChannelV2",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/ChannelId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Channel"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Channels"
+        ],
+        "summary": "Delete Channel",
+        "description": "Deletes a channel (Admin only)",
+        "operationId": "deleteChannelV2",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/ChannelId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Channel deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/tokens": {
+      "get": {
+        "tags": [
+          "Tokens"
+        ],
+        "summary": "List Tokens",
+        "description": "Lists all API tokens for the current user",
+        "operationId": "listTokensV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/Page"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of tokens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Tokens"
+        ],
+        "summary": "Create Token",
+        "description": "Creates a new API token",
+        "operationId": "createTokenV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Token created (includes full key, only shown once)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenWithKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/tokens/{id}": {
+      "put": {
+        "tags": [
+          "Tokens"
+        ],
+        "summary": "Update Token",
+        "description": "Updates an API token",
+        "operationId": "updateTokenV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/TokenId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Token"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Tokens"
+        ],
+        "summary": "Delete Token",
+        "description": "Deletes an API token",
+        "operationId": "deleteTokenV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/TokenId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Token deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/billing/topups": {
+      "get": {
+        "tags": [
+          "Billing"
+        ],
+        "summary": "List Top-ups",
+        "description": "Lists user's top-up history",
+        "operationId": "getTopUpsV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/Page"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Top-up history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopUpList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/billing/topup": {
+      "post": {
+        "tags": [
+          "Billing"
+        ],
+        "summary": "Create Top-up",
+        "description": "Initiates a new top-up payment",
+        "operationId": "topUpV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TopUpRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Payment URL returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopUpResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/billing/subscriptions": {
+      "get": {
+        "tags": [
+          "Billing"
+        ],
+        "summary": "List Subscriptions",
+        "description": "Lists user's active subscriptions",
+        "operationId": "getSubscriptionsV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscription list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/billing/subscribe": {
+      "post": {
+        "tags": [
+          "Billing"
+        ],
+        "summary": "Create Subscription",
+        "description": "Subscribes to a plan",
+        "operationId": "subscribeV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubscribeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Subscription created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Subscription"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/billing/subscriptions/{id}": {
+      "delete": {
+        "tags": [
+          "Billing"
+        ],
+        "summary": "Cancel Subscription",
+        "description": "Cancels a subscription",
+        "operationId": "cancelSubscriptionV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Subscription cancelled"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/logs": {
+      "get": {
+        "tags": [
+          "Logs"
+        ],
+        "summary": "Get User Logs",
+        "description": "Gets usage logs for the current user",
+        "operationId": "getLogsV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/Page"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "description": "Filter by model name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Start time (Unix timestamp)",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "End time (Unix timestamp)",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage logs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/logs/all": {
+      "get": {
+        "tags": [
+          "Logs"
+        ],
+        "summary": "Get All Logs",
+        "description": "Gets all users' logs (Admin only)",
+        "operationId": "getAllLogsV2",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/Page"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Filter by user ID",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "All logs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/redemptions/redeem": {
+      "post": {
+        "tags": [
+          "Redemptions"
+        ],
+        "summary": "Redeem Code",
+        "description": "Redeems a redemption code for quota",
+        "operationId": "redeemCodeV2",
+        "security": [
+          {
+            "ZitadelJWT": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "description": "Redemption code"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Code redeemed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "quota": {
+                      "type": "integer",
+                      "description": "Quota added"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Code not found or already used"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/redemptions": {
+      "get": {
+        "tags": [
+          "Redemptions"
+        ],
+        "summary": "List Redemption Codes",
+        "description": "Lists all redemption codes (Admin only)",
+        "operationId": "listRedemptionsV2",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "$ref": "#/components/parameters/Page"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redemption code list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedemptionList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Redemptions"
+        ],
+        "summary": "Create Redemption Code",
+        "description": "Creates a new redemption code (Admin only)",
+        "operationId": "createRedemptionV2",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedemptionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Redemption code created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Redemption"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/redemptions/{id}": {
+      "delete": {
+        "tags": [
+          "Redemptions"
+        ],
+        "summary": "Delete Redemption Code",
+        "description": "Deletes a redemption code (Admin only)",
+        "operationId": "deleteRedemptionV2",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Redemption deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/config": {
+      "get": {
+        "tags": [
+          "Tenant Config"
+        ],
+        "summary": "Get Tenant Configs",
+        "description": "Gets all tenant configuration (Admin only)",
+        "operationId": "getTenantConfigs",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant configurations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v2/{tenant_slug}/config/{key}": {
+      "put": {
+        "tags": [
+          "Tenant Config"
+        ],
+        "summary": "Update Tenant Config",
+        "description": "Updates a tenant configuration value (Admin only)",
+        "operationId": "updateTenantConfig",
+        "security": [
+          {
+            "ZitadelJWT": [
+              "admin"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TenantSlug"
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Config updated"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/tenants": {
+      "get": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "List Tenants",
+        "description": "Lists all tenants (Platform Admin only)",
+        "operationId": "listTenants",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Page"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Create Tenant",
+        "description": "Creates a new tenant (Platform Admin only)",
+        "operationId": "createTenant",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Tenant created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tenant"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/tenants/{id}": {
+      "get": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Get Tenant",
+        "description": "Gets a tenant by ID (Platform Admin only)",
+        "operationId": "getTenant",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tenant"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Update Tenant",
+        "description": "Updates a tenant (Platform Admin only)",
+        "operationId": "updateTenant",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tenant updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tenant"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Delete Tenant",
+        "description": "Deletes a tenant (Platform Admin only)",
+        "operationId": "deleteTenant",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Tenant deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/tenants/{id}/enable": {
+      "post": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Enable Tenant",
+        "operationId": "enableTenant",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant enabled"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/tenants/{id}/disable": {
+      "post": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Disable Tenant",
+        "operationId": "disableTenant",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant disabled"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/tenants/{id}/suspend": {
+      "post": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Suspend Tenant",
+        "operationId": "suspendTenant",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant suspended"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/tenants/{id}/stats": {
+      "get": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Get Tenant Stats",
+        "operationId": "getTenantStats",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tenant statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/mappings": {
+      "get": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "List User Mappings",
+        "operationId": "listUserMappingsV2",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Page"
+          },
+          {
+            "$ref": "#/components/parameters/PageSize"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User mapping list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserMappingList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/mappings/{id}": {
+      "get": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Get User Mapping",
+        "operationId": "getUserMappingV2",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User mapping details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserMapping"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Delete User Mapping",
+        "operationId": "deleteUserMappingV2",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Mapping deleted"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v2/admin/stats": {
+      "get": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Get System Stats",
+        "operationId": "getSystemStatsV2",
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "System-wide statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ZitadelJWT": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Zitadel OAuth 2.0 JWT token"
+      },
+      "SessionAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "session",
+        "description": "Session cookie for platform admin"
+      }
+    },
+    "parameters": {
+      "TenantSlug": {
+        "name": "tenant_slug",
+        "in": "path",
+        "required": true,
+        "description": "Tenant identifier (slug)",
+        "schema": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "example": "lurus"
+        }
+      },
+      "Page": {
+        "name": "page",
+        "in": "query",
+        "description": "Page number (1-based)",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        }
+      },
+      "PageSize": {
+        "name": "page_size",
+        "in": "query",
+        "description": "Items per page",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      },
+      "ChannelId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "TokenId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "integer"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Unauthorized",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Forbidden - insufficient permissions",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "example": false
+          },
+          "message": {
+            "type": "string",
+            "example": "Invalid request"
+          }
+        }
+      },
+      "SessionInfo": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "integer"
+          },
+          "username": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "integer"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "tenant_slug": {
+            "type": "string"
+          }
+        }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string",
+            "example": "Bearer"
+          },
+          "expires_in": {
+            "type": "integer",
+            "description": "Seconds until expiration"
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "username": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "quota": {
+            "type": "integer"
+          },
+          "used_quota": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Unix timestamp"
+          }
+        }
+      },
+      "UserUpdate": {
+        "type": "object",
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "maxLength": 50
+          }
+        }
+      },
+      "Channel": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "integer"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "models": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "weight": {
+            "type": "integer"
+          }
+        }
+      },
+      "ChannelCreate": {
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "key"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "integer"
+          },
+          "key": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "models": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "default": 0
+          },
+          "weight": {
+            "type": "integer",
+            "default": 1
+          }
+        }
+      },
+      "ChannelUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "models": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "weight": {
+            "type": "integer"
+          }
+        }
+      },
+      "ChannelList": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Channel"
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "Token": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string",
+            "description": "Masked key (sk-xxx...xxx)"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "quota": {
+            "type": "integer"
+          },
+          "used_quota": {
+            "type": "integer"
+          },
+          "expired_time": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer"
+          }
+        }
+      },
+      "TokenWithKey": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Token"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "full_key": {
+                "type": "string",
+                "description": "Full API key (only shown once)"
+              }
+            }
+          }
+        ]
+      },
+      "TokenCreate": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "quota": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expired_time": {
+            "type": "integer",
+            "description": "Unix timestamp, -1 for never"
+          }
+        }
+      },
+      "TokenUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "quota": {
+            "type": "integer"
+          },
+          "expired_time": {
+            "type": "integer"
+          }
+        }
+      },
+      "TokenList": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Token"
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "TopUpRequest": {
+        "type": "object",
+        "required": [
+          "amount",
+          "payment_method"
+        ],
+        "properties": {
+          "amount": {
+            "type": "number",
+            "minimum": 1
+          },
+          "payment_method": {
+            "type": "string",
+            "enum": [
+              "stripe",
+              "epay",
+              "creem"
+            ]
+          }
+        }
+      },
+      "TopUpResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "payment_url": {
+            "type": "string"
+          },
+          "order_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TopUpList": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "amount": {
+                  "type": "number"
+                },
+                "quota": {
+                  "type": "integer"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "Subscription": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "plan_id": {
+            "type": "integer"
+          },
+          "plan_name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "integer"
+          }
+        }
+      },
+      "SubscribeRequest": {
+        "type": "object",
+        "required": [
+          "plan_id"
+        ],
+        "properties": {
+          "plan_id": {
+            "type": "integer"
+          },
+          "payment_method": {
+            "type": "string"
+          }
+        }
+      },
+      "SubscriptionList": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Subscription"
+            }
+          }
+        }
+      },
+      "LogList": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "user_id": {
+                  "type": "integer"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "prompt_tokens": {
+                  "type": "integer"
+                },
+                "completion_tokens": {
+                  "type": "integer"
+                },
+                "quota": {
+                  "type": "integer"
+                },
+                "created_at": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "Redemption": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "code": {
+            "type": "string"
+          },
+          "quota": {
+            "type": "integer"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "used_count": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "integer"
+          }
+        }
+      },
+      "RedemptionCreate": {
+        "type": "object",
+        "required": [
+          "quota",
+          "count"
+        ],
+        "properties": {
+          "quota": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      },
+      "RedemptionList": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Redemption"
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "Tenant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "zitadel_org_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled",
+              "suspended"
+            ]
+          },
+          "created_at": {
+            "type": "integer"
+          }
+        }
+      },
+      "TenantCreate": {
+        "type": "object",
+        "required": [
+          "slug",
+          "name",
+          "zitadel_org_id"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "zitadel_org_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TenantUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "TenantList": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Tenant"
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "TenantStats": {
+        "type": "object",
+        "properties": {
+          "user_count": {
+            "type": "integer"
+          },
+          "token_count": {
+            "type": "integer"
+          },
+          "channel_count": {
+            "type": "integer"
+          },
+          "total_quota": {
+            "type": "integer"
+          },
+          "used_quota": {
+            "type": "integer"
+          }
+        }
+      },
+      "UserMapping": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "zitadel_user_id": {
+            "type": "string"
+          },
+          "lurus_user_id": {
+            "type": "integer"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          }
+        }
+      },
+      "UserMappingList": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserMapping"
+            }
+          },
+          "total": {
+            "type": "integer"
+          }
+        }
+      },
+      "SystemStats": {
+        "type": "object",
+        "properties": {
+          "tenant_count": {
+            "type": "integer"
+          },
+          "total_users": {
+            "type": "integer"
+          },
+          "total_requests": {
+            "type": "integer"
+          },
+          "total_tokens": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

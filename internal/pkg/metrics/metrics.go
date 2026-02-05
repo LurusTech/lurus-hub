@@ -133,6 +133,29 @@ var (
 		},
 		[]string{"cache_type", "result"}, // result: hit, miss
 	)
+
+	// ChannelConsecutiveErrors tracks consecutive errors per channel
+	// Reset to 0 on successful request, incremented on each error
+	ChannelConsecutiveErrors = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "channel_consecutive_errors",
+			Help:      "Consecutive error count per channel (resets on success)",
+		},
+		[]string{"channel_id", "channel_name", "provider"},
+	)
+
+	// ChannelErrorsTotal tracks total channel errors
+	ChannelErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "channel_errors_total",
+			Help:      "Total errors per channel",
+		},
+		[]string{"channel_id", "channel_name", "provider", "error_type"},
+	)
 )
 
 // RecordRelayRequest records a relay request with its outcome
@@ -154,4 +177,24 @@ func RecordTokens(provider, model string, inputTokens, outputTokens int) {
 // RecordQuotaConsumed records quota consumption
 func RecordQuotaConsumed(tenantID, userID string, quota int64) {
 	QuotaConsumed.WithLabelValues(tenantID, userID).Add(float64(quota))
+}
+
+// RecordChannelError increments consecutive error count for a channel
+func RecordChannelError(channelID, channelName, provider, errorType string) {
+	ChannelConsecutiveErrors.WithLabelValues(channelID, channelName, provider).Inc()
+	ChannelErrorsTotal.WithLabelValues(channelID, channelName, provider, errorType).Inc()
+}
+
+// ResetChannelErrors resets consecutive error count on successful request
+func ResetChannelErrors(channelID, channelName, provider string) {
+	ChannelConsecutiveErrors.WithLabelValues(channelID, channelName, provider).Set(0)
+}
+
+// SetChannelHealth sets channel health status (1=healthy, 0=unhealthy)
+func SetChannelHealth(channelID, channelName, provider string, healthy bool) {
+	value := 0.0
+	if healthy {
+		value = 1.0
+	}
+	ChannelHealth.WithLabelValues(channelID, channelName, provider).Set(value)
 }

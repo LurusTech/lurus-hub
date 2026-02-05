@@ -9,12 +9,16 @@ import (
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
+	"github.com/QuantumNous/lurus-api/internal/pkg/tracing"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/gin-gonic/gin"
 )
 
 func SetRouter(router *gin.Engine, buildFS embed.FS, indexPage []byte) {
+	// Add OpenTelemetry tracing middleware (must be first to capture full request)
+	router.Use(tracing.Middleware())
+
 	// Add Prometheus metrics middleware
 	router.Use(metrics.Middleware())
 

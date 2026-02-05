@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/pkg/search"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/QuantumNous/lurus-api/internal/pkg/tracing"
 	"github.com/QuantumNous/lurus-api/internal/adapter/handler"
 	"github.com/QuantumNous/lurus-api/internal/adapter/handler/router"
 	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
@@ -71,6 +72,15 @@ func run(ctx context.Context, startTime time.Time) error {
 	defer func() {
 		if err := repo.CloseDB(); err != nil {
 			common.SysError("failed to close database: " + err.Error())
+		}
+	}()
+
+	// Ensure tracing is shutdown gracefully
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracing.Shutdown(shutdownCtx); err != nil {
+			common.SysError("failed to shutdown tracing: " + err.Error())
 		}
 	}()
 
@@ -414,6 +424,15 @@ func InitResources(ctx context.Context) error {
 		common.SysError(fmt.Sprintf("Failed to initialize Zitadel authentication: %v", err))
 		// Don't return error - Zitadel is optional and can be enabled later
 		// 不返回错误 - Zitadel 是可选的，可以稍后启用
+	}
+
+	// Initialize OpenTelemetry tracing
+	// 初始化 OpenTelemetry 追踪
+	tracingCfg := tracing.LoadConfigFromEnv()
+	if err := tracing.Init(ctx, tracingCfg); err != nil {
+		common.SysError(fmt.Sprintf("Failed to initialize tracing: %v", err))
+		// Don't return error - tracing is optional
+		// 不返回错误 - 追踪是可选的
 	}
 
 	return nil

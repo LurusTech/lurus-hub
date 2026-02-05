@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lurus API Documentation</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+  <style>
+    body { margin: 0; padding: 0; }
+    .topbar { display: none; }
+    .swagger-ui .info { margin: 20px 0; }
+    .api-selector {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      padding: 20px;
+      background: #f5f5f5;
+      border-bottom: 1px solid #ddd;
+    }
+    .api-selector button {
+      padding: 10px 20px;
+      border: 1px solid #3b82f6;
+      background: white;
+      color: #3b82f6;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .api-selector button.active {
+      background: #3b82f6;
+      color: white;
+    }
+    .api-selector button:hover {
+      background: #e0e7ff;
+    }
+    .api-selector button.active:hover {
+      background: #2563eb;
+    }
+  </style>
+</head>
+<body>
+  <div class="api-selector">
+    <button onclick="loadSpec('api-v2.yaml')" id="btn-v2" class="active">V2 API (Multi-Tenant)</button>
+    <button onclick="loadSpec('relay.json')" id="btn-relay">Relay API (OpenAI Compatible)</button>
+    <button onclick="loadSpec('api.json')" id="btn-v1">V1 API (Legacy)</button>
+  </div>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    let currentSpec = 'api-v2.yaml';
+
+    function loadSpec(spec) {
+      currentSpec = spec;
+      document.querySelectorAll('.api-selector button').forEach(btn => btn.classList.remove('active'));
+      if (spec === 'api-v2.yaml') document.getElementById('btn-v2').classList.add('active');
+      else if (spec === 'relay.json') document.getElementById('btn-relay').classList.add('active');
+      else document.getElementById('btn-v1').classList.add('active');
+
+      SwaggerUIBundle({
+        url: spec,
+        dom_id: '#swagger-ui',
+        presets: [
+          SwaggerUIBundle.presets.apis,
+          SwaggerUIBundle.SwaggerUIStandalonePreset
+        ],
+        layout: "BaseLayout",
+        deepLinking: true,
+        showExtensions: true,
+        showCommonExtensions: true,
+        defaultModelsExpandDepth: 1,
+        defaultModelExpandDepth: 2,
+      });
+    }
+
+    // Load default spec
+    loadSpec('api-v2.yaml');
+  </script>
+</body>
+</html>

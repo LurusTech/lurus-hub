@@ -56,6 +56,8 @@ cd web && bun run typecheck && bun run lint && bun run test
 - `doc/runbook/database.md` — backup, restore, migration
 - `doc/runbook/tenant-onboarding.md` — Zitadel + API tenant setup
 - `doc/runbook/incident-response.md` — triage, escalation, postmortem
+- `doc/runbook/ha-deployment.md` — high availability deployment
+- `doc/runbook/staging-environment.md` — staging environment setup
 
 ## BMAD
 

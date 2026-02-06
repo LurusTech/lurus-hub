@@ -4,691 +4,242 @@
 
 # Lurus API
 
-🚀 **企业级大模型 API 网关与资产管理平台**
-
 **Enterprise-Grade AI Model API Gateway & Asset Management Platform**
 
-<p align="center">
-  <strong>中文</strong> | <a href="./README.en.md">English</a>
-</p>
+**企业级大模型 API 网关与资产管理平台**
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Go-1.25.1-blue?logo=go" alt="Go Version">
+  <img src="https://img.shields.io/badge/Go-1.25-blue?logo=go" alt="Go Version">
   <img src="https://img.shields.io/badge/License-MIT-brightgreen" alt="License">
   <img src="https://img.shields.io/badge/Meilisearch-v1.10+-orange?logo=meilisearch" alt="Meilisearch">
   <img src="https://img.shields.io/badge/Docker-Ready-blue?logo=docker" alt="Docker">
-</p>
-
-<p align="center">
-  <a href="#-快速开始">快速开始</a> •
-  <a href="#-核心特性">核心特性</a> •
-  <a href="#-技术架构">技术架构</a> •
-  <a href="#-部署指南">部署指南</a> •
-  <a href="#-文档">文档</a>
+  <img src="https://img.shields.io/badge/K3s-Production-green?logo=kubernetes" alt="K3s">
 </p>
 
 </div>
 
 ---
 
-## 📝 项目简介 / Project Overview
+## Overview / 项目简介
 
-**Lurus API** 是一个功能强大的企业级 AI 模型 API 网关和资产管理平台，专为简化和优化大语言模型的接入、管理和使用而设计。
+**Lurus API** is a multi-tenant AI model gateway and asset management platform. It provides unified API access to all major LLM providers with intelligent routing, real-time search, comprehensive billing, and enterprise-grade observability.
 
-基于开源项目 [One API](https://github.com/songquanpeng/one-api) 进行深度定制和增强开发，集成了 **Meilisearch 高性能搜索引擎**，提供毫秒级的日志、用户、通道检索能力。
-
-**Key Features:**
-- 🎯 统一 API 接口 - 一个接口接入所有主流 AI 模型
-- ⚡ 超快搜索 - Meilisearch 驱动，< 50ms 响应时间
-- 🔒 企业级安全 - 完善的权限管理和审计日志
-- 📊 可视化控制台 - 实时数据看板和统计分析
-- 🌍 多语言支持 - 中文、英文界面
-- 🔄 智能路由 - 负载均衡、自动重试、降级策略
+基于 [One API](https://github.com/songquanpeng/one-api) 深度定制，集成 Meilisearch 搜索引擎、Zitadel OIDC 多租户认证、Prometheus/OpenTelemetry 可观测性。
 
 ---
 
-## 🚀 快速开始 / Quick Start
+## Core Features / 核心特性
 
-### 前置要求 / Prerequisites
+### Multi-Tenant Architecture / 多租户架构
+- **Zitadel OIDC** authentication with tenant isolation (shared DB + GORM plugin auto-inject `tenant_id`)
+- **V2 API** (`/api/v2/:tenant_slug/*`) with full RBAC (admin, user, billing_manager)
+- **V1 backward compatibility** — existing integrations continue working
+- **Platform admin** API for cross-tenant management
 
-- Docker & Docker Compose
-- Go 1.25+ (仅开发环境需要)
+### AI Model Gateway / AI 模型网关
+- **Unified API** — one interface for OpenAI, Claude, Gemini, DeepSeek, Qwen, GLM, Moonshot, and more
+- **Format auto-conversion** — OpenAI ↔ Claude ↔ Gemini transparent translation
+- **Intelligent routing** — weighted load balancing, auto-retry on failure, priority-based channel selection
+- **Specialized models** — embeddings, rerank, TTS, STT, image/video generation
+- **Realtime API** — OpenAI Realtime (WebSocket) support
 
-### 一键部署 / One-Click Deployment
+### Search & Performance / 搜索与性能
+- **Meilisearch** integration — < 50ms search across logs, users, channels
+- **Object pooling** — BufferPool, IntSlicePool, MapPool for hot path optimization
+- **Gateway overhead** — p95 < 50ms verified by benchmark suite
+- **HA deployment** — 2-replica rolling updates with PodDisruptionBudget
 
-```bash
-# 1. 克隆项目 / Clone repository
-git clone https://github.com/hanmahong5-arch/lurus-api.git
-cd lurus-api
+### Observability / 可观测性
+- **Prometheus** `/metrics` endpoint with 11 metric types (request count, latency, token usage, quota)
+- **OpenTelemetry** distributed tracing with Jaeger exporter and X-Trace-Id header
+- **10 alerting rules** — error rate, latency, channel health, pod restarts
+- **Structured logging** — JSON format with slog
 
-# 2. 启动所有服务（包括 Meilisearch）/ Start all services
-docker-compose up -d
+### Billing & Security / 计费与安全
+- Per-token, per-request, time-based billing with cache billing support
+- Online top-up (Creem, Stripe integration)
+- Fine-grained access control — model-level permissions, IP whitelist, token quotas
+- Audit logging for all operations
 
-# 3. 访问管理后台 / Access admin panel
-# http://localhost:3000
-# 默认账号 / Default credentials:
-# 用户名: root
-# 密码: (首次登录后请立即修改 / Change immediately after first login)
+---
+
+## Tech Stack / 技术栈
+
+| Layer | Technology |
+|-------|-----------|
+| **Backend** | Go 1.25, Gin, GORM, PostgreSQL/SQLite |
+| **Frontend** | React 18, Vite, Semi UI, TailwindCSS |
+| **Search** | Meilisearch v1.10+ |
+| **Cache** | Redis |
+| **Auth** | Zitadel OIDC + JWT |
+| **Observability** | Prometheus, OpenTelemetry, Jaeger |
+| **Deployment** | K3s, ArgoCD (GitOps), Docker |
+| **CI/CD** | GitHub Actions → GHCR → ArgoCD sync |
+
+---
+
+## Architecture / 架构
+
+```
+                          ┌─────────────────────────┐
+                          │      Lurus API Gateway   │
+                          │    (Hexagonal / Go+Gin)  │
+                          └────────────┬────────────┘
+                                       │
+                 ┌─────────────────────┼─────────────────────┐
+                 │                     │                     │
+          ┌──────▼──────┐     ┌───────▼───────┐    ┌───────▼───────┐
+          │  V1 API     │     │  V2 API       │    │  Relay API    │
+          │  (compat)   │     │  (multi-tenant)│    │  /v1/chat/*   │
+          └─────────────┘     └───────────────┘    └───────────────┘
+                                       │
+          ┌────────────────────────────┼────────────────────────────┐
+          │                            │                            │
+   ┌──────▼──────┐           ┌────────▼────────┐          ┌───────▼───────┐
+   │  Zitadel    │           │  PostgreSQL     │          │  Meilisearch  │
+   │  OIDC Auth  │           │  (tenant_id)    │          │  Search       │
+   └─────────────┘           └─────────────────┘          └───────────────┘
+
+          ┌──────────────┐   ┌─────────────────┐   ┌──────────────┐
+          │  Redis       │   │  Prometheus     │   │  Jaeger      │
+          │  Cache       │   │  Metrics        │   │  Tracing     │
+          └──────────────┘   └─────────────────┘   └──────────────┘
+                                       │
+                 ┌─────────────────────┼─────────────────────┐
+                 │                     │                     │
+          ┌──────▼──────┐     ┌───────▼───────┐    ┌───────▼───────┐
+          │  OpenAI     │     │  Claude       │    │  Gemini      │
+          │  Azure      │     │  DeepSeek     │    │  Qwen/GLM    │
+          └─────────────┘     └───────────────┘    └───────────────┘
 ```
 
-### 开发环境部署 / Development Setup
+### Directory Structure / 目录结构
+
+```
+internal/
+├── domain/entity/     # Domain models (no dependencies)
+├── app/               # Business logic (use cases, relay handlers)
+│   ├── relay/         # AI model relay orchestration
+│   └── passkey/       # Passkey authentication
+├── adapter/           # Infrastructure layer
+│   ├── handler/       # HTTP handlers (Gin controllers)
+│   │   └── router/    # Route definitions (v1, v2, v2-admin)
+│   ├── middleware/     # Auth, CORS, tenant isolation, rate limiting
+│   ├── repo/          # GORM repositories (data access)
+│   └── provider/      # AI vendor adaptors (OpenAI, Claude, Gemini...)
+├── lifecycle/         # App init, shutdown, background tasks
+└── pkg/               # Shared utilities (config, logger, metrics, tracing, search)
+```
+
+---
+
+## Quick Start / 快速开始
+
+### Development / 开发环境
 
 ```bash
-# 1. 启动 Meilisearch（可选但推荐）/ Start Meilisearch (optional but recommended)
-docker-compose -f docker-compose.meilisearch.yml up -d
-
-# 2. 配置环境变量 / Configure environment
-cp .env.meilisearch.example .env
-# 编辑 .env 文件，设置数据库和 Meilisearch 配置
-
-# 3. 编译运行 / Build and run
+# Backend
 go build -o lurus-api ./cmd/server
 ./lurus-api
 
-# 4. 前端开发（可选）/ Frontend development (optional)
-cd web
-bun install
-bun run dev
+# Frontend
+cd web && bun install && bun run dev
 ```
 
----
-
-## ✨ 核心特性 / Core Features
-
-### 🎨 用户体验 / User Experience
-
-| 特性 | 说明 |
-|------|------|
-| 🦊 **Ailurus 设计系统** | **全新小熊猫主题设计，毛玻璃 + 发光阴影 + 弹簧动画** |
-| 🎨 现代化 UI | 基于 React 18 + framer-motion 的响应式界面 |
-| 🌍 多语言 | 中文、英文界面切换 |
-| 📊 数据可视化 | 实时统计看板，使用量、消费、趋势分析 |
-| 🔍 **超快搜索** | **Meilisearch 集成，< 50ms 响应，支持模糊匹配** |
-| 📱 移动适配 | 完美支持移动端访问 |
-
-### 🦊 Ailurus 设计系统 / Ailurus Design System
-
-> **设计理念 / Design Philosophy** - "高端舒适 + 赛博朋克森林" (High-End Comfort meets Cyberpunk Forest)
-
-#### 核心特性 / Core Features
-
-| 特性 | 说明 |
-|------|------|
-| 🎨 **小熊猫配色** | 锈橙渐变主色、黑曜石背景、奶油白文字、青色/紫色点缀 |
-| ✨ **发光阴影** | Luminous Depth - 有色阴影取代黑色阴影 |
-| 🪟 **毛玻璃效果** | Glassmorphism - 模糊背景、半透明面板 |
-| 🌀 **弹簧动画** | Spring Physics - framer-motion 物理回弹效果 |
-| 🎭 **噪点纹理** | Organic Texture - 消除"塑料感" |
-
-#### 组件库 / Component Library
-
-```
-ailurus-ui/
-├── motion.js           # 运动系统：弹簧配置、动画变体
-├── AilurusCard.jsx     # 毛玻璃卡片：悬停动画、发光阴影
-├── AilurusButton.jsx   # 动画按钮：弹簧交互、多种变体
-├── AilurusInput.jsx    # 动画输入框：焦点发光、浮动标签
-├── AilurusModal.jsx    # 模态框：毛玻璃背景、弹簧进出
-├── AilurusTabs.jsx     # 标签页：下划线/胶囊/卡片样式
-├── AilurusTable.jsx    # 数据表格：行动画、骨架屏
-├── AilurusStatCard.jsx # 统计卡片：数字计数动画
-└── AilurusAuthLayout.jsx # 认证布局：动画背景
-```
-
-#### 视觉效果 / Visual Effects
-
-- 🌈 **深色森林背景** + 三色光晕（锈橙/青/紫）
-- 💎 **毛玻璃面板** - `backdrop-blur-xl` + 白色边框
-- ⚡ **级联入场** - `staggerChildren` 列表依次动画
-- 🔥 **弹簧交互** - 按钮/卡片悬停物理回弹
-
-### 🔐 权限与安全 / Security & Authorization
-
-- ✅ **多租户隔离** - 用户组、令牌分组管理
-- ✅ **细粒度权限** - 模型级别的访问控制
-- ✅ **审计日志** - 完整的操作记录和追溯
-- ✅ **令牌管理** - 支持多令牌、过期时间、额度限制
-- ✅ **IP 白名单** - 增强安全防护
-- ✅ **OAuth 集成** - Discord、Telegram、OIDC 授权登录
-
-### 💰 计费与支付 / Billing & Payment
-
-- ✅ **灵活计费** - 按次数、按 Token、按时长
-- ✅ **缓存计费** - 支持 OpenAI、Claude、DeepSeek 等缓存特性
-- ✅ **在线充值** - 易支付、Stripe 集成
-- ✅ **额度管理** - 用户额度、组额度、令牌额度
-- ✅ **消费统计** - 详细的消费明细和报表
-
-### 🔍 Meilisearch 搜索引擎 / Search Engine
-
-> **核心亮点 / Key Highlight** - 企业级搜索能力
-
-#### 性能指标 / Performance Metrics
-
-| 指标 | 数据 |
-|------|------|
-| 🚀 搜索响应时间 | < 50ms (P95) |
-| 📦 索引速度 | > 1,000 docs/sec |
-| 🔄 并发能力 | 100+ QPS |
-| 💾 数据规模 | 支持千万级文档 |
-
-#### 搜索功能 / Search Features
-
-- ⚡ **全文搜索** - 日志内容、用户信息、通道配置全文检索
-- 🎯 **智能匹配** - 拼写纠错、模糊匹配、相关性排序
-- 📊 **多维过滤** - 时间范围、用户、模型、状态等多条件组合
-- 🔄 **实时索引** - 异步索引机制，不阻塞主流程
-- 🛡️ **容错设计** - 自动降级到数据库，确保服务可用性
-
-#### 搜索接口 / Search APIs
-
-```bash
-# 日志搜索 / Search logs
-GET /api/log/search?keyword=error&start_timestamp=xxx&end_timestamp=xxx
-
-# 用户搜索 / Search users
-GET /api/user/search?keyword=admin&group=default&status=1
-
-# 通道搜索 / Search channels
-GET /api/channel/search?keyword=openai&group=default&status=1
-```
-
-**详细文档：** [Meilisearch 集成文档](./doc/meilisearch-integration.md)
-
-### 🚀 AI 模型支持 / AI Model Support
-
-#### 支持的模型类型 / Supported Model Types
-
-**聊天模型 / Chat Models:**
-- OpenAI (GPT-3.5, GPT-4, GPT-4 Turbo, o1, o3)
-- Azure OpenAI
-- Anthropic Claude (Claude 3, Claude 3.5)
-- Google Gemini (Gemini 1.5 Pro/Flash, Gemini 2.0)
-- 国内模型：通义千问、文心一言、智谱 GLM、DeepSeek、Moonshot
-- 开源模型：Llama、Mistral、Qwen 等
-
-**专用模型 / Specialized Models:**
-- Embeddings（文本向量化）
-- Rerank（重排序）- Cohere、Jina
-- Text-to-Speech（语音合成）
-- Speech-to-Text（语音识别）
-- Image Generation（图像生成）- DALL-E、Midjourney、Stable Diffusion
-- Video Generation（视频生成）- Suno、Runway
-
-#### API 格式兼容 / API Format Compatibility
-
-- ⚡ OpenAI API 格式
-- ⚡ OpenAI Realtime API（实时语音）
-- ⚡ Claude Messages API
-- ⚡ Google Gemini API
-- 🔄 **格式自动转换** - OpenAI ↔ Claude ↔ Gemini
-
-### 🎯 智能路由 / Intelligent Routing
-
-- ⚖️ **负载均衡** - 渠道加权随机分配
-- 🔄 **失败重试** - 自动切换备用渠道
-- 🚦 **限流控制** - 用户级别、令牌级别限流
-- 📈 **优先级管理** - 渠道优先级配置
-- 💰 **成本优化** - 按成本自动选择最优渠道
-
-### 📊 数据统计 / Analytics
-
-- 📈 **实时统计** - 使用量、消费、余额实时更新
-- 📊 **趋势分析** - 日/周/月使用趋势图表
-- 🔍 **详细日志** - 每次请求的完整记录
-- 💵 **费用明细** - 按用户、模型、渠道的消费统计
-- 📑 **报表导出** - 支持 CSV、Excel 导出
-
----
-
-## 🏗️ 技术架构 / Technical Architecture
-
-### 技术栈 / Technology Stack
-
-**后端 / Backend:**
-- Go 1.25.1 - 高性能并发处理
-- Gin - Web 框架
-- GORM - ORM 框架
-- Meilisearch v1.10+ - 搜索引擎
-- Redis - 缓存（可选）
-- MySQL / PostgreSQL / SQLite - 数据存储
-
-**前端 / Frontend:**
-- React 18 - UI 框架
-- Vite - 构建工具
-- TailwindCSS - 样式框架
-- Shadcn/ui - 组件库
-
-**基础设施 / Infrastructure:**
-- Docker & Docker Compose - 容器化部署
-- Nginx - 反向代理（可选）
-
-### 架构设计 / Architecture Design
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Lurus API Platform                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                               │
-│  ┌──────────────┐      ┌──────────────┐      ┌───────────┐ │
-│  │   Web UI     │─────▶│     API      │─────▶│  Database │ │
-│  │   (React)    │      │   Gateway    │      │  (MySQL)  │ │
-│  └──────────────┘      └──────┬───────┘      └───────────┘ │
-│                               │                              │
-│                               │                              │
-│                               ▼                              │
-│                    ┌─────────────────────┐                  │
-│                    │   Meilisearch       │                  │
-│                    │  Search Engine      │                  │
-│                    │  (< 50ms response)  │                  │
-│                    └─────────────────────┘                  │
-│                                                               │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │              Intelligent Routing Layer                │  │
-│  │  • Load Balancing  • Auto Retry  • Rate Limiting    │  │
-│  └──────────────────────────────────────────────────────┘  │
-│                               │                              │
-└───────────────────────────────┼──────────────────────────────┘
-                                │
-                ┌───────────────┼───────────────┐
-                │               │               │
-                ▼               ▼               ▼
-         ┌──────────┐    ┌──────────┐   ┌──────────┐
-         │  OpenAI  │    │  Claude  │   │ Gemini   │
-         └──────────┘    └──────────┘   └──────────┘
-         ┌──────────┐    ┌──────────┐   ┌──────────┐
-         │ 通义千问  │    │文心一言   │   │ 智谱GLM  │
-         └──────────┘    └──────────┘   └──────────┘
-```
-
-### 核心模块 / Core Modules
-
-| 模块 | 功能 | 文件位置 |
-|------|------|---------|
-| **API Gateway** | 请求路由、格式转换 | `app/relay/`, `adapter/provider/` |
-| **搜索引擎** | Meilisearch 集成 | `pkg/search/` |
-| **用户管理** | 认证、授权、用户组 | `adapter/handler/user.go`, `adapter/repo/user.go` |
-| **令牌管理** | 令牌 CRUD、额度管理 | `adapter/handler/token.go`, `adapter/repo/token.go` |
-| **渠道管理** | 渠道配置、测试、监控 | `adapter/handler/channel.go`, `adapter/repo/channel.go` |
-| **日志系统** | 请求日志、审计日志 | `adapter/handler/log.go`, `adapter/repo/log.go` |
-| **计费系统** | 额度计算、消费统计 | `app/billing.go`, `adapter/repo/pricing.go` |
-
----
-
-## 📦 部署指南 / Deployment Guide
-
-### Docker Compose 部署（推荐）/ Docker Compose (Recommended)
-
-**完整部署（包含 Meilisearch）：**
-
-```yaml
-# docker-compose.yml
-version: '3'
-services:
-  lurus-api:
-    image: ghcr.io/hanmahong5-arch/lurus-api:latest
-    container_name: lurus-api
-    restart: always
-    ports:
-      - "3000:3000"
-    environment:
-      - SQL_DSN=root:<YOUR_DB_PASSWORD>@tcp(mysql:3306)/lurus?charset=utf8mb4&parseTime=True
-      - MEILISEARCH_ENABLED=true
-      - MEILISEARCH_HOST=http://meilisearch:7700
-      - MEILISEARCH_API_KEY=<YOUR_MEILISEARCH_KEY>
-    depends_on:
-      - mysql
-      - meilisearch
-    volumes:
-      - ./data:/data
-
-  mysql:
-    image: mysql:8.0
-    container_name: lurus-mysql
-    restart: always
-    environment:
-      - MYSQL_ROOT_PASSWORD=<YOUR_DB_PASSWORD>
-      - MYSQL_DATABASE=lurus
-    volumes:
-      - ./mysql_data:/var/lib/mysql
-
-  meilisearch:
-    image: getmeili/meilisearch:v1.10
-    container_name: lurus-meilisearch
-    restart: always
-    ports:
-      - "7700:7700"
-    environment:
-      - MEILI_MASTER_KEY=<YOUR_MEILISEARCH_KEY>
-      - MEILI_ENV=production
-    volumes:
-      - ./meili_data:/meili_data
-```
-
-**启动：**
-```bash
-docker-compose up -d
-```
-
-### 生产环境部署 / Production Deployment
-
-#### 1. 准备工作 / Preparation
-
-```bash
-# 创建部署目录 / Create deployment directory
-mkdir -p /opt/lurus-api/{data,mysql_data,meili_data}
-cd /opt/lurus-api
-
-# 下载配置文件 / Download configuration files
-wget https://raw.githubusercontent.com/lurus-project/lurus-api/main/docker-compose.yml
-wget https://raw.githubusercontent.com/lurus-project/lurus-api/main/.env.example -O .env
-```
-
-#### 2. 配置环境变量 / Configure Environment
-
-```bash
-# 编辑 .env 文件 / Edit .env file
-nano .env
-```
-
-**关键配置项 / Key Configuration:**
-
-```env
-# 数据库配置 / Database
-SQL_DSN=root:<YOUR_DB_PASSWORD>@tcp(mysql:3306)/lurus?charset=utf8mb4&parseTime=True
-
-# Meilisearch 配置 / Meilisearch
-MEILISEARCH_ENABLED=true
-MEILISEARCH_HOST=http://meilisearch:7700
-MEILISEARCH_API_KEY=<YOUR_MEILISEARCH_KEY>
-MEILISEARCH_SYNC_ENABLED=true
-MEILISEARCH_WORKER_COUNT=10
-
-# 应用配置 / Application
-SESSION_SECRET=random-secret-key
-INITIAL_ROOT_TOKEN=your-initial-token
-
-# 可选：Redis 缓存 / Optional: Redis cache
-REDIS_CONN_STRING=redis://redis:6379
-```
-
-#### 3. 启动服务 / Start Services
+### Docker Compose
 
 ```bash
 docker-compose up -d
+# Access: http://localhost:3000
 ```
 
-#### 4. 验证部署 / Verify Deployment
+### Production (K3s + ArgoCD)
+
+See [Deployment Runbook](./doc/runbook/deployment.md) for full instructions.
 
 ```bash
-# 检查服务状态 / Check service status
-docker-compose ps
+# Build
+CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -trimpath -o app ./cmd/server
 
-# 查看日志 / View logs
-docker-compose logs -f lurus-api
-
-# 测试 API / Test API
-curl http://localhost:3000/api/status
-
-# 测试 Meilisearch / Test Meilisearch
-curl http://localhost:7700/health
-```
-
-#### 5. 初始化数据 / Initialize Data
-
-```bash
-# 访问管理后台 / Access admin panel
-# http://your-domain:3000
-
-# 登录默认账号 / Login with default credentials
-# 用户名: root
-# 密码: (首次登录后请立即修改 / Change immediately after first login)
-
-# 修改密码并配置渠道 / Change password and configure channels
-```
-
-### 反向代理配置 / Nginx Reverse Proxy
-
-```nginx
-server {
-    listen 80;
-    server_name api.yourdomain.com;
-
-    # 重定向到 HTTPS / Redirect to HTTPS
-    return 301 https://$server_name$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name api.yourdomain.com;
-
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    # 主应用 / Main application
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # WebSocket 支持 / WebSocket support
-    location /ws {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }
-
-    # Meilisearch（可选暴露）/ Meilisearch (optional)
-    location /search/ {
-        proxy_pass http://localhost:7700/;
-        proxy_set_header Host $host;
-    }
-}
+# Deploy via ArgoCD — push to main, ArgoCD syncs automatically
+# Manual rollout:
+ssh root@100.98.57.55 "kubectl rollout restart deployment/lurus-api -n lurus-system"
 ```
 
 ---
 
-## 🔧 配置说明 / Configuration
+## API Endpoints / API 端点
 
-### 环境变量 / Environment Variables
+### V2 Multi-Tenant API (Zitadel JWT)
 
-**必需配置 / Required:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v2/:slug/auth/login` | OAuth login via Zitadel |
+| `GET /api/v2/:slug/user/self` | Current user info |
+| `CRUD /api/v2/:slug/token/` | Token management |
+| `CRUD /api/v2/:slug/channel/` | Channel management |
+| `GET /api/v2/:slug/log/` | Request logs |
+| `POST /api/v2/admin/tenants` | Platform admin |
 
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| `SQL_DSN` | 数据库连接字符串 | `root:pass@tcp(localhost:3306)/lurus` |
-| `SESSION_SECRET` | Session 密钥 | `random-secret-string` |
+### Relay API (OpenAI-compatible)
 
-**Meilisearch 配置 / Meilisearch Configuration:**
+| Endpoint | Description |
+|----------|-------------|
+| `POST /v1/chat/completions` | Chat completions (all providers) |
+| `POST /v1/messages` | Claude Messages API |
+| `POST /v1/embeddings` | Text embeddings |
+| `POST /v1/images/generations` | Image generation |
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `MEILISEARCH_ENABLED` | `false` | 是否启用 Meilisearch |
-| `MEILISEARCH_HOST` | `http://localhost:7700` | Meilisearch 地址 |
-| `MEILISEARCH_API_KEY` | - | Meilisearch API 密钥 |
-| `MEILISEARCH_SYNC_ENABLED` | `true` | 是否启用自动同步 |
-| `MEILISEARCH_SYNC_BATCH_SIZE` | `1000` | 批量同步大小 |
-| `MEILISEARCH_SYNC_INTERVAL` | `60` | 定时同步间隔（秒）|
-| `MEILISEARCH_WORKER_COUNT` | `10` | 异步工作池大小 |
+### V1 Legacy API (backward compatible)
 
-**完整配置列表：** [.env.meilisearch.example](./.env.meilisearch.example)
+| Endpoint | Description |
+|----------|-------------|
+| `POST /api/user/login` | User login |
+| `GET /api/user/self` | Current user |
+| `CRUD /api/token/` | Token management |
+| `GET /api/log/search` | Log search (Meilisearch) |
 
----
-
-## 📖 文档 / Documentation
-
-### 在线 API 文档 / Online API Documentation
-
-访问完整的 API 文档 / Access full API documentation:
-
-- **文档地址 / Docs URL:** [https://docs.lurus.cn/](https://docs.lurus.cn/)
-- **API 入口 / API Entry:** [https://api.lurus.cn/](https://api.lurus.cn/)
-
-> **提示 / Tip:** 访问 api.lurus.cn 后，点击页面上的"文档"按钮即可跳转到 API 文档。
->
-> Access api.lurus.cn and click the "Docs" button to navigate to API documentation.
-
-### API 端点概览 / API Endpoints Overview
-
-#### 认证 API / Authentication
-| 端点 / Endpoint | 方法 / Method | 说明 / Description |
-|-----------------|---------------|---------------------|
-| `/api/user/login` | POST | 用户登录 / User login |
-| `/api/user/register` | POST | 用户注册 / User registration |
-| `/api/user/logout` | GET | 用户登出 / User logout |
-| `/api/user/self` | GET | 获取当前用户信息 / Get current user info |
-
-#### 令牌管理 / Token Management
-| 端点 / Endpoint | 方法 / Method | 说明 / Description |
-|-----------------|---------------|---------------------|
-| `/api/token/` | GET | 获取所有令牌 / Get all tokens |
-| `/api/token/` | POST | 创建令牌 / Create token |
-| `/api/token/:id` | PUT | 更新令牌 / Update token |
-| `/api/token/:id` | DELETE | 删除令牌 / Delete token |
-
-#### AI 模型中继 / AI Model Relay
-| 端点 / Endpoint | 方法 / Method | 说明 / Description |
-|-----------------|---------------|---------------------|
-| `/v1/chat/completions` | POST | OpenAI 格式对话 / OpenAI format chat |
-| `/v1/messages` | POST | Claude 格式对话 / Claude format messages |
-| `/v1/embeddings` | POST | 文本嵌入 / Text embeddings |
-| `/v1/images/generations` | POST | 图像生成 / Image generation |
-
-#### 搜索 API / Search API
-| 端点 / Endpoint | 方法 / Method | 说明 / Description |
-|-----------------|---------------|---------------------|
-| `/api/log/search` | GET | 日志搜索 / Log search |
-| `/api/user/search` | GET | 用户搜索 / User search |
-| `/api/channel/search` | GET | 频道搜索 / Channel search |
-
-> **完整 API 文档请访问 / Full API documentation:** [https://docs.lurus.cn/](https://docs.lurus.cn/)
-
-### 核心文档 / Core Documentation
-
-- 📘 [Meilisearch 集成文档](./doc/meilisearch-integration.md) - 搜索引擎配置和使用
-- 📗 [开发进度文档](./doc/process.md) - 开发历史和技术细节
-- 📙 [部署指南](./DEPLOYMENT.md) - 生产环境部署最佳实践
-
-### 快速链接 / Quick Links
-
-- 🏠 [项目主页](https://github.com/hanmahong5-arch/lurus-api)
-- 🐛 [问题反馈](https://github.com/hanmahong5-arch/lurus-api/issues)
-- 💬 [讨论区](https://github.com/hanmahong5-arch/lurus-api/discussions)
-- 📧 [联系我们](mailto:support@lurus.cn)
+Full API documentation: [https://docs.lurus.cn/](https://docs.lurus.cn/) | [OpenAPI Spec](./docs/openapi/api-v2.yaml)
 
 ---
 
-## 🔄 版本更新 / Changelog
+## Documentation / 文档
 
-### v1.1.0 (2026-01-20)
-
-#### ✨ 新增功能 / New Features
-- 🔍 **Meilisearch 搜索引擎集成**
-  - 日志全文搜索（< 50ms 响应）
-  - 用户快速检索
-  - 通道智能搜索
-  - 实时异步索引
-  - 自动降级机制
-
-#### 🚀 性能优化 / Performance
-- ⚡ 搜索性能提升 10-50 倍
-- 📦 异步索引，不阻塞主流程
-- 🔄 批量处理，提升吞吐量
-
-#### 📚 文档完善 / Documentation
-- 新增 Meilisearch 集成文档（中英双语）
-- 新增开发进度追踪文档
-- 更新 README 和部署指南
-
-### v1.0.0 (2025-12-01)
-
-#### 🎉 首次发布 / Initial Release
-- ✅ 基于 One API 的核心功能
-- ✅ 多模型支持
-- ✅ 用户和令牌管理
-- ✅ 渠道管理和智能路由
-- ✅ 计费和统计系统
+| Document | Description |
+|----------|-------------|
+| [Deployment Runbook](./doc/runbook/deployment.md) | Build, deploy, verify, rollback |
+| [Database Runbook](./doc/runbook/database.md) | Backup, restore, migration |
+| [Tenant Onboarding](./doc/runbook/tenant-onboarding.md) | New tenant setup |
+| [Incident Response](./doc/runbook/incident-response.md) | Triage, escalation, postmortem |
+| [HA Deployment](./doc/runbook/ha-deployment.md) | High availability guide |
+| [Staging Environment](./doc/runbook/staging-environment.md) | Pre-production setup |
+| [Zitadel Setup](./doc/zitadel-setup-guide.md) | OIDC auth configuration |
+| [OpenAPI Spec](./docs/openapi/api-v2.yaml) | 45 endpoints, 30+ schemas |
+| [Development Log](./doc/process.md) | Change history |
 
 ---
 
-## 🤝 贡献指南 / Contributing
+## Environment Variables / 环境变量
 
-我们欢迎社区贡献！请遵循以下步骤：
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SQL_DSN` | Yes | PostgreSQL connection string |
+| `SESSION_SECRET` | Yes | Session encryption key |
+| `REDIS_CONN_STRING` | No | Redis connection (recommended) |
+| `MEILISEARCH_ENABLED` | No | Enable search engine |
+| `MEILISEARCH_HOST` | No | Meilisearch URL |
+| `MEILISEARCH_API_KEY` | No | Meilisearch key |
+| `ZITADEL_ISSUER` | No | Zitadel OIDC issuer URL |
+| `ZITADEL_CLIENT_ID` | No | OIDC client ID |
+| `OTEL_TRACING_ENABLED` | No | Enable OpenTelemetry tracing |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | Jaeger/OTLP endpoint |
 
-```bash
-# 1. Fork 项目 / Fork the project
-
-# 2. 创建特性分支 / Create feature branch
-git checkout -b feature/your-feature
-
-# 3. 提交更改 / Commit changes
-git commit -m "Add: your feature description"
-
-# 4. 推送到分支 / Push to branch
-git push origin feature/your-feature
-
-# 5. 提交 Pull Request / Create Pull Request
-```
-
-### 代码规范 / Code Standards
-
-- Go 代码遵循 `gofmt` 格式
-- 提交信息使用英文，格式：`Type: description`
-  - `Add:` 新增功能
-  - `Fix:` 修复 Bug
-  - `Update:` 更新功能
-  - `Docs:` 文档更新
-- 重要功能需要编写测试用例
+See [.env.meilisearch.example](./.env.meilisearch.example) and [.env.zitadel.example](./.env.zitadel.example) for full configuration.
 
 ---
 
-## 📄 开源协议 / License
+## License
 
-本项目采用 MIT 协议开源。详见 [LICENSE](./LICENSE) 文件。
+MIT License. See [LICENSE](./LICENSE).
 
-**基于开源项目：**
-- [One API](https://github.com/songquanpeng/one-api) - MIT License
-
----
-
-## 🙏 致谢 / Acknowledgments
-
-感谢以下开源项目和贡献者：
-
-- [One API](https://github.com/songquanpeng/one-api) - 提供了优秀的基础架构
-- [Meilisearch](https://www.meilisearch.com/) - 强大的开源搜索引擎
-- [Gin](https://github.com/gin-gonic/gin) - 高性能 Go Web 框架
-- [React](https://react.dev/) - 优秀的前端框架
-
----
-
-## 📞 联系方式 / Contact
-
-- 📧 Email: support@lurus.cn
-- 🌐 API 文档: https://docs.lurus.cn/
-- 🔗 API 入口: https://api.lurus.cn/
-- 🐛 问题反馈: [GitHub Issues](https://github.com/hanmahong5-arch/lurus-api/issues)
-
----
-
-## ⚠️ 免责声明 / Disclaimer
-
-> [!IMPORTANT]
-> - 本项目仅供学习和内部使用，不保证稳定性
-> - 使用者必须遵循 OpenAI 的[使用条款](https://openai.com/policies/terms-of-use)及相关法律法规
-> - 不得用于非法用途或违规服务
-> - 根据《生成式人工智能服务管理暂行办法》，请勿对中国地区公众提供未经备案的生成式 AI 服务
-
----
-
-<div align="center">
-
-**⭐ 如果这个项目对你有帮助，请给我们一个星标！/ Star us if this project helps you!**
-
-Made with ❤️ by Lurus Team
-
-</div>
+Based on [One API](https://github.com/songquanpeng/one-api) (MIT License).

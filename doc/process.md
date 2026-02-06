@@ -5,6 +5,18 @@
 
 ---
 
+## 2026-02-06: Tech Debt Cleanup — Code Fixes + ADRs
+
+Docs archived & committed. Code-level fixes:
+- `user_mapping.go`: replaced insecure placeholder password (timestamp) with `crypto/rand`, deduplicated `generateAffCode()` to use `common.GetRandomString(4)`
+- `repo/main.go`: removed dead commented-out MySQL migration line
+- `payment_setting_old.go`: NOT deleted (plan was wrong — 20+ active references across option.go, topup.go, epay.go)
+- Created 3 ADR docs: `doc/decisions/{ha-deployment,v1-deprecation,observability}.md`
+- 4 "known failing" tests confirmed PASS (stale report)
+Verification: `go test ./... → all PASS`, `go build ./cmd/server → OK`
+
+---
+
 ## 2026-02-05: Sprint 3-5 Complete — Performance, Observability, DevEx
 
 All 9 stories (3.1-3.3, 4.1-4.3, 5.1-5.3) plus Story 2.4 completed in one session.

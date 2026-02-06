@@ -42,26 +42,61 @@ func GetSelfV2(c *gin.Context) {
 	// Get user's token count
 	tokenCount, _ := repo.CountUserTokens(user.Id)
 
+	// Get daily quota info
+	dailyQuotaInfo, _ := repo.GetUserDailyQuotaInfo(user.Id)
+
+	// Get active subscription
+	activeSub, _ := repo.GetActiveSubscription(user.Id)
+
+	// Build daily quota response
+	var dailyQuota interface{}
+	if dailyQuotaInfo != nil {
+		dailyQuota = gin.H{
+			"limit":             dailyQuotaInfo.DailyQuota,
+			"used":              dailyQuotaInfo.DailyUsed,
+			"remaining":         dailyQuotaInfo.DailyRemaining,
+			"last_reset":        dailyQuotaInfo.LastDailyReset,
+			"is_using_fallback": dailyQuotaInfo.IsUsingFallback,
+		}
+	}
+
+	// Build subscription response
+	var subscription interface{}
+	if activeSub != nil {
+		subscription = gin.H{
+			"plan_code":   activeSub.PlanCode,
+			"plan_name":   activeSub.PlanName,
+			"status":      activeSub.Status,
+			"expires_at":  activeSub.ExpiresAt,
+			"auto_renew":  activeSub.AutoRenew,
+			"daily_quota": activeSub.DailyQuota,
+			"total_quota": activeSub.TotalQuota,
+		}
+	}
+
 	// Build response (exclude sensitive fields)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"id":             user.Id,
-			"username":       user.Username,
-			"display_name":   user.DisplayName,
-			"email":          user.Email,
-			"role":           user.Role,
-			"status":         user.Status,
-			"quota":          user.Quota,
-			"used_quota":     user.UsedQuota,
-			"request_count":  user.RequestCount,
-			"group":          user.Group,
-			"aff_code":       user.AffCode,
-			"inviter_id":     user.InviterId,
-			"tenant_id":      tenantCtx.TenantID,
-			"token_count":    tokenCount,
-			"zitadel_user":   tenantCtx.ZitadelUserID,
-			"roles":          tenantCtx.Roles,
+			"id":              user.Id,
+			"username":        user.Username,
+			"display_name":    user.DisplayName,
+			"email":           user.Email,
+			"role":            user.Role,
+			"status":          user.Status,
+			"quota":           user.Quota,
+			"used_quota":      user.UsedQuota,
+			"remaining_quota": user.Quota - user.UsedQuota,
+			"request_count":   user.RequestCount,
+			"group":           user.Group,
+			"aff_code":        user.AffCode,
+			"inviter_id":      user.InviterId,
+			"tenant_id":       tenantCtx.TenantID,
+			"token_count":     tokenCount,
+			"zitadel_user":    tenantCtx.ZitadelUserID,
+			"roles":           tenantCtx.Roles,
+			"daily_quota":     dailyQuota,
+			"subscription":    subscription,
 		},
 	})
 }

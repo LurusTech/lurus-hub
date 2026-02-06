@@ -26,6 +26,8 @@ import {
   showError,
   showSuccess,
   encodeToBase64,
+  isV2Mode,
+  v2Url,
 } from '../../helpers';
 import { ITEMS_PER_PAGE } from '../../constants';
 import { useTableCompactMode } from '../common/useTableCompactMode';
@@ -91,7 +93,8 @@ export const useTokensData = (openFluentNotification) => {
   // Load tokens function
   const loadTokens = async (page = 1, size = pageSize) => {
     setLoading(true);
-    const res = await API.get(`/api/token/?p=${page}&size=${size}`);
+    const listUrl = isV2Mode() ? v2Url(`/tokens?p=${page}&size=${size}`) : `/api/token/?p=${page}&size=${size}`;
+    const res = await API.get(listUrl);
     const { success, message, data } = res.data;
     if (success) {
       syncPageData(data);
@@ -161,15 +164,15 @@ export const useTokensData = (openFluentNotification) => {
     let res;
     switch (action) {
       case 'delete':
-        res = await API.delete(`/api/token/${id}/`);
+        res = await API.delete(isV2Mode() ? v2Url(`/tokens/${id}`) : `/api/token/${id}/`);
         break;
       case 'enable':
         data.status = 1;
-        res = await API.put('/api/token/?status_only=true', data);
+        res = await API.put(isV2Mode() ? v2Url(`/tokens/${id}`) : '/api/token/?status_only=true', data);
         break;
       case 'disable':
         data.status = 2;
-        res = await API.put('/api/token/?status_only=true', data);
+        res = await API.put(isV2Mode() ? v2Url(`/tokens/${id}`) : '/api/token/?status_only=true', data);
         break;
     }
     const { success, message } = res.data;
@@ -195,9 +198,10 @@ export const useTokensData = (openFluentNotification) => {
       return;
     }
     setSearching(true);
-    const res = await API.get(
-      `/api/token/search?keyword=${searchKeyword}&token=${searchToken}`,
-    );
+    const searchUrl = isV2Mode()
+      ? v2Url(`/tokens?keyword=${searchKeyword}&token=${searchToken}`)
+      : `/api/token/search?keyword=${searchKeyword}&token=${searchToken}`;
+    const res = await API.get(searchUrl);
     const { success, message, data } = res.data;
     if (success) {
       setTokens(data);

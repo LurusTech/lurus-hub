@@ -27,6 +27,8 @@ import {
   renderQuotaWithPrompt,
   getModelCategories,
   selectFilter,
+  isV2Mode,
+  v2Url,
 } from '../../../../helpers';
 import { useIsMobile } from '../../../../hooks/common/useIsMobile';
 import {
@@ -151,7 +153,8 @@ const EditTokenModal = (props) => {
 
   const loadToken = async () => {
     setLoading(true);
-    let res = await API.get(`/api/token/${props.editingToken.id}`);
+    const tokenUrl = isV2Mode() ? v2Url(`/tokens/${props.editingToken.id}`) : `/api/token/${props.editingToken.id}`;
+    let res = await API.get(tokenUrl);
     const { success, message, data } = res.data;
     if (success) {
       if (data.expired_time !== -1) {
@@ -221,10 +224,9 @@ const EditTokenModal = (props) => {
       }
       localInputs.model_limits = localInputs.model_limits.join(',');
       localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
-      let res = await API.put(`/api/token/`, {
-        ...localInputs,
-        id: parseInt(props.editingToken.id),
-      });
+      const updateUrl = isV2Mode() ? v2Url(`/tokens/${props.editingToken.id}`) : '/api/token/';
+      const updateBody = isV2Mode() ? localInputs : { ...localInputs, id: parseInt(props.editingToken.id) };
+      let res = await API.put(updateUrl, updateBody);
       const { success, message } = res.data;
       if (success) {
         showSuccess(t('令牌更新成功！'));
@@ -258,7 +260,8 @@ const EditTokenModal = (props) => {
         }
         localInputs.model_limits = localInputs.model_limits.join(',');
         localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
-        let res = await API.post(`/api/token/`, localInputs);
+        const createUrl = isV2Mode() ? v2Url('/tokens') : '/api/token/';
+        let res = await API.post(createUrl, localInputs);
         const { success, message } = res.data;
         if (success) {
           successCount++;

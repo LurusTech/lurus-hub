@@ -14,9 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 
+	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -343,6 +344,105 @@ func jwkToRSAPublicKey(jwk JWK) (*rsa.PublicKey, error) {
 	return publicKey, nil
 }
 
+// handleSessionFallback checks for valid session-based OAuth data when no Bearer token is present.
+// Returns true if it handled the request (either successfully authenticated via session, or aborted).
+// Returns false if no session auth data is available and caller should try other methods.
+func handleSessionFallback(c *gin.Context) bool {
+	// Check if session middleware is available (prevents panic when session store not configured)
+	if _, exists := c.Get(sessions.DefaultKey); !exists {
+		return false
+	}
+
+	session := sessions.Default(c)
+
+	// Check for session user ID (set during OAuth callback)
+	sessionID := session.Get("id")
+	if sessionID == nil {
+		return false // No session, let caller handle
+	}
+
+	userID, ok := sessionID.(int)
+	if !ok || userID == 0 {
+		return false
+	}
+
+	// Check if session has OAuth access token
+	accessToken, _ := session.Get("oauth_access_token").(string)
+	expiresAt, _ := session.Get("oauth_token_expires_at").(int64)
+
+	// If access token exists and is not expired, use it to validate
+	if accessToken != "" && expiresAt > time.Now().Unix() {
+		// Valid session with non-expired OAuth token
+		// Build tenant context from session data
+		user, err := repo.GetUserById(userID, false)
+		if err != nil {
+			common.SysError(fmt.Sprintf("Session fallback: failed to get user %d: %v", userID, err))
+			return false
+		}
+
+		// Get tenant slug from the URL parameter for tenant context
+		tenantSlug := c.Param("tenant_slug")
+		tenant, err := repo.GetTenantBySlug(tenantSlug)
+		tenantID := "default"
+		if err == nil && tenant != nil {
+			tenantID = tenant.Id
+		}
+
+		// Construct tenant context from session
+		tenantCtx := &TenantContext{
+			TenantID:      tenantID,
+			UserID:        user.Id,
+			ZitadelUserID: "", // Not available in session
+			Email:         user.Email,
+			Username:      user.Username,
+			Roles:         []string{},
+		}
+
+		// Inject into gin context
+		c.Set("tenant_context", tenantCtx)
+		c.Set("tenant_id", tenantID)
+		c.Set("user_id", user.Id)
+		c.Set("id", user.Id)
+
+		c.Next()
+		return true
+	}
+
+	// Session exists but token expired or missing — try constructing from session data directly
+	if userID > 0 {
+		user, err := repo.GetUserById(userID, false)
+		if err != nil {
+			return false
+		}
+
+		tenantSlug := c.Param("tenant_slug")
+		tenant, err := repo.GetTenantBySlug(tenantSlug)
+		tenantID := "default"
+		if err == nil && tenant != nil {
+			tenantID = tenant.Id
+		}
+
+		tenantCtx := &TenantContext{
+			TenantID:      tenantID,
+			UserID:        user.Id,
+			ZitadelUserID: "",
+			Email:         user.Email,
+			Username:      user.Username,
+			Roles:         []string{},
+		}
+
+		c.Set("tenant_context", tenantCtx)
+		c.Set("tenant_id", tenantID)
+		c.Set("user_id", user.Id)
+		c.Set("id", user.Id)
+
+		c.Next()
+		return true
+	}
+
+	return false
+}
+
 // ZitadelAuth is the Gin middleware for Zitadel JWT authentication
 // Validates JWT tokens issued by Zitadel and injects tenant context
 func ZitadelAuth() gin.HandlerFunc {
@@ -359,23 +459,26 @@ func ZitadelAuth() gin.HandlerFunc {
 
 		// Extract Bearer token from Authorization header
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "缺少 Authorization Header / Missing Authorization header",
-			})
-			c.Abort()
-			return
+		tokenString := ""
+
+		if authHeader != "" {
+			// Remove "Bearer " prefix
+			tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+			tokenString = strings.TrimPrefix(tokenString, "bearer ")
+			if tokenString == authHeader {
+				tokenString = "" // No valid Bearer prefix found
+			}
 		}
 
-		// Remove "Bearer " prefix
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		tokenString = strings.TrimPrefix(tokenString, "bearer ")
-
-		if tokenString == "" || tokenString == authHeader {
+		// Session fallback: when no Bearer token, check session for OAuth data
+		if tokenString == "" {
+			if handled := handleSessionFallback(c); handled {
+				return
+			}
+			// Session fallback failed — no auth available
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "Invalid Authorization header format, expected: Bearer <token>",
+				"message": "Authentication required: provide Bearer token or establish a session via OAuth login",
 			})
 			c.Abort()
 			return

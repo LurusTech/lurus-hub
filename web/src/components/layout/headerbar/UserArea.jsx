@@ -169,7 +169,7 @@ const UserArea = ({
 
     return (
       <div className='flex items-center'>
-        <a href='/api/v2/lurus/auth/login?redirect_url=/oauth/zitadel' className='flex'>
+        <a href='/login' className='flex'>
           <Button
             theme='borderless'
             type='tertiary'
@@ -180,7 +180,7 @@ const UserArea = ({
         </a>
         {showRegisterButton && (
           <div className='hidden md:block'>
-            <a href='/api/v2/lurus/auth/login?redirect_url=/oauth/zitadel&register=true' className='flex -ml-px'>
+            <a href='/register' className='flex -ml-px'>
               <Button
                 theme='solid'
                 type='primary'

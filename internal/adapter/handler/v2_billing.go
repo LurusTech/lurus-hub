@@ -1,15 +1,25 @@
 package handler
 
 import (
+	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
+	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
+	"github.com/QuantumNous/lurus-api/internal/pkg/setting/system_setting"
 
+	"github.com/Calcium-Ion/go-epay/epay"
 	"github.com/gin-gonic/gin"
+	"github.com/thanhpk/randstr"
 )
 
 // ============================================================================
@@ -394,4 +404,279 @@ func CancelSubscriptionV2(c *gin.Context) {
 			"expires_at": subscription.ExpiresAt,
 		},
 	})
+}
+
+// GetSubscriptionPlansV2 returns available subscription plans
+// Route: GET /api/v2/:tenant_slug/billing/plans
+func GetSubscriptionPlansV2(c *gin.Context) {
+	plans := repo.GetSubscriptionPlans()
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    plans,
+	})
+}
+
+// GetTopUpInfoV2 returns available payment methods and configuration
+// Route: GET /api/v2/:tenant_slug/billing/topup-info
+func GetTopUpInfoV2(c *gin.Context) {
+	payMethods := operation_setting.PayMethods
+
+	// Add Stripe to methods if configured
+	if setting.StripeApiSecret != "" && setting.StripeWebhookSecret != "" && setting.StripePriceId != "" {
+		hasStripe := false
+		for _, method := range payMethods {
+			if method["type"] == "stripe" {
+				hasStripe = true
+				break
+			}
+		}
+		if !hasStripe {
+			stripeMethod := map[string]string{
+				"name":      "Stripe",
+				"type":      "stripe",
+				"color":     "rgba(var(--semi-purple-5), 1)",
+				"min_topup": strconv.Itoa(setting.StripeMinTopUp),
+			}
+			payMethods = append(payMethods, stripeMethod)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"enable_online_topup": operation_setting.PayAddress != "" && operation_setting.EpayId != "" && operation_setting.EpayKey != "",
+			"enable_stripe_topup": setting.StripeApiSecret != "" && setting.StripeWebhookSecret != "" && setting.StripePriceId != "",
+			"enable_creem_topup":  setting.CreemApiKey != "" && setting.CreemProducts != "[]",
+			"creem_products":      setting.CreemProducts,
+			"pay_methods":         payMethods,
+			"min_topup":           operation_setting.MinTopUp,
+			"stripe_min_topup":    setting.StripeMinTopUp,
+			"amount_options":      operation_setting.GetPaymentSetting().AmountOptions,
+			"discount":            operation_setting.GetPaymentSetting().AmountDiscount,
+		},
+	})
+}
+
+// InitiatePaymentV2 initiates payment for a pending topup order
+// Route: POST /api/v2/:tenant_slug/billing/pay
+func InitiatePaymentV2(c *gin.Context) {
+	tenantCtx, err := middleware.GetTenantContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "Tenant context not found",
+		})
+		return
+	}
+
+	var req struct {
+		TradeNo       string `json:"trade_no" binding:"required"`
+		PaymentMethod string `json:"payment_method" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request parameters",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// Look up the pending topup order
+	topup := repo.GetTopUpByTradeNo(req.TradeNo)
+	if topup == nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"message": "Order not found",
+		})
+		return
+	}
+
+	// Verify ownership
+	if topup.UserId != tenantCtx.UserID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "Access denied",
+		})
+		return
+	}
+
+	// Verify order status
+	if topup.Status != common.TopUpStatusPending {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Order is not in pending status",
+		})
+		return
+	}
+
+	user, err := repo.GetUserById(tenantCtx.UserID, false)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to load user data",
+		})
+		return
+	}
+
+	tenantSlug := c.Param("tenant_slug")
+
+	switch req.PaymentMethod {
+	case "stripe":
+		if setting.StripeApiSecret == "" || setting.StripeWebhookSecret == "" || setting.StripePriceId == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "Stripe payment is not configured",
+			})
+			return
+		}
+		reference := fmt.Sprintf("v2-stripe-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
+		referenceId := "ref_" + common.Sha1([]byte(reference))
+
+		payLink, err := genStripeLink(referenceId, user.StripeCustomer, user.Email, topup.Amount)
+		if err != nil {
+			log.Printf("Failed to generate Stripe checkout link: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to initiate payment",
+			})
+			return
+		}
+
+		// Update topup with Stripe reference
+		topup.TradeNo = referenceId
+		topup.PaymentMethod = "stripe"
+		repo.TopUpUpdate(topup)
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"payment_url": payLink,
+				"trade_no":    referenceId,
+			},
+		})
+
+	case "creem":
+		if setting.CreemApiKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "Creem payment is not configured",
+			})
+			return
+		}
+
+		var products []CreemProduct
+		if err := json.Unmarshal([]byte(setting.CreemProducts), &products); err != nil || len(products) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "No Creem products configured",
+			})
+			return
+		}
+
+		// Find a product matching the topup amount
+		var selectedProduct *CreemProduct
+		for _, p := range products {
+			if p.Quota == topup.Amount {
+				selectedProduct = &p
+				break
+			}
+		}
+		if selectedProduct == nil {
+			// Use first product as fallback
+			selectedProduct = &products[0]
+		}
+
+		reference := fmt.Sprintf("v2-creem-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
+		referenceId := "ref_" + common.Sha1([]byte(reference))
+
+		checkoutUrl, err := genCreemLink(referenceId, selectedProduct, user.Email, user.Username)
+		if err != nil {
+			log.Printf("Failed to generate Creem checkout link: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to initiate payment",
+			})
+			return
+		}
+
+		// Update topup with Creem reference
+		topup.TradeNo = referenceId
+		topup.PaymentMethod = "creem"
+		repo.TopUpUpdate(topup)
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"payment_url": checkoutUrl,
+				"trade_no":    referenceId,
+			},
+		})
+
+	default:
+		// Epay payment
+		if operation_setting.PayAddress == "" || operation_setting.EpayId == "" || operation_setting.EpayKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "Online payment is not configured",
+			})
+			return
+		}
+
+		if !operation_setting.ContainsPayMethod(req.PaymentMethod) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "Unsupported payment method",
+			})
+			return
+		}
+
+		callBackAddress := app.GetCallbackAddress()
+		returnUrlStr := fmt.Sprintf("%s/console/topup?payment=success&tenant=%s", system_setting.ServerAddress, tenantSlug)
+		notifyUrlStr := callBackAddress + "/api/user/epay/notify"
+
+		client := GetEpayClient()
+		if client == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Payment service unavailable",
+			})
+			return
+		}
+
+		group, _ := repo.GetUserGroup(tenantCtx.UserID, true)
+		payMoney := getPayMoney(topup.Amount, group)
+
+		returnUrlParsed, _ := url.Parse(returnUrlStr)
+		notifyUrlParsed, _ := url.Parse(notifyUrlStr)
+
+		uri, params, err := client.Purchase(&epay.PurchaseArgs{
+			Type:           req.PaymentMethod,
+			ServiceTradeNo: topup.TradeNo,
+			Name:           fmt.Sprintf("TUC%d", topup.Amount),
+			Money:          strconv.FormatFloat(payMoney, 'f', 2, 64),
+			Device:         epay.PC,
+			NotifyUrl:      notifyUrlParsed,
+			ReturnUrl:      returnUrlParsed,
+		})
+		if err != nil {
+			log.Printf("Failed to create Epay order: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to initiate payment",
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"payment_url": uri,
+				"params":      params,
+				"trade_no":    topup.TradeNo,
+			},
+		})
+	}
 }

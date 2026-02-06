@@ -20,7 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { API, isAdmin, showError, timestamp2string } from '../../helpers';
+import { API, isAdmin, showError, timestamp2string, isV2Mode, v2Url } from '../../helpers';
 import { getDefaultTime, getInitialTimestamp } from '../../helpers/dashboard';
 import { TIME_OPTIONS } from '../../constants/dashboard.constants';
 import { useIsMobile } from '../common/useIsMobile';
@@ -214,7 +214,8 @@ export const useDashboardData = (userState, userDispatch, statusState) => {
   }, [activeUptimeTab]);
 
   const getUserData = useCallback(async () => {
-    let res = await API.get(`/api/user/self`);
+    const url = isV2Mode() ? v2Url('/user/me') : '/api/user/self';
+    let res = await API.get(url);
     const { success, message, data } = res.data;
     if (success) {
       userDispatch({ type: 'login', payload: data });

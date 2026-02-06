@@ -407,6 +407,9 @@ func GetSessionInfo(c *gin.Context) {
 		return
 	}
 
+	// Get tenant_slug from session (stored during OAuth callback)
+	tenantSlug, _ := session.Get("tenant_slug").(string)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
@@ -416,6 +419,9 @@ func GetSessionInfo(c *gin.Context) {
 			"role":         user.Role,
 			"status":       user.Status,
 			"group":        user.Group,
+			"tenant_slug":  tenantSlug,
+			"quota":        user.Quota,
+			"used_quota":   user.UsedQuota,
 		},
 	})
 }

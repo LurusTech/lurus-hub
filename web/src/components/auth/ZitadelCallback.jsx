@@ -7,6 +7,7 @@ import {
   showSuccess,
   updateAPI,
   setUserData,
+  setTenantSlug,
 } from '../../helpers';
 import { UserContext } from '../../context/User';
 import Loading from '../common/ui/Loading';
@@ -28,6 +29,11 @@ const ZitadelCallback = () => {
         const { success, message, data } = res.data;
         if (!success) {
           throw new Error(message || t('登录失败'));
+        }
+
+        // Store tenant context for V2 mode
+        if (data.tenant_slug) {
+          setTenantSlug(data.tenant_slug);
         }
 
         userDispatch({ type: 'login', payload: data });

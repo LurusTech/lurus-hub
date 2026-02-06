@@ -69,12 +69,14 @@ func SetApiV2Router(router *gin.Engine) {
 			// 计费路由
 			billingRoute := tenantRoute.Group("/billing")
 			{
-				// Top-up history
+				// Top-up info and payment
+				billingRoute.GET("/topup-info", handler.GetTopUpInfoV2)
 				billingRoute.GET("/topups", handler.GetTopUpsV2)
-				// Create top-up (initiate payment)
 				billingRoute.POST("/topup", handler.TopUpV2)
+				billingRoute.POST("/pay", handler.InitiatePaymentV2)
 
-				// Subscriptions
+				// Subscription plans and management
+				billingRoute.GET("/plans", handler.GetSubscriptionPlansV2)
 				billingRoute.GET("/subscriptions", handler.GetSubscriptionsV2)
 				billingRoute.POST("/subscribe", handler.SubscribeV2)
 				billingRoute.DELETE("/subscriptions/:id", handler.CancelSubscriptionV2)

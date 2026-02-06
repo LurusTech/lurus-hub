@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useEffect, useState, useContext, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   API,
   showError,
@@ -27,6 +28,9 @@ import {
   renderQuotaWithAmount,
   copy,
   getQuotaPerUnit,
+  isV2Mode,
+  v2Url,
+  setTenantSlug,
 } from '../../helpers';
 import { Modal, Toast, Tabs, TabPane } from '@douyinfe/semi-ui';
 import { useTranslation } from 'react-i18next';
@@ -44,6 +48,15 @@ const TopUp = () => {
   const { t } = useTranslation();
   const [userState, userDispatch] = useContext(UserContext);
   const [statusState] = useContext(StatusContext);
+  const [searchParams] = useSearchParams();
+
+  // Restore tenant context from payment return URL
+  useEffect(() => {
+    const tenant = searchParams.get('tenant');
+    if (tenant) {
+      setTenantSlug(tenant);
+    }
+  }, [searchParams]);
 
   const [redemptionCode, setRedemptionCode] = useState('');
   const [amount, setAmount] = useState(0.0);
@@ -105,7 +118,8 @@ const TopUp = () => {
     }
     setIsSubmitting(true);
     try {
-      const res = await API.post('/api/user/topup', {
+      const url = isV2Mode() ? v2Url('/redemptions/redeem') : '/api/user/topup';
+      const res = await API.post(url, {
         key: redemptionCode,
       });
       const { success, message, data } = res.data;
@@ -196,14 +210,21 @@ const TopUp = () => {
     setConfirmLoading(true);
     try {
       let res;
-      if (payWay === 'stripe') {
-        // Stripe 支付请求
+      if (isV2Mode()) {
+        // V2: unified payment endpoint
+        res = await API.post(v2Url('/billing/pay'), {
+          trade_no: '', // Will be filled by backend from topup order
+          payment_method: payWay,
+          amount: parseInt(topUpCount),
+        });
+      } else if (payWay === 'stripe') {
+        // V1: Stripe 支付请求
         res = await API.post('/api/user/stripe/pay', {
           amount: parseInt(topUpCount),
           payment_method: 'stripe',
         });
       } else {
-        // 普通支付请求
+        // V1: 普通支付请求
         res = await API.post('/api/user/pay', {
           amount: parseInt(topUpCount),
           payment_method: payWay,
@@ -276,10 +297,11 @@ const TopUp = () => {
     }
     setConfirmLoading(true);
     try {
-      const res = await API.post('/api/user/creem/pay', {
-        product_id: selectedCreemProduct.productId,
-        payment_method: 'creem',
-      });
+      const creemUrl = isV2Mode() ? v2Url('/billing/pay') : '/api/user/creem/pay';
+      const creemBody = isV2Mode()
+        ? { trade_no: '', payment_method: 'creem', product_id: selectedCreemProduct.productId }
+        : { product_id: selectedCreemProduct.productId, payment_method: 'creem' };
+      const res = await API.post(creemUrl, creemBody);
       if (res !== undefined) {
         const { message, data } = res.data;
         if (message === 'success') {
@@ -305,7 +327,8 @@ const TopUp = () => {
   };
 
   const getUserQuota = async () => {
-    let res = await API.get(`/api/user/self`);
+    const url = isV2Mode() ? v2Url('/user/me') : '/api/user/self';
+    let res = await API.get(url);
     const { success, message, data } = res.data;
     if (success) {
       userDispatch({ type: 'login', payload: data });
@@ -317,7 +340,8 @@ const TopUp = () => {
   // 获取充值配置信息
   const getTopupInfo = async () => {
     try {
-      const res = await API.get('/api/user/topup/info');
+      const infoUrl = isV2Mode() ? v2Url('/billing/topup-info') : '/api/user/topup/info';
+      const res = await API.get(infoUrl);
       const { message, data, success } = res.data;
       if (success) {
         setTopupInfo({

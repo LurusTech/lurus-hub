@@ -293,6 +293,7 @@ const PersonalSetting = () => {
       showSuccess(t('账户已删除！'));
       userDispatch({ type: 'logout' });
       localStorage.removeItem('user');
+      localStorage.removeItem('tenant_slug');
       try {
         await API.post('/api/v2/oauth/logout');
       } catch (e) {

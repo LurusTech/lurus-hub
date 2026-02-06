@@ -152,7 +152,8 @@ export function showError(error) {
         case 401:
           // Clear user state and redirect to Zitadel OAuth login
           localStorage.removeItem('user');
-          window.location.href = '/api/v2/lurus/auth/login?redirect_url=/oauth/zitadel';
+          const slug = localStorage.getItem('tenant_slug') || 'lurus';
+          window.location.href = `/api/v2/${slug}/auth/login?redirect_url=/oauth/zitadel`;
           break;
         case 429:
           Toast.error('错误：请求次数过多，请稍后再试！');

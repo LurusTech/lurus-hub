@@ -140,6 +140,7 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
   const logout = useCallback(async () => {
     userDispatch({ type: 'logout' });
     localStorage.removeItem('user');
+    localStorage.removeItem('tenant_slug');
     try {
       await API.post('/api/v2/oauth/logout');
     } catch (e) {

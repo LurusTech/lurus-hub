@@ -175,6 +175,14 @@ function App() {
           }
         />
         <Route
+          path='/login/:tenantSlug'
+          element={
+            <AuthRedirect>
+              <ZitadelRedirect />
+            </AuthRedirect>
+          }
+        />
+        <Route
           path='/login'
           element={
             <AuthRedirect>
@@ -227,6 +235,14 @@ function App() {
           element={
             <Suspense fallback={<Loading></Loading>} key={location.pathname}>
               <OAuth2Callback type='linuxdo'></OAuth2Callback>
+            </Suspense>
+          }
+        />
+        <Route
+          path='/oauth/alipay'
+          element={
+            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
+              <OAuth2Callback type='alipay'></OAuth2Callback>
             </Suspense>
           }
         />

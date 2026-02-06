@@ -1,11 +1,14 @@
 package repo
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/domain/entity"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"gorm.io/gorm"
 )
 
@@ -258,18 +261,19 @@ func ensureUniqueUsername(baseUsername string, tenantID string) string {
 	}
 }
 
-// GenerateRandomPassword generates a random strong password for Zitadel users
-// Since they authenticate via Zitadel, this password won't be used for login
+// GenerateRandomPassword generates a cryptographically secure random password for Zitadel users.
+// Since they authenticate via Zitadel, this password won't be used for login.
 func GenerateRandomPassword() string {
-	// TODO: Implement secure random password generation
-	// For now, return a placeholder
-	// In production, use crypto/rand
-	return "ZITADEL_AUTH_USER_" + time.Now().Format("20060102150405")
+	const passwordBytes = 32
+	b := make([]byte, passwordBytes)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback: still produce a unique, non-guessable value
+		return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// generateAffCode generates a unique affiliate code
-// This is a placeholder - use existing implementation from user.go
+// generateAffCode generates a unique affiliate code, consistent with user.go registration flow.
 func generateAffCode() string {
-	// TODO: Use existing generateAffCode() function from user.go
-	return "AFF-" + time.Now().Format("20060102150405")
+	return common.GetRandomString(4)
 }

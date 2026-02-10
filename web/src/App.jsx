@@ -177,6 +177,14 @@ function App() {
           }
         />
         <Route
+          path='/login/password'
+          element={
+            <AuthRedirect>
+              <LoginForm />
+            </AuthRedirect>
+          }
+        />
+        <Route
           path='/login/:tenantSlug'
           element={
             <AuthRedirect>
@@ -193,10 +201,10 @@ function App() {
           }
         />
         <Route
-          path='/login/password'
+          path='/register/password'
           element={
             <AuthRedirect>
-              <LoginForm />
+              <RegisterForm />
             </AuthRedirect>
           }
         />
@@ -205,14 +213,6 @@ function App() {
           element={
             <AuthRedirect>
               <ZitadelRedirect register />
-            </AuthRedirect>
-          }
-        />
-        <Route
-          path='/register/password'
-          element={
-            <AuthRedirect>
-              <RegisterForm />
             </AuthRedirect>
           }
         />

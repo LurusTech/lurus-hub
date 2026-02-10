@@ -30,6 +30,8 @@ import { StatusContext } from './context/Status';
 
 import PasswordResetForm from './components/auth/PasswordResetForm';
 import PasswordResetConfirm from './components/auth/PasswordResetConfirm';
+import LoginForm from './components/auth/LoginForm';
+import RegisterForm from './components/auth/RegisterForm';
 import Channel from './pages/Channel';
 import Token from './pages/Token';
 import Redemption from './pages/Redemption';
@@ -191,10 +193,26 @@ function App() {
           }
         />
         <Route
+          path='/login/password'
+          element={
+            <AuthRedirect>
+              <LoginForm />
+            </AuthRedirect>
+          }
+        />
+        <Route
           path='/register'
           element={
             <AuthRedirect>
               <ZitadelRedirect register />
+            </AuthRedirect>
+          }
+        />
+        <Route
+          path='/register/password'
+          element={
+            <AuthRedirect>
+              <RegisterForm />
             </AuthRedirect>
           }
         />

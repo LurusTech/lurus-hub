@@ -22,6 +22,7 @@ import { defineConfig, transformWithEsbuild } from 'vite';
 import pkg from '@douyinfe/vite-plugin-semi';
 import path from 'path';
 import { codeInspectorPlugin } from 'code-inspector-plugin';
+import viteCompression from 'vite-plugin-compression';
 const { vitePluginSemi } = pkg;
 
 // https://vitejs.dev/config/
@@ -54,6 +55,16 @@ export default defineConfig({
     vitePluginSemi({
       cssLayer: true,
     }),
+    viteCompression({
+      algorithm: 'gzip',
+      ext: '.gz',
+      threshold: 10240, // Only compress files larger than 10KB
+    }),
+    viteCompression({
+      algorithm: 'brotliCompress',
+      ext: '.br',
+      threshold: 10240,
+    }),
   ],
   optimizeDeps: {
     force: true,
@@ -65,6 +76,8 @@ export default defineConfig({
     },
   },
   build: {
+    minify: 'esbuild',
+    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks: {

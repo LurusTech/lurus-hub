@@ -211,11 +211,24 @@ const TopUp = () => {
     try {
       let res;
       if (isV2Mode()) {
-        // V2: unified payment endpoint
-        res = await API.post(v2Url('/billing/pay'), {
-          trade_no: '', // Will be filled by backend from topup order
-          payment_method: payWay,
+        // V2: two-step process - create topup order then initiate payment
+        // Step 1: Create topup order
+        const topupRes = await API.post(v2Url('/billing/topup'), {
           amount: parseInt(topUpCount),
+          payment_method: payWay,
+          money: amount,
+          currency: 'CNY',
+        });
+        if (!topupRes.data.success) {
+          showError(topupRes.data.message || t('创建订单失败'));
+          return;
+        }
+        const tradeNo = topupRes.data.data.trade_no;
+
+        // Step 2: Initiate payment
+        res = await API.post(v2Url('/billing/pay'), {
+          trade_no: tradeNo,
+          payment_method: payWay,
         });
       } else if (payWay === 'stripe') {
         // V1: Stripe 支付请求
@@ -232,13 +245,21 @@ const TopUp = () => {
       }
 
       if (res !== undefined) {
-        const { message, data } = res.data;
-        if (message === 'success') {
+        const { success, message, data } = res.data;
+        if (isV2Mode()) {
+          // V2 API response format
+          if (success && data.payment_url) {
+            window.open(data.payment_url, '_blank');
+            showSuccess(t('跳转到支付页面'));
+          } else {
+            showError(message || t('支付发起失败'));
+          }
+        } else if (message === 'success') {
+          // V1 API response format
           if (payWay === 'stripe') {
-            // Stripe 支付回调处理
             window.open(data.pay_link, '_blank');
           } else {
-            // 普通支付表单提交
+            // Epay form submission
             let params = data;
             let url = res.data.url;
             let form = document.createElement('form');

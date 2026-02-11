@@ -137,6 +137,17 @@ func run(ctx context.Context, startTime time.Time) error {
 		})
 	}
 
+	if os.Getenv("MODEL_SYNC_FREQUENCY") != "" {
+		frequency, err := strconv.Atoi(os.Getenv("MODEL_SYNC_FREQUENCY"))
+		if err != nil {
+			return fmt.Errorf("failed to parse MODEL_SYNC_FREQUENCY: %w", err)
+		}
+		g.Go(func() error {
+			handler.AutoSyncChannelModelsWithContext(ctx, frequency)
+			return nil
+		})
+	}
+
 	// Background task: automatically test channels
 	g.Go(func() error {
 		handler.AutomaticallyTestChannelsWithContext(ctx)

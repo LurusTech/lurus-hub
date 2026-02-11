@@ -339,6 +339,11 @@ func GetChannelById(id int, selectAll bool) (*Channel, error) {
 	return channel, nil
 }
 
+// UpdateChannelModels updates only the models field for a given channel.
+func UpdateChannelModels(channelId int, models string) error {
+	return DB.Model(&Channel{}).Where("id = ?", channelId).Update("models", models).Error
+}
+
 func BatchInsertChannels(channels []Channel) error {
 	if len(channels) == 0 {
 		return nil

@@ -56,6 +56,7 @@ type User struct {
 	AffHistoryQuota  int            `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
 	InviterId        int            `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
 	DeletedAt        gorm.DeletedAt `gorm:"index"`
+	AlipayId         string         `json:"alipay_id" gorm:"column:alipay_id;index"`
 	LinuxDOId        string         `json:"linux_do_id" gorm:"column:linux_do_id;index"`
 	Phone            string         `json:"phone" gorm:"column:phone;index"`
 	PhoneVerified    bool           `json:"phone_verified" gorm:"column:phone_verified;default:false"`
@@ -1172,6 +1173,19 @@ func UpdateUserRole(id int, role int) error {
 		return errors.New("invalid role")
 	}
 	return DB.Model(&User{}).Where("id = ?", id).Update("role", role).Error
+}
+
+// ===== Alipay Related Functions =====
+
+func IsAlipayIdAlreadyTaken(alipayId string) bool {
+	return DB.Unscoped().Where("alipay_id = ?", alipayId).Find(&User{}).RowsAffected == 1
+}
+
+func (user *User) FillUserByAlipayId() error {
+	if user.AlipayId == "" {
+		return errors.New("alipay id is empty")
+	}
+	return DB.Where("alipay_id = ?", user.AlipayId).First(user).Error
 }
 
 // ===== Phone Related Functions =====

@@ -111,6 +111,20 @@ spec:
               value: "0.1"  # Sample 10% of requests
             - name: OTEL_ENVIRONMENT
               value: "production"
+            # Model auto-sync frequency (minutes)
+            - name: MODEL_SYNC_FREQUENCY
+              value: "60"
+            # Alipay OAuth
+            - name: ALIPAY_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-api-secrets
+                  key: ALIPAY_PRIVATE_KEY
+            - name: ALIPAY_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-api-secrets
+                  key: ALIPAY_PUBLIC_KEY
             # Outbound proxy for external LLM API access (Gemini, etc.)
             - name: HTTP_PROXY
               value: "http://10.42.1.1:10808"

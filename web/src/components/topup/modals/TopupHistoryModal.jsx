@@ -33,7 +33,7 @@ import {
 } from '@douyinfe/semi-illustrations';
 import { Coins } from 'lucide-react';
 import { IconSearch } from '@douyinfe/semi-icons';
-import { API, timestamp2string } from '../../../helpers';
+import { API, timestamp2string, isV2Mode, v2Url } from '../../../helpers';
 import { isAdmin } from '../../../helpers/utils';
 import { useIsMobile } from '../../../hooks/common/useIsMobile';
 
@@ -66,11 +66,19 @@ const TopupHistoryModal = ({ visible, onCancel, t }) => {
   const loadTopups = async (currentPage, currentPageSize) => {
     setLoading(true);
     try {
-      const base = isAdmin() ? '/api/user/topup' : '/api/user/topup/self';
-      const qs =
-        `p=${currentPage}&page_size=${currentPageSize}` +
-        (keyword ? `&keyword=${encodeURIComponent(keyword)}` : '');
-      const endpoint = `${base}?${qs}`;
+      let endpoint;
+      if (isV2Mode()) {
+        const qs =
+          `page=${currentPage}&page_size=${currentPageSize}` +
+          (keyword ? `&keyword=${encodeURIComponent(keyword)}` : '');
+        endpoint = `${v2Url('/billing/topups')}?${qs}`;
+      } else {
+        const base = isAdmin() ? '/api/user/topup' : '/api/user/topup/self';
+        const qs =
+          `p=${currentPage}&page_size=${currentPageSize}` +
+          (keyword ? `&keyword=${encodeURIComponent(keyword)}` : '');
+        endpoint = `${base}?${qs}`;
+      }
       const res = await API.get(endpoint);
       const { success, message, data } = res.data;
       if (success) {

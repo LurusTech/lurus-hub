@@ -74,6 +74,10 @@ func GetStatus(c *gin.Context) {
 			"enabled":  common.TelegramOAuthEnabled,
 			"bot_name": common.TelegramBotName,
 		},
+		"alipay": gin.H{
+			"enabled": common.AlipayOAuthEnabled,
+			"app_id":  common.AlipayAppId,
+		},
 		"wechat": gin.H{
 			"enabled": common.WeChatAuthEnabled,
 			"qrcode":  common.WeChatAccountQRCodeImageURL,
@@ -124,6 +128,8 @@ func GetStatus(c *gin.Context) {
 		"linuxdo_oauth":               common.LinuxDOOAuthEnabled,
 		"linuxdo_client_id":           common.LinuxDOClientId,
 		"linuxdo_minimum_trust_level": common.LinuxDOMinimumTrustLevel,
+		"alipay_oauth":                common.AlipayOAuthEnabled,
+		"alipay_app_id":               common.AlipayAppId,
 		"telegram_oauth":              common.TelegramOAuthEnabled,
 		"telegram_bot_name":           common.TelegramBotName,
 		"system_name":                 common.SystemName,

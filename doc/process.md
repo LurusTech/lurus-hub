@@ -1,7 +1,36 @@
 # Development Progress / 开发进度
 
-> Last Updated: 2026-02-06
+> Last Updated: 2026-02-11
 > Archive: doc/archive/process_v20260205.md (entries before 2026-02-04)
+
+---
+
+## 2026-02-11: 下载系统 + SSO Phase 1 后端实现
+
+完成下载管理系统和跨域 SSO 的后端支持，配合前端（lurus-www）实现完整功能。
+
+**下载系统后端**：
+- Database migration（releases, release_artifacts, download_logs 表）
+- Domain entities + Repository 层（GORM 查询，分页，过滤）
+- Service 层（预留 MinIO 集成接口）
+- Handler 层（5 个 API 端点：列表、最新版本、详情、下载、Changelog）
+- Router 注册（`/api/v1/releases/*`）+ DownloadRateLimit 中间件
+
+**SSO Phase 1 后端**（Cookie-based 跨域登录）：
+- Session Domain 配置（`Domain: ".lurus.cn"`，支持跨子域共享）
+- CORS 中间件更新（AllowOrigins 明确列出子域名 + AllowCredentials）
+- 路由注册（`GET /api/v1/auth/session`，调用已有的 GetSessionInfo）
+
+**验证结果**：
+- `go build ./cmd/server` → PASS（93MB 可执行文件）
+- 所有新增代码编译通过，无错误
+
+**待部署配置**：
+- MinIO bucket 创建（`lurus-releases`）
+- 数据库迁移执行（`migrations/005_create_releases_tables.sql`）
+- 前端环境变量（`VITE_API_URL=https://api.lurus.cn`）
+
+**状态**：⏳ 后端代码完成，待数据库迁移 + MinIO 配置 + 前后端联调
 
 ---
 

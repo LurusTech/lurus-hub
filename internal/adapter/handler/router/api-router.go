@@ -11,6 +11,7 @@ import (
 func SetApiRouter(router *gin.Engine) {
 	apiRouter := router.Group("/api")
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
+	apiRouter.Use(middleware.CORS()) // Enable CORS for cross-domain SSO
 	apiRouter.Use(middleware.GlobalAPIRateLimit())
 	{
 		apiRouter.GET("/setup", handler.GetSetup)
@@ -33,6 +34,8 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/oauth/discord", middleware.CriticalRateLimit(), handler.DiscordOAuth)
 		apiRouter.GET("/oauth/oidc", middleware.CriticalRateLimit(), handler.OidcAuth)
 		apiRouter.GET("/oauth/linuxdo", middleware.CriticalRateLimit(), handler.LinuxdoOAuth)
+		apiRouter.GET("/oauth/alipay", middleware.CriticalRateLimit(), handler.AlipayOAuth)
+		apiRouter.GET("/oauth/alipay/bind", middleware.CriticalRateLimit(), handler.AlipayBind)
 		apiRouter.GET("/oauth/state", middleware.CriticalRateLimit(), handler.GenerateOAuthCode)
 		apiRouter.GET("/oauth/wechat", middleware.CriticalRateLimit(), handler.WeChatAuth)
 		apiRouter.GET("/oauth/wechat/bind", middleware.CriticalRateLimit(), handler.WeChatBind)
@@ -57,6 +60,12 @@ func SetApiRouter(router *gin.Engine) {
 
 		// Invitation code validation (public)
 		apiRouter.GET("/invitation/validate", handler.ValidateInviteCode)
+
+		// Auth/Session endpoints (for SSO support)
+		authRoute := apiRouter.Group("/auth")
+		{
+			authRoute.GET("/session", handler.GetSessionInfo) // Session check for cross-domain SSO
+		}
 
 		userRoute := apiRouter.Group("/user")
 		{
@@ -379,6 +388,16 @@ func SetApiRouter(router *gin.Engine) {
 			apiKeyRoute.PUT("/:id", handler.AdminUpdateApiKey)
 			apiKeyRoute.DELETE("/:id", handler.AdminDeleteApiKey)
 			apiKeyRoute.PUT("/:id/toggle", handler.AdminToggleApiKey)
+		}
+
+		// Release/Download management (public, no auth required)
+		releaseRoute := apiRouter.Group("/releases")
+		{
+			releaseRoute.GET("/", handler.ListReleases)
+			releaseRoute.GET("/latest/:product_id", handler.GetLatestRelease)
+			releaseRoute.GET("/:id", handler.GetReleaseByID)
+			releaseRoute.GET("/:id/changelog", handler.GetChangelog)
+			releaseRoute.GET("/:release_id/download/:artifact_id", middleware.DownloadRateLimit(), handler.DownloadArtifact)
 		}
 	}
 }

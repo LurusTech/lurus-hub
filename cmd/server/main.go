@@ -216,6 +216,7 @@ func run(ctx context.Context, startTime time.Time) error {
 		HttpOnly: true,
 		Secure:   sessionSecure,
 		SameSite: http.SameSiteLaxMode,
+		Domain:   ".lurus.cn", // Enable cross-subdomain SSO
 	}
 	var store sessions.Store
 	if redisURL := os.Getenv("REDIS_CONN_STRING"); redisURL != "" {
@@ -253,6 +254,9 @@ func run(ctx context.Context, startTime time.Time) error {
 
 	InjectUmamiAnalytics()
 	InjectGoogleAnalytics()
+
+	// Initialize release service
+	handler.InitReleaseService()
 
 	// Setup routes
 	router.SetRouter(engine, buildFS, indexPage)

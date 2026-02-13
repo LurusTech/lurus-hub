@@ -105,7 +105,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	scanner.Split(bufio.ScanLines)
 	SetEventStreamHeaders(c)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 
 	ctx = context.WithValue(ctx, "stop_chan", stopChan)

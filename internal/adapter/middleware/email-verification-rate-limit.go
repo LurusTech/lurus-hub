@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -18,7 +17,7 @@ const (
 )
 
 func redisEmailVerificationRateLimiter(c *gin.Context) {
-	ctx := context.Background()
+	ctx := c.Request.Context()
 	rdb := common.RDB
 	key := "emailVerification:" + EmailVerificationRateLimitMark + ":" + c.ClientIP()
 

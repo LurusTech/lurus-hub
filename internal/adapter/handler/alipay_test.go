@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -221,7 +222,7 @@ func TestAlipayBind_DisabledByAdmin(t *testing.T) {
 }
 
 func TestGetAlipayUserInfoByCode_EmptyCode(t *testing.T) {
-	userId, nickname, err := getAlipayUserInfoByCode("")
+	userId, nickname, err := getAlipayUserInfoByCode(context.Background(), "")
 
 	assert.Empty(t, userId)
 	assert.Empty(t, nickname)
@@ -237,7 +238,7 @@ func TestGetAlipayUserInfoByCode_ClientNotConfigured(t *testing.T) {
 	resetAlipayClient()
 
 	// Test
-	userId, nickname, err := getAlipayUserInfoByCode("test-code")
+	userId, nickname, err := getAlipayUserInfoByCode(context.Background(), "test-code")
 
 	// Assertions
 	assert.Empty(t, userId)

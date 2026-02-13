@@ -241,7 +241,7 @@ func TestCheckNotificationLimit_DispatchesBasedOnRedisEnabled(t *testing.T) {
 	constant.NotifyLimitCount = 50
 	defer func() { constant.NotifyLimitCount = oldLimit }()
 
-	allowed, err := CheckNotificationLimit(77707, "test-dispatch")
+	allowed, err := CheckNotificationLimit(context.Background(), 77707, "test-dispatch")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

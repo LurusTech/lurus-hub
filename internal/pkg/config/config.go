@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,6 +17,20 @@ type Config struct {
 	Search   SearchConfig
 	Cron     CronConfig
 	Security SecurityConfig
+	Storage  StorageConfig
+	CORS     CORSConfig
+}
+
+// StorageConfig holds object storage related settings.
+type StorageConfig struct {
+	// MinIOBucket is the MinIO bucket name for release artifacts.
+	MinIOBucket string
+}
+
+// CORSConfig holds CORS middleware settings.
+type CORSConfig struct {
+	// AllowedOrigins is the list of allowed CORS origins.
+	AllowedOrigins []string
 }
 
 // ServerConfig holds HTTP server related settings.
@@ -98,6 +113,18 @@ func loadFromEnv() *Config {
 		Security: SecurityConfig{
 			SMSCodeExpiration: envDuration("SMS_CODE_EXPIRATION", 5*time.Minute),
 		},
+		Storage: StorageConfig{
+			MinIOBucket: envString("MINIO_RELEASES_BUCKET", "lurus-releases"),
+		},
+		CORS: CORSConfig{
+			AllowedOrigins: envStringSlice("ALLOWED_ORIGINS", []string{
+				"https://www.lurus.cn",
+				"https://gushen.lurus.cn",
+				"https://webmail.lurus.cn",
+				"http://localhost:5173",
+				"http://localhost:3000",
+			}),
+		},
 	}
 	return cfg
 }
@@ -115,6 +142,30 @@ func (c *Config) PrintEffective() string {
 }
 
 // --- env helpers ---
+
+func envString(key string, defaultVal string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return defaultVal
+}
+
+func envStringSlice(key string, defaultVal []string) []string {
+	if v := os.Getenv(key); v != "" {
+		parts := strings.Split(v, ",")
+		result := make([]string, 0, len(parts))
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		if len(result) > 0 {
+			return result
+		}
+	}
+	return defaultVal
+}
 
 func envInt(key string, defaultVal int) int {
 	if v := os.Getenv(key); v != "" {

@@ -28,7 +28,7 @@ type AwsClaudeRequest struct {
 	Thinking         *dto.Thinking       `json:"thinking,omitempty"`
 }
 
-func formatRequest(requestBody io.Reader, requestHeader http.Header) (*AwsClaudeRequest, error) {
+func formatRequest(ctx context.Context, requestBody io.Reader, requestHeader http.Header) (*AwsClaudeRequest, error) {
 	var awsClaudeRequest AwsClaudeRequest
 	err := common.DecodeJson(requestBody, &awsClaudeRequest)
 	if err != nil {
@@ -49,7 +49,7 @@ func formatRequest(requestBody io.Reader, requestHeader http.Header) (*AwsClaude
 			awsClaudeRequest.AnthropicBeta = betaJson
 		}
 	}
-	logger.LogJson(context.Background(), "json", awsClaudeRequest)
+	logger.LogJson(ctx, "json", awsClaudeRequest)
 	return &awsClaudeRequest, nil
 }
 

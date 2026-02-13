@@ -111,6 +111,12 @@ spec:
               value: "0.1"  # Sample 10% of requests
             - name: OTEL_ENVIRONMENT
               value: "production"
+            # CORS allowed origins (comma-separated)
+            - name: ALLOWED_ORIGINS
+              value: "https://www.lurus.cn,https://gushen.lurus.cn,https://webmail.lurus.cn"
+            # MinIO releases bucket name
+            - name: MINIO_RELEASES_BUCKET
+              value: "lurus-releases"
             # Model auto-sync frequency (minutes)
             - name: MODEL_SYNC_FREQUENCY
               value: "60"

@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -39,7 +40,7 @@ func invalidateUserCache(userId int) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisDelKey(getUserCacheKey(userId))
+	return common.RedisDelKey(context.TODO(), getUserCacheKey(userId))
 }
 
 // updateUserCache updates all user cache fields using hash
@@ -49,6 +50,7 @@ func updateUserCache(user User) error {
 	}
 
 	return common.RedisHSetObj(
+		context.TODO(),
 		getUserCacheKey(user.Id),
 		user.ToBaseUser(),
 		time.Duration(common.RedisKeyCacheSeconds())*time.Second,
@@ -109,7 +111,7 @@ func cacheGetUserBase(userId int) (*UserBase, error) {
 	}
 	var userCache UserBase
 	// Try getting from Redis first
-	err := common.RedisHGetObj(getUserCacheKey(userId), &userCache)
+	err := common.RedisHGetObj(context.TODO(), getUserCacheKey(userId), &userCache)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +123,7 @@ func cacheIncrUserQuota(userId int, delta int64) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHIncrBy(getUserCacheKey(userId), "Quota", delta)
+	return common.RedisHIncrBy(context.TODO(), getUserCacheKey(userId), "Quota", delta)
 }
 
 func cacheDecrUserQuota(userId int, delta int64) error {
@@ -178,35 +180,35 @@ func updateUserStatusCache(userId int, status bool) error {
 	if !status {
 		statusInt = common.UserStatusDisabled
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "Status", fmt.Sprintf("%d", statusInt))
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "Status", fmt.Sprintf("%d", statusInt))
 }
 
 func updateUserQuotaCache(userId int, quota int) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "Quota", fmt.Sprintf("%d", quota))
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "Quota", fmt.Sprintf("%d", quota))
 }
 
 func updateUserGroupCache(userId int, group string) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "Group", group)
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "Group", group)
 }
 
 func updateUserNameCache(userId int, username string) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "Username", username)
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "Username", username)
 }
 
 func updateUserSettingCache(userId int, setting string) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "Setting", setting)
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "Setting", setting)
 }
 
 // Daily quota cache functions
@@ -214,40 +216,40 @@ func updateUserDailyQuotaCache(userId int, dailyQuota int) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "DailyQuota", fmt.Sprintf("%d", dailyQuota))
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "DailyQuota", fmt.Sprintf("%d", dailyQuota))
 }
 
 func updateUserDailyUsedCache(userId int, dailyUsed int) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "DailyUsed", fmt.Sprintf("%d", dailyUsed))
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "DailyUsed", fmt.Sprintf("%d", dailyUsed))
 }
 
 func cacheIncrUserDailyUsed(userId int, delta int64) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHIncrBy(getUserCacheKey(userId), "DailyUsed", delta)
+	return common.RedisHIncrBy(context.TODO(), getUserCacheKey(userId), "DailyUsed", delta)
 }
 
 func updateUserBaseGroupCache(userId int, baseGroup string) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "BaseGroup", baseGroup)
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "BaseGroup", baseGroup)
 }
 
 func updateUserFallbackGroupCache(userId int, fallbackGroup string) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "FallbackGroup", fallbackGroup)
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "FallbackGroup", fallbackGroup)
 }
 
 func updateUserLastDailyResetCache(userId int, lastDailyReset int64) error {
 	if !common.RedisEnabled {
 		return nil
 	}
-	return common.RedisHSetField(getUserCacheKey(userId), "LastDailyReset", fmt.Sprintf("%d", lastDailyReset))
+	return common.RedisHSetField(context.TODO(), getUserCacheKey(userId), "LastDailyReset", fmt.Sprintf("%d", lastDailyReset))
 }

@@ -36,8 +36,9 @@
 
 **问题**:
 - 虽然当前文件已改为 placeholder template（✅ Good）
-- 但 Git 历史中仍有 **3 次 commit** 包含真实的数据库密码 `LurusOps2026`
+- 但 Git 历史中仍有 **3 次 commit** 包含真实的数据库密码 [REDACTED]
 - 任何能访问仓库的人都能用 `git log -p -- deploy/k8s/secrets.yaml` 查看历史密码
+- **UPDATE 2026-02-13**: Git history cleaned via `git-filter-repo`. Secrets removed from all history.
 
 **验证**:
 ```bash
@@ -74,7 +75,7 @@ git push origin main --force
 
 ```bash
 # 1. 连接数据库
-psql "postgres://lurus:LurusOps2026@100.94.177.10:30543/lurusapi"
+psql "postgres://lurus:[REDACTED-DB-PASSWORD]@100.94.177.10:30543/lurusapi"
 
 # 2. 更换密码
 ALTER USER lurus WITH PASSWORD 'NewSecurePassword2026!';

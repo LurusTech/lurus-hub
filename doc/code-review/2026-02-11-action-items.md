@@ -79,36 +79,16 @@ user.Id = id
 ### 5. Externalize CORS Configuration
 **File**: `internal/adapter/middleware/cors.go:12-17`
 **Issue**: 域名列表硬编码，新增子域名需要修改代码
-**Fix**:
-```go
-allowedOrigins := strings.Split(os.Getenv("ALLOWED_ORIGINS"), ",")
-if len(allowedOrigins) == 0 {
-    // Fallback to defaults
-    allowedOrigins = []string{
-        "https://www.lurus.cn",
-        "https://gushen.lurus.cn",
-        "https://webmail.lurus.cn",
-        "http://localhost:5173",
-        "http://localhost:3000",
-    }
-}
-config.AllowOrigins = allowedOrigins
-```
-**Status**: ⏳ Pending
+**Fix**: Moved to centralized `config.Get().CORS.AllowedOrigins` with env `ALLOWED_ORIGINS`
+**Status**: ✅ **FIXED** (2026-02-13, Story 6-9)
 
 ---
 
 ### 6. Externalize MinIO Bucket Name
 **File**: `internal/app/release_service.go:26`
 **Issue**: `minioBucket: "lurus-releases"` 硬编码
-**Fix**:
-```go
-minioBucket := os.Getenv("MINIO_RELEASES_BUCKET")
-if minioBucket == "" {
-    minioBucket = "lurus-releases"
-}
-```
-**Status**: ⏳ Pending
+**Fix**: Now reads from `config.Get().Storage.MinIOBucket` with env `MINIO_RELEASES_BUCKET`
+**Status**: ✅ **FIXED** (2026-02-13, Story 6-9)
 
 ---
 
@@ -168,8 +148,8 @@ if minioBucket == "" {
 
 ### 14. Extract Magic Strings to Constants
 **Locations**:
-- `alipay.go:150`: `"alipay_" + strconv.Itoa(...)` → `const AlipayUsernamePrefix = "alipay_"`
-**Status**: ⏳ Pending
+- `alipay.go:150`: `"alipay_" + strconv.Itoa(...)` → `common.AlipayUsernamePrefix`
+**Status**: ✅ **FIXED** (2026-02-13, Story 6-9)
 
 ---
 
@@ -178,9 +158,9 @@ if minioBucket == "" {
 | Priority | Total | Pending | Completed |
 |----------|-------|---------|-----------|
 | P1       | 3     | 0       | ✅ 3 (ALL FIXED) |
-| P2       | 5     | 4       | ✅ 1 (item 7) |
+| P2       | 5     | 1       | ✅ 4 (items 5,6,7,14) |
 | P3       | 6     | 6       | 0         |
-| **Total** | **14** | **10** | **✅ 4** |
+| **Total** | **14** | **7**  | **✅ 7** |
 
 ---
 

@@ -89,9 +89,9 @@ func UpdateMidjourneyTaskBulk() {
 			}
 			// 设置超时时间
 			timeout := time.Second * 15
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			reqCtx, cancel := context.WithTimeout(ctx, timeout)
 			// 使用带有超时的 context 创建新的请求
-			req = req.WithContext(ctx)
+			req = req.WithContext(reqCtx)
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("mj-api-secret", midjourneyChannel.Key)
 			resp, err := app.GetHttpClient().Do(req)

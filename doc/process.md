@@ -5,6 +5,39 @@
 
 ---
 
+## 2026-02-13: Story 6-8 — Git History Cleanup (P0) + Epic 6 Complete
+
+Removed `deploy/k8s/secrets.yaml` from entire Git history using `git-filter-repo`.
+- Previous `git filter-branch` attempt failed on Windows (trailing space in historical filename).
+- `git-filter-repo` succeeded in 5.37s, rewrote 5019 commits.
+- Template re-added, all working changes preserved via stash.
+- Verification: `git log --all -p -S "<password>" -- deploy/k8s/secrets.yaml` returns empty.
+- Epic 6 (Code Review & Security Hardening): all 10 stories now complete.
+Remaining: force push to remote + team re-clone + credential rotation.
+
+---
+
+## 2026-02-13: Story 6-10 — context.Background() Cleanup
+
+Fixed 22 `context.Background()` violations in 15 production files. Key changes:
+- Redis utility functions (RedisSet/Get/Del/HSetObj/HGetObj/Incr/HIncrBy/HSetField) now accept `ctx context.Context`
+- Middleware (rate-limit, model-rate-limit, email-verification) use `c.Request.Context()` instead of `context.Background()`
+- Handlers (alipay, task, midjourney) propagate parent ctx through call chain
+- Providers (aws/dto, volcengine/tts, stream_scanner) use request context
+- 19 uses kept as legitimate (init, deprecated wrappers, independent-lifecycle goroutines)
+Verification: `go build ./... -> OK`, `go test ./... -> PASS (4 pre-existing failures in model_sync unrelated)`
+
+---
+
+## 2026-02-13: Story 6-9 — Config Externalization
+
+Externalized 3 hardcoded values to centralized config (env vars with defaults):
+- MinIO bucket (`MINIO_RELEASES_BUCKET`), CORS origins (`ALLOWED_ORIGINS`), alipay username prefix (constant).
+- Added `envString` + `envStringSlice` helpers to config package. 17 new tests, all PASS.
+Verification: `go test ./internal/pkg/config/... → 47/47 PASS`, `go build ./... → OK`
+
+---
+
 ## 2026-02-13: Adversarial Code Review + P0/P1 Fixes
 
 Completed adversarial code review (found 8 issues: 2 P0, 3 P1, 3 P2) and fixed all P1 + partial P0.

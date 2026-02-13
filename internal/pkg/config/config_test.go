@@ -379,10 +379,179 @@ func TestLoadFromEnv_AllFieldsPopulated(t *testing.T) {
 		{"Search.SyncWorkerCount", cfg.Search.SyncWorkerCount > 0},
 		{"Cron.QuotaResetCheckInterval", cfg.Cron.QuotaResetCheckInterval > 0},
 		{"Security.SMSCodeExpiration", cfg.Security.SMSCodeExpiration > 0},
+		{"Storage.MinIOBucket", cfg.Storage.MinIOBucket != ""},
+		{"CORS.AllowedOrigins", len(cfg.CORS.AllowedOrigins) > 0},
 	}
 	for _, c := range checks {
 		if !c.ok {
 			t.Errorf("%s has zero value, expected positive default", c.name)
 		}
+	}
+}
+
+// --- Tests for Storage default values ---
+
+func TestLoadFromEnv_StorageDefaults_MinIOBucket(t *testing.T) {
+	cfg := loadFromEnv()
+	want := "lurus-releases"
+	if cfg.Storage.MinIOBucket != want {
+		t.Errorf("Storage.MinIOBucket = %q, want %q", cfg.Storage.MinIOBucket, want)
+	}
+}
+
+func TestLoadFromEnv_StorageOverride_MinIOBucket(t *testing.T) {
+	t.Setenv("MINIO_RELEASES_BUCKET", "custom-bucket")
+	cfg := loadFromEnv()
+	want := "custom-bucket"
+	if cfg.Storage.MinIOBucket != want {
+		t.Errorf("Storage.MinIOBucket = %q, want %q", cfg.Storage.MinIOBucket, want)
+	}
+}
+
+// --- Tests for CORS default values ---
+
+func TestLoadFromEnv_CORSDefaults_AllowedOrigins(t *testing.T) {
+	cfg := loadFromEnv()
+	want := []string{
+		"https://www.lurus.cn",
+		"https://gushen.lurus.cn",
+		"https://webmail.lurus.cn",
+		"http://localhost:5173",
+		"http://localhost:3000",
+	}
+	if len(cfg.CORS.AllowedOrigins) != len(want) {
+		t.Fatalf("CORS.AllowedOrigins length = %d, want %d", len(cfg.CORS.AllowedOrigins), len(want))
+	}
+	for i, w := range want {
+		if cfg.CORS.AllowedOrigins[i] != w {
+			t.Errorf("CORS.AllowedOrigins[%d] = %q, want %q", i, cfg.CORS.AllowedOrigins[i], w)
+		}
+	}
+}
+
+func TestLoadFromEnv_CORSOverride_AllowedOrigins(t *testing.T) {
+	t.Setenv("ALLOWED_ORIGINS", "https://example.com,https://other.com")
+	cfg := loadFromEnv()
+	want := []string{"https://example.com", "https://other.com"}
+	if len(cfg.CORS.AllowedOrigins) != len(want) {
+		t.Fatalf("CORS.AllowedOrigins length = %d, want %d", len(cfg.CORS.AllowedOrigins), len(want))
+	}
+	for i, w := range want {
+		if cfg.CORS.AllowedOrigins[i] != w {
+			t.Errorf("CORS.AllowedOrigins[%d] = %q, want %q", i, cfg.CORS.AllowedOrigins[i], w)
+		}
+	}
+}
+
+func TestLoadFromEnv_CORSOverride_AllowedOrigins_WithSpaces(t *testing.T) {
+	t.Setenv("ALLOWED_ORIGINS", " https://a.com , https://b.com , https://c.com ")
+	cfg := loadFromEnv()
+	want := []string{"https://a.com", "https://b.com", "https://c.com"}
+	if len(cfg.CORS.AllowedOrigins) != len(want) {
+		t.Fatalf("CORS.AllowedOrigins length = %d, want %d", len(cfg.CORS.AllowedOrigins), len(want))
+	}
+	for i, w := range want {
+		if cfg.CORS.AllowedOrigins[i] != w {
+			t.Errorf("CORS.AllowedOrigins[%d] = %q, want %q", i, cfg.CORS.AllowedOrigins[i], w)
+		}
+	}
+}
+
+// --- Tests for envString helper ---
+
+func TestEnvString_ReturnsDefault_WhenEnvUnset(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_STR_UNSET"
+	os.Unsetenv(key)
+
+	got := envString(key, "default-val")
+	if got != "default-val" {
+		t.Errorf("envString(%q, %q) = %q, want %q", key, "default-val", got, "default-val")
+	}
+}
+
+func TestEnvString_ReturnsEnvValue_WhenSet(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_STR_SET"
+	t.Setenv(key, "custom-val")
+
+	got := envString(key, "default-val")
+	if got != "custom-val" {
+		t.Errorf("envString(%q, %q) = %q, want %q", key, "default-val", got, "custom-val")
+	}
+}
+
+func TestEnvString_ReturnsDefault_WhenEnvEmpty(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_STR_EMPTY"
+	t.Setenv(key, "")
+
+	got := envString(key, "fallback")
+	if got != "fallback" {
+		t.Errorf("envString(%q, %q) = %q, want %q", key, "fallback", got, "fallback")
+	}
+}
+
+// --- Tests for envStringSlice helper ---
+
+func TestEnvStringSlice_ReturnsDefault_WhenEnvUnset(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_SLICE_UNSET"
+	os.Unsetenv(key)
+
+	defaults := []string{"a", "b"}
+	got := envStringSlice(key, defaults)
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("envStringSlice(%q) = %v, want %v", key, got, defaults)
+	}
+}
+
+func TestEnvStringSlice_ParsesCommaSeparated(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_SLICE_CSV"
+	t.Setenv(key, "x,y,z")
+
+	got := envStringSlice(key, nil)
+	want := []string{"x", "y", "z"}
+	if len(got) != 3 || got[0] != "x" || got[1] != "y" || got[2] != "z" {
+		t.Errorf("envStringSlice(%q) = %v, want %v", key, got, want)
+	}
+}
+
+func TestEnvStringSlice_TrimsWhitespace(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_SLICE_TRIM"
+	t.Setenv(key, " a , b , c ")
+
+	got := envStringSlice(key, nil)
+	want := []string{"a", "b", "c"}
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Errorf("envStringSlice(%q) = %v, want %v", key, got, want)
+	}
+}
+
+func TestEnvStringSlice_SkipsEmptySegments(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_SLICE_EMPTY_SEG"
+	t.Setenv(key, "a,,b, ,c")
+
+	got := envStringSlice(key, nil)
+	want := []string{"a", "b", "c"}
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Errorf("envStringSlice(%q) = %v, want %v", key, got, want)
+	}
+}
+
+func TestEnvStringSlice_ReturnsDefault_WhenEnvEmpty(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_SLICE_EMPTY"
+	t.Setenv(key, "")
+
+	defaults := []string{"default"}
+	got := envStringSlice(key, defaults)
+	if len(got) != 1 || got[0] != "default" {
+		t.Errorf("envStringSlice(%q) = %v, want %v", key, got, defaults)
+	}
+}
+
+func TestEnvStringSlice_SingleValue(t *testing.T) {
+	const key = "CONFIG_TEST_ENV_SLICE_SINGLE"
+	t.Setenv(key, "only-one")
+
+	got := envStringSlice(key, nil)
+	if len(got) != 1 || got[0] != "only-one" {
+		t.Errorf("envStringSlice(%q) = %v, want [only-one]", key, got)
 	}
 }

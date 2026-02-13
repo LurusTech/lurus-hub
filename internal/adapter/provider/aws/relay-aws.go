@@ -119,7 +119,7 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 		awsReq.Body = reqBody
 		return nil, nil
 	} else {
-		awsClaudeReq, err := formatRequest(requestBody, requestHeader)
+		awsClaudeReq, err := formatRequest(c.Request.Context(), requestBody, requestHeader)
 		if err != nil {
 			return nil, types.NewError(errors.Wrap(err, "format aws request fail"), types.ErrorCodeBadRequestBody)
 		}

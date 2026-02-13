@@ -96,6 +96,9 @@ var TurnstileSecretKey = ""
 
 var AlipayAppId = ""
 
+// AlipayUsernamePrefix is the prefix for auto-generated Alipay usernames.
+const AlipayUsernamePrefix = "alipay_"
+
 var TelegramBotToken = ""
 var TelegramBotName = ""
 

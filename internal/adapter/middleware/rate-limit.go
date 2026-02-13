@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"context"
 	"net/http"
 	"time"
 
@@ -18,7 +17,7 @@ var defNext = func(c *gin.Context) {
 }
 
 func redisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark string) {
-	ctx := context.Background()
+	ctx := c.Request.Context()
 	rdb := common.RDB
 	key := "rateLimit:" + mark + c.ClientIP()
 	listLength, err := rdb.LLen(ctx, key).Result()

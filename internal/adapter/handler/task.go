@@ -65,7 +65,7 @@ func UpdateTaskBulk() {
 				continue
 			}
 
-			UpdateTaskByPlatform(platform, taskChannelM, taskM)
+			UpdateTaskByPlatform(ctx, platform, taskChannelM, taskM)
 		}
 		common.SysLog("任务进度轮询完成")
 	}
@@ -124,21 +124,21 @@ func UpdateTaskBulkWithContext(ctx context.Context) {
 					continue
 				}
 
-				UpdateTaskByPlatform(platform, taskChannelM, taskM)
+				UpdateTaskByPlatform(ctx, platform, taskChannelM, taskM)
 			}
 			common.SysLog("任务进度轮询完成")
 		}
 	}
 }
 
-func UpdateTaskByPlatform(platform constant.TaskPlatform, taskChannelM map[int][]string, taskM map[string]*repo.Task) {
+func UpdateTaskByPlatform(ctx context.Context, platform constant.TaskPlatform, taskChannelM map[int][]string, taskM map[string]*repo.Task) {
 	switch platform {
 	case constant.TaskPlatformMidjourney:
-		//_ = UpdateMidjourneyTaskAll(context.Background(), tasks)
+		//_ = UpdateMidjourneyTaskAll(ctx, tasks)
 	case constant.TaskPlatformSuno:
-		_ = UpdateSunoTaskAll(context.Background(), taskChannelM, taskM)
+		_ = UpdateSunoTaskAll(ctx, taskChannelM, taskM)
 	default:
-		if err := UpdateVideoTaskAll(context.Background(), platform, taskChannelM, taskM); err != nil {
+		if err := UpdateVideoTaskAll(ctx, platform, taskChannelM, taskM); err != nil {
 			common.SysLog(fmt.Sprintf("UpdateVideoTaskAll fail: %s", err))
 		}
 	}

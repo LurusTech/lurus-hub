@@ -48,7 +48,7 @@ development_status:
   5-3-operational-runbook: done
 
   # Epic 6: Code Review & Security Hardening (2026-02-13)
-  epic-6: in-progress
+  epic-6: done
   6-1-adversarial-code-review: done  # Found 8 issues (2 P0, 3 P1, 3 P2)
   6-2-p1-fixes-version-comparison: done  # semver.Compare implementation
   6-3-p1-fixes-type-assertion: done  # Session validation before API calls
@@ -56,6 +56,6 @@ development_status:
   6-5-test-coverage-expansion: done  # 40+ tests (Alipay, Release, Model Sync)
   6-6-documentation-overhaul: done  # DEPLOY.md, TESTING.md, code review reports
   6-7-p0-test-documentation: done  # README + TESTING.md
-  6-8-p0-git-history-cleanup: ready-for-dev  # Script created, awaiting execution
-  6-9-p1-config-externalization: backlog  # MinIO bucket, CORS origins
-  6-10-p2-context-background-cleanup: backlog  # 32 violations to fix
+  6-8-p0-git-history-cleanup: done  # git-filter-repo removed secrets.yaml from 5019 commits, awaiting force push
+  6-9-p1-config-externalization: done  # MinIO bucket, CORS origins, alipay prefix
+  6-10-p2-context-background-cleanup: done  # Fixed 22 violations in 15 files, 19 kept (legitimate)

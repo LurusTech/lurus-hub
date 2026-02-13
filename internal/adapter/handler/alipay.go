@@ -52,7 +52,7 @@ func resetAlipayClient() {
 	alipayClientErr = nil
 }
 
-func getAlipayUserInfoByCode(authCode string) (userId string, nickname string, err error) {
+func getAlipayUserInfoByCode(ctx context.Context, authCode string) (userId string, nickname string, err error) {
 	if authCode == "" {
 		return "", "", errors.New("auth_code is empty")
 	}
@@ -62,7 +62,7 @@ func getAlipayUserInfoByCode(authCode string) (userId string, nickname string, e
 		return "", "", err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Exchange auth_code for access_token
@@ -119,7 +119,7 @@ func AlipayOAuth(c *gin.Context) {
 	if authCode == "" {
 		authCode = c.Query("auth_code")
 	}
-	alipayUserId, nickname, err := getAlipayUserInfoByCode(authCode)
+	alipayUserId, nickname, err := getAlipayUserInfoByCode(c.Request.Context(), authCode)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -147,7 +147,7 @@ func AlipayOAuth(c *gin.Context) {
 		}
 	} else {
 		if common.RegisterEnabled {
-			user.Username = "alipay_" + strconv.Itoa(repo.GetMaxUserId()+1)
+			user.Username = common.AlipayUsernamePrefix + strconv.Itoa(repo.GetMaxUserId()+1)
 			if nickname != "" {
 				user.DisplayName = nickname
 			} else {
@@ -213,7 +213,7 @@ func AlipayBind(c *gin.Context) {
 	if authCode == "" {
 		authCode = c.Query("auth_code")
 	}
-	alipayUserId, _, err := getAlipayUserInfoByCode(authCode)
+	alipayUserId, _, err := getAlipayUserInfoByCode(c.Request.Context(), authCode)
 	if err != nil {
 		common.ApiError(c, err)
 		return

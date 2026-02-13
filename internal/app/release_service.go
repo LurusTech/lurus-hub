@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/domain/entity"
+	"github.com/QuantumNous/lurus-api/internal/pkg/config"
 	"golang.org/x/mod/semver"
 )
 
@@ -24,8 +25,8 @@ type ReleaseService struct {
 func NewReleaseService(releaseRepo *repo.ReleaseRepository) *ReleaseService {
 	return &ReleaseService{
 		repo:          releaseRepo,
-		minioEndpoint: "",  // TODO: Load from config
-		minioBucket:   "lurus-releases",
+		minioEndpoint: "", // TODO: Load from config
+		minioBucket:   config.Get().Storage.MinIOBucket,
 	}
 }
 

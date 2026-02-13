@@ -78,7 +78,7 @@ func recordRedisRequest(ctx context.Context, rdb *redis.Client, key string, maxC
 func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userId := strconv.Itoa(c.GetInt("id"))
-		ctx := context.Background()
+		ctx := c.Request.Context()
 		rdb := common.RDB
 
 		// 1. 检查成功请求数限制

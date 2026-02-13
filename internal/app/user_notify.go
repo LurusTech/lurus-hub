@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,22 +15,22 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/system_setting"
 )
 
-func NotifyRootUser(t string, subject string, content string) {
+func NotifyRootUser(ctx context.Context, t string, subject string, content string) {
 	user := repo.GetRootUser().ToBaseUser()
-	err := NotifyUser(user.Id, user.Email, user.GetSetting(), dto.NewNotify(t, subject, content, nil))
+	err := NotifyUser(ctx, user.Id, user.Email, user.GetSetting(), dto.NewNotify(t, subject, content, nil))
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to notify root user: %s", err.Error()))
 	}
 }
 
-func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data dto.Notify) error {
+func NotifyUser(ctx context.Context, userId int, userEmail string, userSetting dto.UserSetting, data dto.Notify) error {
 	notifyType := userSetting.NotifyType
 	if notifyType == "" {
 		notifyType = dto.NotifyTypeEmail
 	}
 
 	// Check notification limit
-	canSend, err := CheckNotificationLimit(userId, data.Type)
+	canSend, err := CheckNotificationLimit(ctx, userId, data.Type)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to check notification limit: %s", err.Error()))
 		return err

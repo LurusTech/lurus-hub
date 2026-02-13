@@ -619,7 +619,7 @@ func testAllChannels(notify bool) error {
 		}
 
 		if notify {
-			app.NotifyRootUser(dto.NotifyTypeChannelTest, "通道测试完成", "所有通道测试已完成")
+			app.NotifyRootUser(context.TODO(), dto.NotifyTypeChannelTest, "通道测试完成", "所有通道测试已完成")
 		}
 	})
 	return nil

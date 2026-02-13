@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/domain/entity"
+	"golang.org/x/mod/semver"
 )
 
 // ReleaseService handles business logic for releases
@@ -141,18 +143,30 @@ func (s *ReleaseService) GetChangelog(ctx context.Context, releaseId int64) (str
 	return s.repo.GetChangelogByReleaseID(ctx, releaseId)
 }
 
-// compareVersions compares two semantic versions
+// compareVersions compares two semantic versions using golang.org/x/mod/semver
 // Returns -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
 func compareVersions(v1, v2 string) int {
-	// Simple version comparison (assumes semantic versioning)
-	// TODO: Implement proper semantic version parsing
-	if v1 == v2 {
-		return 0
+	// semver.Compare requires versions to start with 'v'
+	if !strings.HasPrefix(v1, "v") {
+		v1 = "v" + v1
 	}
-	if v1 < v2 {
-		return -1
+	if !strings.HasPrefix(v2, "v") {
+		v2 = "v" + v2
 	}
-	return 1
+
+	// Validate versions
+	if !semver.IsValid(v1) || !semver.IsValid(v2) {
+		// Fallback to string comparison for non-semver formats
+		if v1 == v2 {
+			return 0
+		}
+		if v1 < v2 {
+			return -1
+		}
+		return 1
+	}
+
+	return semver.Compare(v1, v2)
 }
 
 // extractCountryFromIP extracts country code from IP (placeholder)

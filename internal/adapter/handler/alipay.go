@@ -197,6 +197,18 @@ func AlipayBind(c *gin.Context) {
 		return
 	}
 
+	// Check session first before making any API calls (security best practice)
+	session := sessions.Default(c)
+	id := session.Get("id")
+	userId, ok := id.(int)
+	if !ok || userId == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "未登录或会话已过期",
+		})
+		return
+	}
+
 	authCode := c.Query("code")
 	if authCode == "" {
 		authCode = c.Query("auth_code")
@@ -218,9 +230,7 @@ func AlipayBind(c *gin.Context) {
 		return
 	}
 
-	session := sessions.Default(c)
-	id := session.Get("id")
-	user.Id = id.(int)
+	user.Id = userId
 	err = user.FillUserById()
 	if err != nil {
 		common.ApiError(c, err)

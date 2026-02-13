@@ -307,11 +307,45 @@ git push
 
 ## Decision Log
 
-**2026-02-13**: Attempted cleanup on Windows - encountered file locking issues with `git filter-branch`
+**2026-02-13 10:56 UTC**: Attempted cleanup on Windows with `git filter-branch`
+
+**Result**: ❌ Failed at commit 1095/5013
+
+**Error**:
+```
+error: invalid path 'web/.prettierrc.mjs '
+Could not initialize the index
+```
+
+**Root Cause**: Historical commit contains filename with trailing space (`web/.prettierrc.mjs `), which is invalid on Windows filesystem. Git filter-branch cannot process this file on Windows.
+
+**Repository Status**: ✅ Intact (filter-branch auto-rollback, no damage)
+
+**Solutions**:
+
+1. **Option A (Recommended)**: Execute on Linux/macOS
+   - Use automated script: `bash scripts/cleanup-secrets-history.sh`
+   - No trailing space issue on Unix filesystems
+   - Estimated time: 5-10 minutes
+
+2. **Option B**: Use BFG Repo-Cleaner on Windows
+   - BFG handles Windows path issues better than filter-branch
+   - Download: https://rtyley.github.io/bfg-repo-cleaner/
+   - Faster than filter-branch (10x speed)
+
+3. **Option C**: Fix trailing space first (advanced)
+   ```bash
+   # Identify problematic commit
+   git log --all --pretty="%H %s" -- 'web/.prettierrc.mjs '
+
+   # Use git-filter-repo (better than filter-branch)
+   pip install git-filter-repo
+   git filter-repo --path deploy/k8s/secrets.yaml --invert-paths
+   ```
 
 **Recommended next action**:
 1. Schedule cleanup for [DATE/TIME]
-2. Use Linux/macOS environment or Git Bash
+2. Use **Linux/macOS environment** (not Windows)
 3. Use automated script: `scripts/cleanup-secrets-history.sh`
 4. Coordinate with team (re-clone required)
 

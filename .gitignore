@@ -29,8 +29,11 @@ data/
 .gopath
 doc/database-credentials.md
 
-# Sensitive information file (DO NOT COMMIT!)
+# Sensitive information files (DO NOT COMMIT!)
 重要信息.md
+**/secrets.prod.yaml
+**/secrets-*.yaml
+*.prod.yaml
 
 # Coverage files
 cov_*.out

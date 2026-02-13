@@ -88,7 +88,7 @@ func TestGetReleaseByID_InvalidID(t *testing.T) {
 
 func TestDownloadArtifact_InvalidReleaseID(t *testing.T) {
 	router := setupReleaseTestRouter()
-	router.GET("/api/v1/releases/:release_id/download/:artifact_id", DownloadArtifact)
+	router.GET("/api/v1/releases/:id/download/:artifact_id", DownloadArtifact)
 
 	// Test
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/releases/invalid/download/1", nil)
@@ -107,7 +107,7 @@ func TestDownloadArtifact_InvalidReleaseID(t *testing.T) {
 
 func TestDownloadArtifact_InvalidArtifactID(t *testing.T) {
 	router := setupReleaseTestRouter()
-	router.GET("/api/v1/releases/:release_id/download/:artifact_id", DownloadArtifact)
+	router.GET("/api/v1/releases/:id/download/:artifact_id", DownloadArtifact)
 
 	// Test
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/releases/1/download/invalid", nil)
@@ -268,7 +268,7 @@ func TestDownloadArtifact_Integration(t *testing.T) {
 	}
 
 	router := setupReleaseTestRouter()
-	router.GET("/api/v1/releases/:release_id/download/:artifact_id", DownloadArtifact)
+	router.GET("/api/v1/releases/:id/download/:artifact_id", DownloadArtifact)
 
 	// Test with non-existent artifact
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/releases/999/download/999", nil)

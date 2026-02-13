@@ -397,7 +397,7 @@ func SetApiRouter(router *gin.Engine) {
 			releaseRoute.GET("/latest/:product_id", handler.GetLatestRelease)
 			releaseRoute.GET("/:id", handler.GetReleaseByID)
 			releaseRoute.GET("/:id/changelog", handler.GetChangelog)
-			releaseRoute.GET("/:release_id/download/:artifact_id", middleware.DownloadRateLimit(), handler.DownloadArtifact)
+			releaseRoute.GET("/:id/download/:artifact_id", middleware.DownloadRateLimit(), handler.DownloadArtifact)
 		}
 	}
 }

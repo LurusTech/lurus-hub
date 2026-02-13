@@ -128,10 +128,10 @@ func GetReleaseByID(c *gin.Context) {
 	})
 }
 
-// DownloadArtifact handles GET /api/v1/releases/:release_id/download/:artifact_id
+// DownloadArtifact handles GET /api/v1/releases/:id/download/:artifact_id
 // Redirects to MinIO presigned URL and logs the download
 func DownloadArtifact(c *gin.Context) {
-	releaseIdStr := c.Param("release_id")
+	releaseIdStr := c.Param("id")
 	artifactIdStr := c.Param("artifact_id")
 
 	releaseId, err := strconv.ParseInt(releaseIdStr, 10, 64)

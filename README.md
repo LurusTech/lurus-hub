@@ -146,6 +146,36 @@ go build -o lurus-api ./cmd/server
 cd web && bun install && bun run dev
 ```
 
+### Testing / 测试
+
+```bash
+# Run all tests (recommended)
+go test ./...
+
+# Run tests with coverage
+go test -cover ./...
+
+# Run tests with race detector
+go test -race ./...
+
+# Run only unit tests (skip integration tests)
+go test -short ./...
+
+# Run tests for specific package
+go test -v ./internal/adapter/handler/
+go test -v ./internal/app/
+
+# Run specific test
+go test -v ./internal/app/ -run TestCompareVersions
+
+# Frontend tests
+cd web && bun run test
+cd web && bun run typecheck
+cd web && bun run lint
+```
+
+**Important**: Always run tests by package or using `go test ./...`. Do NOT run individual test files directly (e.g., `go test ./path/to/file_test.go`) as it will fail with missing dependencies.
+
 ### Docker Compose
 
 ```bash

@@ -1,7 +1,21 @@
 # Development Progress / 开发进度
 
-> Last Updated: 2026-02-11
+> Last Updated: 2026-02-13
 > Archive: doc/archive/process_v20260205.md (entries before 2026-02-04)
+
+---
+
+## 2026-02-13: Adversarial Code Review + P0/P1 Fixes
+
+Completed adversarial code review (found 8 issues: 2 P0, 3 P1, 3 P2) and fixed all P1 + partial P0.
+
+**P1 Fixes (deployed)**: Version comparison bug (semver), Alipay session panic (type assertion), secrets template cleanup.
+**Tests Added**: 40+ test cases (Alipay 14, Release 13, Model Sync 16, semver 2). All PASS.
+**Docs**: DEPLOY.md (5-min quickstart), TESTING.md (commands reference), code review reports.
+**P0-1 (pending)**: Git history cleanup script created (`scripts/cleanup-secrets-history.sh`), requires Linux/macOS execution.
+**Verification**: `go test ./... → PASS`, `go build → 93MB`, 5 commits ready for push.
+
+**Remaining**: P1 config externalization (MinIO bucket, CORS, alipay_ prefix), P2 context.Background() cleanup (32 files).
 
 ---
 

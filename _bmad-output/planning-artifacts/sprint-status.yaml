@@ -46,3 +46,16 @@ development_status:
   5-1-openapi-specification-docs: done
   5-2-staging-environment: done
   5-3-operational-runbook: done
+
+  # Epic 6: Code Review & Security Hardening (2026-02-13)
+  epic-6: in-progress
+  6-1-adversarial-code-review: done  # Found 8 issues (2 P0, 3 P1, 3 P2)
+  6-2-p1-fixes-version-comparison: done  # semver.Compare implementation
+  6-3-p1-fixes-type-assertion: done  # Session validation before API calls
+  6-4-p1-fixes-secrets-template: done  # Remove real values, add PLACEHOLDER
+  6-5-test-coverage-expansion: done  # 40+ tests (Alipay, Release, Model Sync)
+  6-6-documentation-overhaul: done  # DEPLOY.md, TESTING.md, code review reports
+  6-7-p0-test-documentation: done  # README + TESTING.md
+  6-8-p0-git-history-cleanup: ready-for-dev  # Script created, awaiting execution
+  6-9-p1-config-externalization: backlog  # MinIO bucket, CORS origins
+  6-10-p2-context-background-cleanup: backlog  # 32 violations to fix

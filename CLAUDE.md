@@ -67,3 +67,15 @@ cd web && bun run typecheck && bun run lint && bun run test
 | Epics | `./_bmad-output/planning-artifacts/epics.md` |
 | Architecture | `./_bmad-output/planning-artifacts/architecture.md` |
 | Sprint Status | `./_bmad-output/planning-artifacts/sprint-status.yaml` |
+
+### BMAD Workflow Rules (MANDATORY)
+
+**Story 文档强制规则** - 从 Epic 7 开始严格执行：
+
+1. ✅ **Story 文档先行** - 任何 story 在实现前必须先创建文档（使用 `/bmad:bmm:workflows:dev-story`）
+2. ❌ **禁止无文档标 done** - 没有 story 文档 = 不能标记为 "done"，只能标记 "in-progress"
+3. ✅ **Definition of Done** - 必须通过 `dev-story/checklist.md` 所有检查项才能标 "review"
+4. ✅ **验证证据必需** - Story 文档必须包含测试输出、验证命令、实际结果
+5. ⚠️ **历史债务标注** - Epic 1-5 标注为 "[Pre-BMAD]"，无 story 文档但有 Git commit 证据
+
+**违反规则 = 工作无效**，必须补文档才能 merge。

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QuantumNous/lurus-api/internal/domain/entity"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 
@@ -278,6 +279,10 @@ func migrateDB() error {
 		&Tenant{},
 		&UserIdentityMapping{},
 		&TenantConfig{},
+		// Release/download management
+		&entity.Release{},
+		&entity.ReleaseArtifact{},
+		&entity.DownloadLog{},
 	)
 	if err != nil {
 		return err
@@ -324,6 +329,10 @@ func migrateDBFast() error {
 		{&Subscription{}, "Subscription"},
 		{&InternalApiKey{}, "InternalApiKey"},
 		{&InvitationCode{}, "InvitationCode"},
+		// Release/download management
+		{&entity.Release{}, "Release"},
+		{&entity.ReleaseArtifact{}, "ReleaseArtifact"},
+		{&entity.DownloadLog{}, "DownloadLog"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

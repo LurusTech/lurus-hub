@@ -71,3 +71,15 @@ Migrated `biz/data/server` → `domain/app/adapter` (hexagonal architecture).
 **Verification**: `go build ./cmd/server → PASS`, `go test ./... → PASS`
 
 > **Archive Note**: Entries before 2026-02-04 in `doc/archive/process_v20260205.md`
+
+---
+
+## 2026-02-25: 修复注册流程邮件发送失败
+
+排查 `SendEmailVerification` 全链路，发现三个根因并逐一修复：
+
+1. `SMTPServer=localhost` → 改为 `stalwart.mail.svc`（K8s 集群内服务名）
+2. Stalwart brute-force 封锁 Pod CIDR → 在 `stalwart-config` ConfigMap 加 `[server.allowed-ip] "10.42.0.0/16"=true "10.43.0.0/16"=true`，滚动重启
+3. `SMTPAccount=noreply@lurus.cn` → Stalwart 内部目录只支持短账户名，改为 `noreply`；`SMTPFrom` 保持完整地址
+
+Verification: `curl https://api.lurus.cn/api/verification?email=tpy@lurus.cn → {"success":true}`；Stalwart 日志确认 `queue.queue-message-authenticated` + `delivery.completed`

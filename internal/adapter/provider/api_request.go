@@ -44,6 +44,13 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 func processHeaderOverride(info *common.RelayInfo) (map[string]string, error) {
 	headerOverride := make(map[string]string)
 	for k, v := range info.HeadersOverride {
+		// Skip Accept-Encoding: Go's http transport negotiates compression
+		// automatically and handles decompression. Forwarding this header
+		// would bypass transparent decompression and corrupt the response.
+		if strings.EqualFold(k, "Accept-Encoding") {
+			continue
+		}
+
 		str, ok := v.(string)
 		if !ok {
 			return nil, types.NewError(nil, types.ErrorCodeChannelHeaderOverrideInvalid)

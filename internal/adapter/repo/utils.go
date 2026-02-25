@@ -11,6 +11,11 @@ import (
 	"gorm.io/gorm"
 )
 
+// quotaDeductSafe returns a GORM raw expression equivalent to GREATEST(quota - cost, 0).
+func quotaDeductSafe(cost int) interface{} {
+	return gorm.Expr("GREATEST(quota - ?, 0)", cost)
+}
+
 const (
 	BatchUpdateTypeUserQuota = iota
 	BatchUpdateTypeTokenQuota

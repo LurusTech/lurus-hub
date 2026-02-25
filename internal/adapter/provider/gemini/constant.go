@@ -4,10 +4,14 @@ var ModelList = []string{
 	// stable version
 	"gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.5-flash-8b",
 	"gemini-2.0-flash",
+	"gemini-2.0-flash-lite",
 	// latest version
 	"gemini-1.5-pro-latest", "gemini-1.5-flash-latest",
 	// preview version
 	"gemini-2.0-flash-lite-preview",
+	"gemini-2.5-flash-preview-04-17",
+	"gemini-2.5-pro-preview-03-25",
+	"gemini-2.5-pro-preview-05-06",
 	"gemini-3-pro-preview",
 	// gemini exp
 	"gemini-exp-1206",
@@ -17,8 +21,8 @@ var ModelList = []string{
 	"gemini-2.0-pro-exp",
 	// thinking exp
 	"gemini-2.0-flash-thinking-exp",
+	"gemini-2.0-flash-thinking-exp-01-21",
 	"gemini-2.5-pro-exp-03-25",
-	"gemini-2.5-pro-preview-03-25",
 	// imagen models
 	"imagen-3.0-generate-002",
 	// embedding models

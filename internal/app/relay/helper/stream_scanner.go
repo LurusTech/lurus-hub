@@ -211,8 +211,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			data = data[5:]
-			data = strings.TrimLeft(data, " ")
-			data = strings.TrimSuffix(data, "\r")
+			data = strings.TrimSpace(data)
+			if data == "" {
+				continue
+			}
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
 

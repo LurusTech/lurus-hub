@@ -1,8 +1,38 @@
 # Development Progress / 开发进度
 
-> Last Updated: 2026-02-13
+> Last Updated: 2026-02-25
 > Archive: doc/archive/process_v20260205.md (entries before 2026-02-04)
 > **New Rule**: 每条目 ≤ 15 行（HARD LIMIT），只记录已完成工作的极简摘要
+
+---
+
+## 2026-02-25: 计费系统安全威胁模型修复（P0+P1）
+
+修复 10 个安全漏洞，覆盖无限充值、签名绕过、竞争条件、幂等等问题。
+- P0-1 `subscription_cron.go`: netDelta 分三步（扣费→补额→reset daily），TotalQuota=0 不补 quota
+- P0-2 `topup_creem.go/subscription_payment.go`: 删除 TestMode 签名绕过，secret 空时直接拒绝
+- P0-3 `topup.go`: 删除跨 Pod 无效的 LockOrder/UnlockOrder，EpayNotify 改走 ManualCompleteTopUp（DB FOR UPDATE）
+- P0-4 `subscription.go`: ActivateSubscription 加 FOR UPDATE 幂等检查，状态非 Pending 则拒绝
+- P0-5 `internal_api.go`: InternalGrantSubscription 补充 RecordLog 审计
+- P0-6 `subscription_payment.go`: 金额不足改为返回 error 拒绝激活，容差改固定 50 cents
+- P1-1 `rate-limit.go/api-v2-router.go`: 兑换码接口加 5次/分钟 IP 限速
+- P1-2 `topup.go`: AdminCompleteTopUp 补充管理员 ID 审计日志
+- P1-3 `user.go`: ResetDailyQuota 加 last_daily_reset < todayStart 幂等条件
+- P1-4 `auth.go`: lurus-api-User header 改可选（仅验证不作为 ID 来源）
+
+Verification: `go build ./... → OK`; `go vet ./internal/adapter/middleware/... → OK`
+Remaining: P2 系列（int64 溢出、CSRF、JWT aud 验证）待排期。
+
+## 2026-02-25: 计费系统评估 + 自动续费实现
+
+完成多产品计费能力评估，修复自动续费 TODO。
+- `subscription_cron.go: processOneAutoRenewal()` — 实现余额扣费自动续费，原子事务（双重检查锁 + gorm FOR UPDATE）
+- 修正逻辑：扣 `plan.Price * QuotaPerUnit` + 补 `plan.TotalQuota`，net delta 一次写库
+- `doc/billing-system-guide.md` — 修正支付宝/微信状态（仅 OAuth，非支付），更新自动续费描述（24h 触发），新增多产品能力评估章节
+- 结论：AI 网关计费 ✅ 可撑，多产品中台 ❌ 需独立服务（推荐路径 B）
+
+Verification: `go build ./... → OK`
+Remaining: 自动续费余额不足时邮件通知（TODO 标注），退款/发票系统在 lurus-billing 规划中。
 
 ---
 
@@ -83,3 +113,27 @@ Migrated `biz/data/server` → `domain/app/adapter` (hexagonal architecture).
 3. `SMTPAccount=noreply@lurus.cn` → Stalwart 内部目录只支持短账户名，改为 `noreply`；`SMTPFrom` 保持完整地址
 
 Verification: `curl https://api.lurus.cn/api/verification?email=tpy@lurus.cn → {"success":true}`；Stalwart 日志确认 `queue.queue-message-authenticated` + `delivery.completed`
+
+---
+
+## 2026-02-25: 配置 DKIM 签名
+
+Stalwart `auth.dkim.sign = 'rsa-lurus.cn'`（selector=`default`）即实际出站签名配置，`session.data.sign` 为入站处理。
+关键修复：`%{file:...}%` 宏在 RocksDB 中不展开，需内联 PEM；将 PKCS#8 转为 PKCS#1 写入 config.toml。
+
+**DNS**: 添加 `default._domainkey.lurus.cn TXT "v=DKIM1; k=rsa; p=MIIBIjAN..."`
+
+**Verification**:
+- `dig TXT default._domainkey.lurus.cn +short` → 返回完整公钥记录
+- 私钥提取公钥与 DNS 公钥 base64 完全一致（openssl 确认 2048-bit RSA）
+- 实测：noreply→QQ Mail 投递成功，`DKIM-Signature: v=1; a=rsa-sha256; s=default; d=lurus.cn`
+
+## 2026-02-25: Security Fix Supplement Tests (P0-1/P0-2/P0-4/P0-6/P1-3/P1-4)
+Fixed 1 broken test (empty_secret_test_mode now expects false). Added 6 new/extended test files covering processOneAutoRenewal (5 subtests), verifyCreemSubscriptionSignature (4 subtests), amount tolerance validation (4 subtests), ActivateSubscription idempotency, ResetDailyQuota idempotency, lurus-api-User header (4 subtests).
+Also fixed GREATEST() SQLite incompatibility in subscription_cron.go/subscription.go via quotaDeductSafe() helper.
+Verification: `go test ./internal/adapter/handler/... -run "TestVerifyCreemSignature|TestVerifyCreemSubscription|TestAmountValidation"` → PASS; `go test ./internal/adapter/repo/... -run "TestProcessOneAutoRenewal|TestSubscription_ActivateSubscription_Idempotent|TestResetDailyQuota_Idempotent"` → PASS; `go test ./internal/adapter/middleware/... -run "TestAuthHelper"` → PASS; `go build ./...` → OK.
+
+## 2026-02-25: 测试DB迁移PG + new-api增量融合
+Part1: testutil_test.go 重写，移除 glebarez/sqlite，改用 TEST_POSTGRES_DSN；SetupTestDB 创建独立 test_repo_<nano> 数据库，cleanup 时 DROP；quotaDeductSafe 移除 SQLite 分支直接用 GREATEST。
+Part2: (2a) stream_scanner.go TrimSuffix("\r")→TrimSpace+空串跳过；(2b) processHeaderOverride 跳过 Accept-Encoding；(2c) GeminiUsageMetadata 加 ToolUsePromptTokenCount，提取 buildUsageFromGeminiMetadata 消除两处重复；(2d) MiniMax 添加 MiniMax-Text-01/MiniMax-01/minimax-text-01；(2e) Gemini 添加 gemini-2.0-flash-lite/2.5-flash-preview-04-17/2.5-pro-preview-05-06/2.0-flash-thinking-exp-01-21。
+Verification: `go build ./...` → OK (0 errors). PostgreSQL 集成测试待 TEST_POSTGRES_DSN 注入后验证。

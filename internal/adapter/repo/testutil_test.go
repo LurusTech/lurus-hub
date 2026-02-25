@@ -3,32 +3,67 @@ package repo
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
+	"os"
+	"regexp"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 var testDBCounter atomic.Int64
 
-// SetupTestDB opens an in-memory SQLite database, runs AutoMigrate for all
-// required tables, and wires the package-level DB / LOG_DB globals.
-// It returns a cleanup function that closes the database and resets globals.
+var dbnameRe = regexp.MustCompile(`(?i)(dbname=)\S+`)
+
+// buildTestDSN replaces the dbname parameter in a key-value PostgreSQL DSN.
+// Example: "host=localhost dbname=postgres" → "host=localhost dbname=test_repo_xxx"
+func buildTestDSN(baseDSN, dbName string) string {
+	if dbnameRe.MatchString(baseDSN) {
+		return dbnameRe.ReplaceAllString(baseDSN, "${1}"+dbName)
+	}
+	return baseDSN + " dbname=" + dbName
+}
+
+// SetupTestDB connects to PostgreSQL (via TEST_POSTGRES_DSN), creates an isolated
+// database named "test_repo_<nanosecond>", runs AutoMigrate, and wires the
+// package-level DB / LOG_DB globals.  The returned cleanup function drops the
+// database and restores all globals.
+//
+// If TEST_POSTGRES_DSN is not set the test is skipped, so developers who do
+// not have a local PG instance are not broken.
 func SetupTestDB(t *testing.T) func() {
 	t.Helper()
 
-	// Use unique database name to avoid conflicts between parallel tests
-	dbName := fmt.Sprintf("file:repotest%d?mode=memory&cache=shared", testDBCounter.Add(1))
-	db, err := gorm.Open(sqlite.Open(dbName), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("failed to open in-memory sqlite: %v", err)
+	baseDSN := os.Getenv("TEST_POSTGRES_DSN")
+	if baseDSN == "" {
+		t.Skip("TEST_POSTGRES_DSN not set; skipping PostgreSQL integration test")
 	}
 
-	// Migrate tables one by one to handle SQLite global index name conflicts
+	// Use nanosecond timestamp for unique DB names across parallel tests.
+	dbName := fmt.Sprintf("test_repo_%d_%d", time.Now().UnixNano(), testDBCounter.Add(1))
+
+	// Connect to the management DB to create the isolated test DB.
+	adminDB, err := gorm.Open(postgres.Open(baseDSN), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open admin connection: %v", err)
+	}
+	if err := adminDB.Exec(fmt.Sprintf(`CREATE DATABASE "%s"`, dbName)).Error; err != nil {
+		t.Fatalf("failed to create test database %q: %v", dbName, err)
+	}
+	if sqlDB, err := adminDB.DB(); err == nil {
+		_ = sqlDB.Close()
+	}
+
+	// Connect to the newly created test DB.
+	testDSN := buildTestDSN(baseDSN, dbName)
+	db, err := gorm.Open(postgres.Open(testDSN), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open test database %q: %v", dbName, err)
+	}
+
 	tables := []interface{}{
 		&User{},
 		&Token{},
@@ -49,19 +84,11 @@ func SetupTestDB(t *testing.T) func() {
 		&QuotaData{},
 		&Redemption{},
 	}
-	for _, tbl := range tables {
-		if err := db.AutoMigrate(tbl); err != nil {
-			// SQLite uses global index names (unlike PostgreSQL which scopes to table).
-			// Multiple models share the same composite index name (e.g., idx_tenant_user),
-			// causing "already exists" errors that are safe to ignore during migration.
-			if strings.Contains(err.Error(), "already exists") {
-				continue
-			}
-			t.Fatalf("failed to auto-migrate %T: %v", tbl, err)
-		}
+	if err := db.AutoMigrate(tables...); err != nil {
+		t.Fatalf("failed to auto-migrate: %v", err)
 	}
 
-	// Save previous state
+	// Save previous state.
 	prevDB := DB
 	prevLogDB := LOG_DB
 	prevSQLite := common.UsingSQLite
@@ -70,12 +97,11 @@ func SetupTestDB(t *testing.T) func() {
 
 	DB = db
 	LOG_DB = db
-	common.UsingSQLite = true
-	common.UsingPostgreSQL = false
+	common.UsingSQLite = false
+	common.UsingPostgreSQL = true
 	common.UsingMySQL = false
 	common.RedisEnabled = false
 
-	// Initialize OptionMap to prevent nil map panic
 	common.OptionMapRWMutex.Lock()
 	if common.OptionMap == nil {
 		common.OptionMap = make(map[string]string)
@@ -85,10 +111,20 @@ func SetupTestDB(t *testing.T) func() {
 	initCol()
 
 	cleanup := func() {
-		sqlDB, err := db.DB()
-		if err == nil {
-			sqlDB.Close()
+		// Close the test DB connection before dropping.
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
 		}
+
+		// Drop the isolated test database.
+		dropDB, err := gorm.Open(postgres.Open(baseDSN), &gorm.Config{})
+		if err == nil {
+			_ = dropDB.Exec(fmt.Sprintf(`DROP DATABASE IF EXISTS "%s"`, dbName)).Error
+			if sqlDB, err := dropDB.DB(); err == nil {
+				_ = sqlDB.Close()
+			}
+		}
+
 		DB = prevDB
 		LOG_DB = prevLogDB
 		common.UsingSQLite = prevSQLite

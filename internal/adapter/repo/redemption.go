@@ -114,7 +114,8 @@ func Redeem(key string, userId int) (quota int, err error) {
 		keyCol = `"key"`
 	}
 	common.RandomSleep()
-	err = DB.Transaction(func(tx *gorm.DB) error {
+	// Use WithoutTenantIsolation because this function does its own explicit tenant check
+	err = WithoutTenantIsolation(DB).Transaction(func(tx *gorm.DB) error {
 		err := tx.Set("gorm:query_option", "FOR UPDATE").Where(keyCol+" = ?", key).First(redemption).Error
 		if err != nil {
 			return errors.New("无效的兑换码")
@@ -131,7 +132,8 @@ func Redeem(key string, userId int) (quota int, err error) {
 		if err := tx.Where("id = ?", userId).First(&user).Error; err != nil {
 			return errors.New("用户不存在")
 		}
-		if user.TenantId != redemption.TenantId {
+		// Allow "default" tenant codes to be redeemed by any tenant (v1 backward compatibility)
+		if redemption.TenantId != "default" && user.TenantId != redemption.TenantId {
 			common.SysError(fmt.Sprintf("Tenant mismatch in Redeem: redemption.TenantId=%s, user.TenantId=%s", redemption.TenantId, user.TenantId))
 			return errors.New("该兑换码不属于当前租户")
 		}

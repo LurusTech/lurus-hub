@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
+
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
@@ -36,11 +38,9 @@ func generateCreemSignature(payload string, secret string) string {
 // 验证Creem webhook签名
 func verifyCreemSignature(payload string, signature string, secret string) bool {
 	if secret == "" {
-		log.Printf("Creem webhook secret not set")
-		if setting.CreemTestMode {
-			log.Printf("Skip Creem webhook sign verify in test mode")
-			return true
-		}
+		// Reject all webhooks when secret is not configured, regardless of environment.
+		// Test environments must also use real secrets - no bypass allowed.
+		common.SysError("Creem webhook secret not configured - rejecting webhook to prevent unsigned payload abuse")
 		return false
 	}
 
@@ -256,11 +256,14 @@ func CreemWebhook(c *gin.Context) {
 	// 获取签名头
 	signature := c.GetHeader(CreemSignatureHeader)
 
-	// 打印关键信息（避免输出完整敏感payload）
+	// Log request URI; body is only logged in test mode for debugging
 	log.Printf("Creem Webhook - URI: %s", c.Request.RequestURI)
 	if setting.CreemTestMode {
 		log.Printf("Creem Webhook - Signature: %s , Body: %s", signature, bodyBytes)
-	} else if signature == "" {
+	}
+
+	// Always require signature header, even in test mode
+	if signature == "" {
 		log.Printf("Creem Webhook缺少签名头")
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
@@ -341,6 +344,15 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 	if topUp.Status != common.TopUpStatusPending {
 		log.Printf("Creem充值订单状态错误: %s, 当前状态: %s", referenceId, topUp.Status)
 		c.Status(http.StatusOK) // 已处理过的订单，返回成功避免重复处理
+		return
+	}
+
+	// Amount validation: verify callback amount matches order amount
+	callbackAmountDollars := float64(event.Object.Order.AmountPaid) / 100
+	if topUp.Money > 0 && math.Abs(callbackAmountDollars-topUp.Money) > 0.5 {
+		common.SysError(fmt.Sprintf("Creem amount mismatch: expected=%.2f, actual=%.2f, trade=%s",
+			topUp.Money, callbackAmountDollars, referenceId))
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 

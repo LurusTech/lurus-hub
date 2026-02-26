@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -173,15 +174,24 @@ func sessionCompleted(event stripe.Event) {
 		return
 	}
 
+	// Amount validation: verify callback amount matches order amount
+	total, _ := strconv.ParseFloat(event.GetObjectValue("amount_total"), 64)
+	amountDollars := total / 100
+	topUp := repo.GetTopUpByTradeNo(referenceId)
+	if topUp != nil && topUp.Money > 0 && math.Abs(amountDollars-topUp.Money) > 0.5 {
+		common.SysError(fmt.Sprintf("Stripe amount mismatch: expected=%.2f, actual=%.2f, trade=%s",
+			topUp.Money, amountDollars, referenceId))
+		return
+	}
+
 	err := repo.Recharge(referenceId, customerId)
 	if err != nil {
 		log.Println(err.Error(), referenceId)
 		return
 	}
 
-	total, _ := strconv.ParseFloat(event.GetObjectValue("amount_total"), 64)
 	currency := strings.ToUpper(event.GetObjectValue("currency"))
-	log.Printf("收到款项：%s, %.2f(%s)", referenceId, total/100, currency)
+	log.Printf("收到款项：%s, %.2f(%s)", referenceId, amountDollars, currency)
 }
 
 func sessionExpired(event stripe.Event) {

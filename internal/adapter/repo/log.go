@@ -64,6 +64,31 @@ func GetLogByKey(key string) (logs []*Log, err error) {
 	return logs, err
 }
 
+// recordLogTx writes an audit log within a DB transaction when LOG_DB == DB (single-database setup).
+// When LOG_DB is a separate database, falls back to LOG_DB (best-effort, no cross-DB transaction).
+func recordLogTx(tx *gorm.DB, userId int, logType int, content string) {
+	if logType == LogTypeConsume && !common.LogConsumeEnabled {
+		return
+	}
+	username, _ := GetUsernameById(userId, false)
+	l := &Log{
+		UserId:    userId,
+		Username:  username,
+		CreatedAt: common.GetTimestamp(),
+		Type:      logType,
+		Content:   content,
+	}
+	db := LOG_DB
+	if LOG_DB == DB {
+		db = tx
+	}
+	if err := db.Create(l).Error; err != nil {
+		common.SysLog("failed to record log in transaction: " + err.Error())
+	} else {
+		search.SyncLogAsync(convertLogToSearchLog(l))
+	}
+}
+
 func RecordLog(userId int, logType int, content string) {
 	if logType == LogTypeConsume && !common.LogConsumeEnabled {
 		return

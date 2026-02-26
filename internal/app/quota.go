@@ -528,6 +528,20 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 			err = repo.IncreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, -quota)
 		}
 		if err != nil {
+			// Compensate: reverse user quota change to maintain consistency
+			common.SysLog(fmt.Sprintf("token quota update failed, compensating user quota: userId=%d, quota=%d, err=%s",
+				relayInfo.UserId, quota, err.Error()))
+			if quota > 0 {
+				if compErr := repo.IncreaseUserQuota(relayInfo.UserId, quota, false); compErr != nil {
+					common.SysError(fmt.Sprintf("CRITICAL: failed to compensate user quota after token quota failure: userId=%d, quota=%d, err=%s",
+						relayInfo.UserId, quota, compErr.Error()))
+				}
+			} else {
+				if compErr := repo.DecreaseUserQuota(relayInfo.UserId, -quota); compErr != nil {
+					common.SysError(fmt.Sprintf("CRITICAL: failed to compensate user quota after token quota failure: userId=%d, quota=%d, err=%s",
+						relayInfo.UserId, -quota, compErr.Error()))
+				}
+			}
 			return err
 		}
 	}

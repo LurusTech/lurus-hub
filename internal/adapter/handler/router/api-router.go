@@ -128,7 +128,7 @@ func SetApiRouter(router *gin.Engine) {
 			{
 				adminRoute.GET("/", handler.GetAllUsers)
 				adminRoute.GET("/topup", handler.GetAllTopUps)
-				adminRoute.POST("/topup/complete", handler.AdminCompleteTopUp)
+				adminRoute.POST("/topup/complete", middleware.CriticalRateLimit(), handler.AdminCompleteTopUp)
 				adminRoute.GET("/search", handler.SearchUsers)
 				adminRoute.GET("/:id", handler.GetUser)
 				adminRoute.POST("/", handler.CreateUser)

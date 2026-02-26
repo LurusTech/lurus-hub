@@ -10,21 +10,17 @@ import (
 	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
 
-	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 )
 
 func ReturnPreConsumedQuota(c *gin.Context, relayInfo *relaycommon.RelayInfo) {
 	if relayInfo.FinalPreConsumedQuota != 0 {
 		logger.LogInfo(c, fmt.Sprintf("用户 %d 请求失败, 返还预扣费额度 %s", relayInfo.UserId, logger.FormatQuota(relayInfo.FinalPreConsumedQuota)))
-		gopool.Go(func() {
-			relayInfoCopy := *relayInfo
-
-			err := PostConsumeQuota(&relayInfoCopy, -relayInfoCopy.FinalPreConsumedQuota, 0, false)
-			if err != nil {
-				common.SysLog("error return pre-consumed quota: " + err.Error())
-			}
-		})
+		// Execute refund synchronously to prevent quota loss if process crashes
+		err := PostConsumeQuota(relayInfo, -relayInfo.FinalPreConsumedQuota, 0, false)
+		if err != nil {
+			common.SysLog("error return pre-consumed quota: " + err.Error())
+		}
 	}
 }
 

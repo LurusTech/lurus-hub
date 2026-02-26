@@ -84,11 +84,16 @@ func Recharge(referenceId string, customerId string) (err error) {
 			return err
 		}
 
-		quota = topUp.Money * common.QuotaPerUnit
+		dMoney := decimal.NewFromFloat(topUp.Money)
+		dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
+		quota = float64(dMoney.Mul(dQuotaPerUnit).IntPart())
 		err = tx.Model(&User{}).Where("id = ?", topUp.UserId).Updates(map[string]interface{}{"stripe_customer": customerId, "quota": gorm.Expr("quota + ?", quota)}).Error
 		if err != nil {
 			return err
 		}
+
+		// Write audit log inside transaction for atomicity
+		recordLogTx(tx, topUp.UserId, LogTypeTopup, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%d", logger.FormatQuota(int(quota)), topUp.Amount))
 
 		return nil
 	})
@@ -96,8 +101,6 @@ func Recharge(referenceId string, customerId string) (err error) {
 	if err != nil {
 		return errors.New("充值失败，" + err.Error())
 	}
-
-	RecordLog(topUp.UserId, LogTypeTopup, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%d", logger.FormatQuota(int(quota)), topUp.Amount))
 
 	return nil
 }
@@ -244,9 +247,7 @@ func ManualCompleteTopUp(tradeNo string) error {
 		refCol = `"trade_no"`
 	}
 
-	var userId int
 	var quotaToAdd int
-	var payMoney float64
 
 	err := WithoutTenantIsolation(DB).Transaction(func(tx *gorm.DB) error {
 		topUp := &TopUp{}
@@ -291,18 +292,13 @@ func ManualCompleteTopUp(tradeNo string) error {
 			return err
 		}
 
-		userId = topUp.UserId
-		payMoney = topUp.Money
+		// Write audit log inside transaction for atomicity
+		recordLogTx(tx, topUp.UserId, LogTypeTopup, fmt.Sprintf("管理员补单成功，充值金额: %v，支付金额：%f", logger.FormatQuota(quotaToAdd), topUp.Money))
+
 		return nil
 	})
 
-	if err != nil {
-		return err
-	}
-
-	// 事务外记录日志，避免阻塞
-	RecordLog(userId, LogTypeTopup, fmt.Sprintf("管理员补单成功，充值金额: %v，支付金额：%f", logger.FormatQuota(quotaToAdd), payMoney))
-	return nil
+	return err
 }
 func RechargeCreem(referenceId string, customerEmail string, customerName string) (err error) {
 	if referenceId == "" {
@@ -366,14 +362,15 @@ func RechargeCreem(referenceId string, customerEmail string, customerName string
 			return err
 		}
 
+		// Write audit log inside transaction for atomicity
+		recordLogTx(tx, topUp.UserId, LogTypeTopup, fmt.Sprintf("使用Creem充值成功，充值额度: %v，支付金额：%.2f", quota, topUp.Money))
+
 		return nil
 	})
 
 	if err != nil {
 		return errors.New("充值失败，" + err.Error())
 	}
-
-	RecordLog(topUp.UserId, LogTypeTopup, fmt.Sprintf("使用Creem充值成功，充值额度: %v，支付金额：%.2f", quota, topUp.Money))
 
 	return nil
 }

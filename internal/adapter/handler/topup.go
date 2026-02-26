@@ -3,13 +3,12 @@ package handler
 import (
 	"fmt"
 	"log"
+	"math"
 	"net/url"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/app"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
@@ -210,33 +209,6 @@ func RequestEpay(c *gin.Context) {
 	c.JSON(200, gin.H{"message": "success", "data": params, "url": uri})
 }
 
-// tradeNo lock
-var orderLocks sync.Map
-var createLock sync.Mutex
-
-// LockOrder 尝试对给定订单号加锁
-func LockOrder(tradeNo string) {
-	lock, ok := orderLocks.Load(tradeNo)
-	if !ok {
-		createLock.Lock()
-		defer createLock.Unlock()
-		lock, ok = orderLocks.Load(tradeNo)
-		if !ok {
-			lock = new(sync.Mutex)
-			orderLocks.Store(tradeNo, lock)
-		}
-	}
-	lock.(*sync.Mutex).Lock()
-}
-
-// UnlockOrder 释放给定订单号的锁
-func UnlockOrder(tradeNo string) {
-	lock, ok := orderLocks.Load(tradeNo)
-	if ok {
-		lock.(*sync.Mutex).Unlock()
-	}
-}
-
 func EpayNotify(c *gin.Context) {
 	params := lo.Reduce(lo.Keys(c.Request.URL.Query()), func(r map[string]string, t string, i int) map[string]string {
 		r[t] = c.Request.URL.Query().Get(t)
@@ -268,32 +240,24 @@ func EpayNotify(c *gin.Context) {
 
 	if verifyInfo.TradeStatus == epay.StatusTradeSuccess {
 		log.Println(verifyInfo)
-		LockOrder(verifyInfo.ServiceTradeNo)
-		defer UnlockOrder(verifyInfo.ServiceTradeNo)
+
+		// Amount validation: verify callback amount matches order amount
 		topUp := repo.GetTopUpByTradeNo(verifyInfo.ServiceTradeNo)
-		if topUp == nil {
-			log.Printf("易支付回调未找到订单: %v", verifyInfo)
-			return
+		if topUp != nil && topUp.Money > 0 {
+			callbackMoney, _ := strconv.ParseFloat(verifyInfo.Money, 64)
+			if math.Abs(callbackMoney-topUp.Money) > 0.5 {
+				common.SysError(fmt.Sprintf("Epay amount mismatch: expected=%.2f, actual=%.2f, trade=%s",
+					topUp.Money, callbackMoney, verifyInfo.ServiceTradeNo))
+				return
+			}
 		}
-		if topUp.Status == "pending" {
-			topUp.Status = "success"
-			err := repo.TopUpUpdate(topUp)
-			if err != nil {
-				log.Printf("易支付回调更新订单失败: %v", topUp)
-				return
-			}
-			//user, _ := repo.GetUserById(topUp.UserId, false)
-			//user.Quota += topUp.Amount * 500000
-			dAmount := decimal.NewFromInt(int64(topUp.Amount))
-			dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
-			quotaToAdd := int(dAmount.Mul(dQuotaPerUnit).IntPart())
-			err = repo.IncreaseUserQuota(topUp.UserId, quotaToAdd, true)
-			if err != nil {
-				log.Printf("易支付回调更新用户失败: %v", topUp)
-				return
-			}
-			log.Printf("易支付回调更新用户成功 %v", topUp)
-			repo.RecordLog(topUp.UserId, repo.LogTypeTopup, fmt.Sprintf("使用在线充值成功，充值金额: %v，支付金额：%f", logger.LogQuota(quotaToAdd), topUp.Money))
+
+		// DB row lock inside ManualCompleteTopUp (FOR UPDATE + status check) ensures
+		// cross-pod idempotency without relying on in-process memory locks.
+		if err := repo.ManualCompleteTopUp(verifyInfo.ServiceTradeNo); err != nil {
+			log.Printf("易支付回调处理失败: %v", err)
+		} else {
+			log.Printf("易支付回调处理成功 trade_no: %s", verifyInfo.ServiceTradeNo)
 		}
 	} else {
 		log.Printf("易支付异常回调: %v", verifyInfo)
@@ -388,13 +352,22 @@ func AdminCompleteTopUp(c *gin.Context) {
 		return
 	}
 
-	// 订单级互斥，防止并发补单
-	LockOrder(req.TradeNo)
-	defer UnlockOrder(req.TradeNo)
+	// Fetch topup before processing to capture user_id for audit log
+	topUp := repo.GetTopUpByTradeNo(req.TradeNo)
 
+	// ManualCompleteTopUp uses DB-level FOR UPDATE row lock - cross-pod safe, no in-memory lock needed
 	if err := repo.ManualCompleteTopUp(req.TradeNo); err != nil {
 		common.ApiError(c, err)
 		return
 	}
+
+	// Audit log: record which admin performed the manual topup
+	adminId := c.GetInt("id")
+	if topUp != nil {
+		repo.RecordLog(topUp.UserId, repo.LogTypeSystem,
+			fmt.Sprintf("Admin (id=%d) manually completed topup: trade_no=%s, amount=%d",
+				adminId, req.TradeNo, topUp.Amount))
+	}
+
 	common.ApiSuccess(c, nil)
 }

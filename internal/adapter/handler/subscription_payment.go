@@ -17,7 +17,9 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/system_setting"
+	"github.com/Calcium-Ion/go-epay/epay"
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/stripe/stripe-go/v81"
 	"github.com/stripe/stripe-go/v81/checkout/session"
 	"github.com/stripe/stripe-go/v81/webhook"
@@ -406,14 +408,12 @@ func CreemSubscriptionWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify signature (skip in test mode)
-	if !setting.CreemTestMode {
-		signature := c.GetHeader("creem-signature")
-		if !verifyCreemSubscriptionSignature(payload, signature) {
-			common.SysError("Creem webhook signature verification failed")
-			c.Status(http.StatusUnauthorized)
-			return
-		}
+	// Always verify signature - test mode does not bypass signature verification
+	signature := c.GetHeader("creem-signature")
+	if !verifyCreemSubscriptionSignature(payload, signature) {
+		common.SysError("Creem webhook signature verification failed")
+		c.Status(http.StatusUnauthorized)
+		return
 	}
 
 	var webhookData map[string]interface{}
@@ -435,7 +435,10 @@ func CreemSubscriptionWebhook(c *gin.Context) {
 
 func verifyCreemSubscriptionSignature(payload []byte, signature string) bool {
 	if setting.CreemWebhookSecret == "" {
-		return true // No secret configured, skip verification
+		// Reject all webhooks when secret is not configured.
+		// No secret = no trust, prevents unsigned payload abuse.
+		common.SysError("Creem subscription webhook secret not configured - rejecting webhook")
+		return false
 	}
 
 	mac := hmac.New(sha256.New, []byte(setting.CreemWebhookSecret))
@@ -475,26 +478,44 @@ func handleCreemSubscriptionCompleted(data map[string]interface{}) {
 // EpaySubscriptionNotify handles Epay callback for subscription payments
 // GET /api/subscription/epay/notify
 func EpaySubscriptionNotify(c *gin.Context) {
-	tradeNo := c.Query("out_trade_no")
-	tradeStatus := c.Query("trade_status")
+	params := lo.Reduce(lo.Keys(c.Request.URL.Query()), func(r map[string]string, t string, i int) map[string]string {
+		r[t] = c.Request.URL.Query().Get(t)
+		return r
+	}, map[string]string{})
 
-	common.SysLog(fmt.Sprintf("Epay subscription notify: trade_no=%s, status=%s", tradeNo, tradeStatus))
-
-	if tradeStatus != "TRADE_SUCCESS" {
-		c.String(http.StatusOK, "success") // Acknowledge receipt
+	client := GetEpayClient()
+	if client == nil {
+		common.SysError("Epay subscription callback failed: payment client not configured")
+		c.String(http.StatusOK, "fail")
 		return
 	}
 
-	// Parse subscription ID from trade_no (format: SUB{userId}NO{subId}{timestamp})
-	// This is a simplified approach - in production, store trade_no -> subscription mapping
-	sub, err := repo.GetSubscriptionByPaymentId(tradeNo)
-	if err != nil || sub == nil {
-		common.SysError("Subscription not found for Epay trade_no: " + tradeNo)
+	verifyInfo, err := client.Verify(params)
+	if err != nil || !verifyInfo.VerifyStatus {
+		common.SysError("Epay subscription callback signature verification failed")
+		c.String(http.StatusOK, "fail")
+		return
+	}
+
+	if verifyInfo.TradeStatus != epay.StatusTradeSuccess {
 		c.String(http.StatusOK, "success")
 		return
 	}
 
-	if err := processSubscriptionPayment(sub.Id, tradeNo, "epay", int64(sub.Amount*100)); err != nil {
+	common.SysLog(fmt.Sprintf("Epay subscription notify verified: trade_no=%s, money=%s", verifyInfo.ServiceTradeNo, verifyInfo.Money))
+
+	sub, err := repo.GetSubscriptionByPaymentId(verifyInfo.ServiceTradeNo)
+	if err != nil || sub == nil {
+		common.SysError("Subscription not found for Epay trade_no: " + verifyInfo.ServiceTradeNo)
+		c.String(http.StatusOK, "success")
+		return
+	}
+
+	// Use actual payment amount from verified callback, not stored value
+	callbackMoney, _ := strconv.ParseFloat(verifyInfo.Money, 64)
+	amountPaidCents := int64(callbackMoney * 100)
+
+	if err := processSubscriptionPayment(sub.Id, verifyInfo.ServiceTradeNo, "epay", amountPaidCents); err != nil {
 		common.SysError(fmt.Sprintf("Failed to process Epay subscription payment: %v", err))
 	}
 
@@ -524,13 +545,13 @@ func processSubscriptionPayment(subscriptionId int, paymentId string, paymentMet
 			return fmt.Errorf("subscription status is %s, cannot activate", sub.Status)
 		}
 
-		// Amount verification (with tolerance for currency conversion)
+		// Amount verification: reject insufficient payments.
+		// Fixed tolerance of 50 cents covers payment processing fees without creating exploitable gaps.
+		const maxToleranceCents int64 = 50
 		expectedAmount := int64(sub.Amount * 100) // Convert to cents
-		tolerance := int64(float64(expectedAmount) * 0.05) // 5% tolerance for currency conversion
-		if amountPaid > 0 && (amountPaid < expectedAmount-tolerance || amountPaid > expectedAmount+tolerance) {
-			common.SysError(fmt.Sprintf("Amount mismatch for subscription %d: expected %d, got %d",
-				subscriptionId, expectedAmount, amountPaid))
-			// Don't fail - log and continue (payment provider amount might differ due to fees)
+		if amountPaid > 0 && amountPaid < expectedAmount-maxToleranceCents {
+			return fmt.Errorf("payment amount insufficient for subscription %d: expected %d cents, received %d cents (tolerance: %d cents)",
+				subscriptionId, expectedAmount, amountPaid, maxToleranceCents)
 		}
 
 		// Update payment info

@@ -29,9 +29,10 @@ func RedeemCodeV2(c *gin.Context) {
 		return
 	}
 
-	// Parse request body
+	// Parse request body — accept both "key" (frontend/v1 compat) and "code"
 	var req struct {
-		Code string `json:"code" binding:"required"`
+		Key  string `json:"key"`
+		Code string `json:"code"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -43,8 +44,21 @@ func RedeemCodeV2(c *gin.Context) {
 		return
 	}
 
+	// Use "key" if provided, fall back to "code"
+	redeemCode := req.Key
+	if redeemCode == "" {
+		redeemCode = req.Code
+	}
+	if redeemCode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Redemption code is required",
+		})
+		return
+	}
+
 	// Validate code format
-	if len(req.Code) != 32 {
+	if len(redeemCode) != 32 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Invalid redemption code format",
@@ -53,7 +67,7 @@ func RedeemCodeV2(c *gin.Context) {
 	}
 
 	// Redeem the code
-	quota, err := repo.Redeem(req.Code, tenantCtx.UserID)
+	quota, err := repo.Redeem(redeemCode, tenantCtx.UserID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,

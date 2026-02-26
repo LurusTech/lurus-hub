@@ -23,7 +23,7 @@ const (
 
 // CreateSubscription creates a new subscription record
 func CreateSubscription(sub *Subscription) error {
-	return DB.Create(sub).Error
+	return WithTenantID(DB, sub.TenantId).Create(sub).Error
 }
 
 // GetSubscriptionById retrieves subscription by ID
@@ -68,7 +68,8 @@ func UpdateSubscriptionStatus(id int, status string) error {
 	return DB.Model(&Subscription{}).Where("id = ?", id).Update("status", status).Error
 }
 
-// ActivateSubscription activates a subscription and syncs config to user
+// ActivateSubscription activates a subscription and syncs config to user.
+// Uses FOR UPDATE row lock to prevent duplicate activation from concurrent webhook retries.
 func ActivateSubscription(sub *Subscription) error {
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -79,6 +80,19 @@ func ActivateSubscription(sub *Subscription) error {
 			tx.Rollback()
 		}
 	}()
+
+	// Lock and re-read current status to prevent duplicate activation.
+	// Concurrent calls (e.g., webhook retries) will block here and see the updated status.
+	var current Subscription
+	if err := tx.Set("gorm:query_option", "FOR UPDATE").
+		Where("id = ?", sub.Id).First(&current).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("subscription not found: %w", err)
+	}
+	if current.Status != SubscriptionStatusPending {
+		tx.Rollback()
+		return fmt.Errorf("subscription %d already processed (status=%s), duplicate activation rejected", sub.Id, current.Status)
+	}
 
 	// Update subscription status
 	if err := tx.Model(sub).Updates(map[string]interface{}{
@@ -322,7 +336,7 @@ func RefundSubscription(sub *Subscription) error {
 		// Deduct quota if was granted
 		if sub.TotalQuota > 0 {
 			if err := tx.Model(&User{}).Where("id = ?", sub.UserId).
-				Update("quota", gorm.Expr("GREATEST(quota - ?, 0)", sub.TotalQuota)).Error; err != nil {
+				Update("quota", quotaDeductSafe(sub.TotalQuota)).Error; err != nil {
 				tx.Rollback()
 				return err
 			}
@@ -364,7 +378,7 @@ func GetActiveSubscriptionByUserId(userId int) (*Subscription, error) {
 
 // CreateInternalSubscription creates a subscription granted via internal API
 // This is used for admin grants, promotions, or external system integrations
-func CreateInternalSubscription(userId int, plan *SubscriptionPlan, days int, reason string) (*Subscription, error) {
+func CreateInternalSubscription(userId int, tenantId string, plan *SubscriptionPlan, days int, reason string) (*Subscription, error) {
 	if plan == nil {
 		return nil, errors.New("subscription plan is required")
 	}
@@ -375,6 +389,7 @@ func CreateInternalSubscription(userId int, plan *SubscriptionPlan, days int, re
 
 	sub := &Subscription{
 		UserId:        userId,
+		TenantId:      tenantId,
 		PlanCode:      plan.Code,
 		PlanName:      plan.Name,
 		Status:        SubscriptionStatusActive,
@@ -392,7 +407,7 @@ func CreateInternalSubscription(userId int, plan *SubscriptionPlan, days int, re
 	}
 
 	// Create subscription and activate in a transaction
-	tx := DB.Begin()
+	tx := WithTenantID(DB, tenantId).Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}

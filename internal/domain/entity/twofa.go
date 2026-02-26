@@ -11,6 +11,7 @@ var ErrTwoFANotEnabled = errors.New("用户未启用2FA")
 
 type TwoFA struct {
 	Id             int            `json:"id" gorm:"primaryKey"`
+	TenantId       string         `json:"tenant_id" gorm:"type:varchar(36);index;default:'default'"` // Tenant isolation
 	UserId         int            `json:"user_id" gorm:"unique;not null;index"`
 	Secret         string         `json:"-" gorm:"type:varchar(255);not null"`
 	IsEnabled      bool           `json:"is_enabled"`

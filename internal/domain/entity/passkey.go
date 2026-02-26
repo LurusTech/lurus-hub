@@ -18,6 +18,7 @@ var (
 
 type PasskeyCredential struct {
 	ID              int            `json:"id" gorm:"primaryKey"`
+	TenantId        string         `json:"tenant_id" gorm:"type:varchar(36);index;default:'default'"` // Tenant isolation
 	UserID          int            `json:"user_id" gorm:"uniqueIndex;not null"`
 	CredentialID    string         `json:"credential_id" gorm:"type:varchar(512);uniqueIndex;not null"`
 	PublicKey       string         `json:"public_key" gorm:"type:text;not null"`

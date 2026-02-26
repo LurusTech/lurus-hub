@@ -90,7 +90,12 @@ func Setup2FA(c *gin.Context) {
 	qrCodeData := common.GenerateQRCodeData(key.Secret(), user.Username)
 
 	// 创建或更新2FA记录（暂未启用）
+	tenantId := "default"
+	if tid, err := repo.GetTenantID(c); err == nil {
+		tenantId = tid
+	}
 	twoFA := &repo.TwoFA{
+		TenantId:  tenantId,
 		UserId:    userId,
 		Secret:    key.Secret(),
 		IsEnabled: false,

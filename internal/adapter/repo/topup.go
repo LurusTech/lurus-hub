@@ -15,7 +15,7 @@ import (
 type TopUp = entity.TopUp
 
 func TopUpInsert(topUp *TopUp) error {
-	return DB.Create(topUp).Error
+	return WithTenantID(DB, topUp.TenantId).Create(topUp).Error
 }
 
 func TopUpUpdate(topUp *TopUp) error {
@@ -248,7 +248,7 @@ func ManualCompleteTopUp(tradeNo string) error {
 	var quotaToAdd int
 	var payMoney float64
 
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := WithoutTenantIsolation(DB).Transaction(func(tx *gorm.DB) error {
 		topUp := &TopUp{}
 		// 行级锁，避免并发补单
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where(refCol+" = ?", tradeNo).First(topUp).Error; err != nil {

@@ -348,7 +348,7 @@ func BatchInsertChannels(channels []Channel) error {
 	if len(channels) == 0 {
 		return nil
 	}
-	tx := DB.Begin()
+	tx := WithTenantID(DB, channels[0].TenantId).Begin()
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -436,7 +436,7 @@ func (channel *Channel) GetStatusCodeMapping() string {
 
 func (channel *Channel) Insert() error {
 	var err error
-	err = DB.Create(channel).Error
+	err = WithTenantID(DB, channel.TenantId).Create(channel).Error
 	if err != nil {
 		return err
 	}

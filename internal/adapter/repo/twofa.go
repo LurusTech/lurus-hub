@@ -18,6 +18,7 @@ var ErrTwoFANotEnabled = entity.ErrTwoFANotEnabled
 // TwoFA 用户2FA设置表
 type TwoFA struct {
 	Id             int            `json:"id" gorm:"primaryKey"`
+	TenantId       string         `json:"tenant_id" gorm:"type:varchar(36);index;default:'default'"` // Tenant isolation
 	UserId         int            `json:"user_id" gorm:"unique;not null;index"`
 	Secret         string         `json:"-" gorm:"type:varchar(255);not null"` // TOTP密钥，不返回给前端
 	IsEnabled      bool           `json:"is_enabled"`
@@ -88,7 +89,7 @@ func (t *TwoFA) Create() error {
 		return err
 	}
 
-	return DB.Create(t).Error
+	return WithTenantID(DB, t.TenantId).Create(t).Error
 }
 
 // Update 更新2FA设置

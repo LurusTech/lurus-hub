@@ -413,7 +413,7 @@ func (user *User) Insert(inviterId int) error {
 		user.SetSetting(defaultSetting)
 	}
 
-	result := DB.Create(user)
+	result := WithTenantID(DB, user.TenantId).Create(user)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -1012,17 +1012,28 @@ func IncreaseDailyUsed(userId int, amount int) error {
 		Update("daily_used", gorm.Expr("daily_used + ?", amount)).Error
 }
 
-// ResetDailyQuota resets daily used quota for a user
+// ResetDailyQuota resets daily used quota for a user.
+// Idempotent: only resets if last_daily_reset is before today's UTC midnight.
+// Safe to call multiple times in the same day (e.g., if cron runs twice).
 func ResetDailyQuota(userId int) error {
 	now := common.GetTimestamp()
+	todayStart := (now / 86400) * 86400 // UTC midnight of today
 
-	// Update database
-	err := DB.Model(&User{}).Where("id = ?", userId).Updates(map[string]interface{}{
-		"daily_used":       0,
-		"last_daily_reset": now,
-	}).Error
-	if err != nil {
-		return err
+	// Conditional update: only resets if not yet reset today.
+	// RowsAffected == 0 means already reset today - not an error.
+	result := DB.Model(&User{}).
+		Where("id = ? AND last_daily_reset < ?", userId, todayStart).
+		Updates(map[string]interface{}{
+			"daily_used":       0,
+			"last_daily_reset": now,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		// Already reset today - idempotent, not an error
+		return nil
 	}
 
 	// Update cache asynchronously

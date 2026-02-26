@@ -129,6 +129,11 @@ func PasskeyRegisterFinish(c *gin.Context) {
 		common.ApiErrorMsg(c, "无法创建 Passkey 凭证")
 		return
 	}
+	if tenantId, err := repo.GetTenantID(c); err == nil {
+		passkeyCredential.TenantId = tenantId
+	} else {
+		passkeyCredential.TenantId = "default"
+	}
 
 	if err := repo.UpsertPasskeyCredential(passkeyCredential); err != nil {
 		common.ApiError(c, err)

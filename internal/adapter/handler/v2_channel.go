@@ -256,6 +256,13 @@ func CreateChannelV2(c *gin.Context) {
 		channel.Group = "default"
 	}
 
+	// Set tenant ID from context
+	if tenantId, err := repo.GetTenantID(c); err == nil {
+		channel.TenantId = tenantId
+	} else {
+		channel.TenantId = "default"
+	}
+
 	// Validate settings if provided
 	if err := channel.ValidateSettings(); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{

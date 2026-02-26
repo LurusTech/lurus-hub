@@ -155,6 +155,7 @@ func AlipayOAuth(c *gin.Context) {
 			}
 			user.Role = common.RoleCommonUser
 			user.Status = common.UserStatusEnabled
+			user.TenantId = "default"
 
 			affCode := session.Get("aff")
 			inviterId := 0

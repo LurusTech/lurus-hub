@@ -86,7 +86,7 @@ func UpsertPasskeyCredential(credential *PasskeyCredential) error {
 		common.SysLog("UpsertPasskeyCredential: nil credential provided")
 		return fmt.Errorf("Passkey 保存失败，请重试")
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return WithTenantID(DB, credential.TenantId).Transaction(func(tx *gorm.DB) error {
 		// 使用Unscoped()进行硬删除，避免唯一索引冲突
 		if err := tx.Unscoped().Where("user_id = ?", credential.UserID).Delete(&PasskeyCredential{}).Error; err != nil {
 			common.SysLog(fmt.Sprintf("UpsertPasskeyCredential: failed to delete existing credential for user %d: %v", credential.UserID, err))

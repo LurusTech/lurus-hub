@@ -311,8 +311,18 @@ func InternalGrantSubscription(c *gin.Context) {
 		return
 	}
 
+	// Look up target user's tenant
+	targetUser, err := repo.GetUserById(req.UserId, false)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "User not found",
+		})
+		return
+	}
+
 	// Create subscription
-	sub, err := repo.CreateInternalSubscription(req.UserId, plan, req.Days, req.Reason)
+	sub, err := repo.CreateInternalSubscription(req.UserId, targetUser.TenantId, plan, req.Days, req.Reason)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -321,9 +331,14 @@ func InternalGrantSubscription(c *gin.Context) {
 		return
 	}
 
-	// Get API key name from context for logging
+	// Audit log: record who granted what, when, and why (user-visible log for accountability)
 	keyName := c.GetString("internal_api_key_name")
 	common.SysLog("Internal API granted subscription to user " + strconv.Itoa(req.UserId) + " via key: " + keyName)
+	repo.RecordLog(req.UserId, repo.LogTypeSystem,
+		"Internal API granted subscription: plan="+req.PlanCode+
+			", days="+strconv.Itoa(req.Days)+
+			", key="+keyName+
+			", reason="+req.Reason)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

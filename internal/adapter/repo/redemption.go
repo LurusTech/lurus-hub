@@ -154,7 +154,7 @@ func Redeem(key string, userId int) (quota int, err error) {
 }
 
 func RedemptionInsert(redemption *Redemption) error {
-	return DB.Create(redemption).Error
+	return WithTenantID(DB, redemption.TenantId).Create(redemption).Error
 }
 
 func RedemptionSelectUpdate(redemption *Redemption) error {

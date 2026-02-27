@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/stretchr/testify/assert"
 )
@@ -190,17 +189,19 @@ func TestFetchAndMergeModels_NoBaseURL(t *testing.T) {
 }
 
 func TestFetchAndMergeModels_NoAvailableKey(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
+	// Save and restore original base URL
+	originalURL := constant.ChannelBaseURLs[constant.ChannelTypeOpenAI]
+	defer func() {
+		constant.ChannelBaseURLs[constant.ChannelTypeOpenAI] = originalURL
+	}()
+	constant.ChannelBaseURLs[constant.ChannelTypeOpenAI] = "https://api.openai.com"
 
 	channel := &repo.Channel{
-		Type:   constant.ChannelTypeOpenAI,
-		Status: common.ChannelStatusManuallyDisabled, // Disabled channel
+		Type: constant.ChannelTypeOpenAI,
 	}
-
-	// Set base URL
-	constant.ChannelBaseURLs[constant.ChannelTypeOpenAI] = "https://api.openai.com"
+	// Enable multi-key mode with no keys to trigger "no available key" error
+	channel.ChannelInfo.IsMultiKey = true
+	channel.Key = ""
 
 	newModels, err := fetchAndMergeModels(channel)
 

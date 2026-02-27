@@ -72,36 +72,31 @@ func authHelper(c *gin.Context, minRole int) {
 			return
 		}
 	}
-	// get header lurus-api-User or New-Api-User (for backward compatibility)
+	// lurus-api-User header is optional. When provided, it must match the authenticated session
+	// to prevent header-spoofing mismatches. The authoritative user ID always comes from the
+	// verified session or access token - never from the header alone.
 	apiUserIdStr := c.Request.Header.Get("lurus-api-User")
 	if apiUserIdStr == "" {
 		apiUserIdStr = c.Request.Header.Get("New-Api-User")
 	}
-	if apiUserIdStr == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "无权进行此操作，未提供 lurus-api-User 或 New-Api-User",
-		})
-		c.Abort()
-		return
-	}
-	apiUserId, err := strconv.Atoi(apiUserIdStr)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "无权进行此操作，用户 ID 格式错误",
-		})
-		c.Abort()
-		return
-
-	}
-	if id != apiUserId {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "无权进行此操作，用户 ID 与登录用户不匹配",
-		})
-		c.Abort()
-		return
+	if apiUserIdStr != "" {
+		apiUserId, err := strconv.Atoi(apiUserIdStr)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"message": "无权进行此操作，用户 ID 格式错误",
+			})
+			c.Abort()
+			return
+		}
+		if id != apiUserId {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"message": "无权进行此操作，用户 ID 与登录用户不匹配",
+			})
+			c.Abort()
+			return
+		}
 	}
 	if status.(int) == common.UserStatusDisabled {
 		c.JSON(http.StatusOK, gin.H{

@@ -11,8 +11,13 @@ spec:
   routes:
     - match: Host(`api.lurus.cn`)
       kind: Rule
+      middlewares:
+        - name: global-ratelimit
+          namespace: traefik
+        - name: circuit-breaker
+          namespace: traefik
       services:
         - name: lurus-api
           port: 8850
   tls:
-    secretName: lurus-cn-tls
+    secretName: lurus-cn-wildcard-tls

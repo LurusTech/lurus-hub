@@ -8,14 +8,11 @@ resources:
   - service.yaml
   - ingress.yaml
   - pdb.yaml
-  # Monitoring (requires Prometheus Operator)
-  - service-monitor.yaml
-  - prometheus-rules.yaml
-  - alertmanager-config.yaml
+  - hpa.yaml
 
 commonLabels:
   app.kubernetes.io/managed-by: argocd
 
 images:
   - name: ghcr.io/hanmahong5-arch/lurus-api
-    newTag: latest
+    newTag: main

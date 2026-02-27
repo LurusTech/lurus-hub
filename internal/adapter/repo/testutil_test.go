@@ -3,8 +3,10 @@ package repo
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,9 +20,19 @@ var testDBCounter atomic.Int64
 
 var dbnameRe = regexp.MustCompile(`(?i)(dbname=)\S+`)
 
-// buildTestDSN replaces the dbname parameter in a key-value PostgreSQL DSN.
-// Example: "host=localhost dbname=postgres" → "host=localhost dbname=test_repo_xxx"
+// buildTestDSN replaces the database name in a PostgreSQL DSN.
+// Supports both URL format (postgres://user:pass@host:5432/dbname?params)
+// and key-value format (host=localhost dbname=postgres sslmode=disable).
 func buildTestDSN(baseDSN, dbName string) string {
+	// URL format: postgres://... or postgresql://...
+	if strings.HasPrefix(baseDSN, "postgres://") || strings.HasPrefix(baseDSN, "postgresql://") {
+		u, err := url.Parse(baseDSN)
+		if err == nil {
+			u.Path = "/" + dbName
+			return u.String()
+		}
+	}
+	// Key-value format
 	if dbnameRe.MatchString(baseDSN) {
 		return dbnameRe.ReplaceAllString(baseDSN, "${1}"+dbName)
 	}
@@ -94,6 +106,7 @@ func SetupTestDB(t *testing.T) func() {
 	prevSQLite := common.UsingSQLite
 	prevPG := common.UsingPostgreSQL
 	prevMySQL := common.UsingMySQL
+	prevRedisEnabled := common.RedisEnabled
 
 	DB = db
 	LOG_DB = db
@@ -130,6 +143,7 @@ func SetupTestDB(t *testing.T) func() {
 		common.UsingSQLite = prevSQLite
 		common.UsingPostgreSQL = prevPG
 		common.UsingMySQL = prevMySQL
+		common.RedisEnabled = prevRedisEnabled
 	}
 
 	t.Cleanup(cleanup)

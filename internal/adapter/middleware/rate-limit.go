@@ -113,3 +113,9 @@ func DownloadRateLimit() func(c *gin.Context) {
 func UploadRateLimit() func(c *gin.Context) {
 	return rateLimitFactory(common.UploadRateLimitNum, common.UploadRateLimitDuration, "UP")
 }
+
+// RedemptionRateLimit limits redemption attempts to 5 per minute per IP.
+// Prevents brute-force enumeration of redemption codes.
+func RedemptionRateLimit() func(c *gin.Context) {
+	return rateLimitFactory(5, 60, "RD")
+}

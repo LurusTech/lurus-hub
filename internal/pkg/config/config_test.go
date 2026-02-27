@@ -413,6 +413,7 @@ func TestLoadFromEnv_StorageOverride_MinIOBucket(t *testing.T) {
 func TestLoadFromEnv_CORSDefaults_AllowedOrigins(t *testing.T) {
 	cfg := loadFromEnv()
 	want := []string{
+		"https://lurus.cn",
 		"https://www.lurus.cn",
 		"https://gushen.lurus.cn",
 		"https://webmail.lurus.cn",

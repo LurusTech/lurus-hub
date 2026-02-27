@@ -37,6 +37,11 @@ func AutoSyncChannelModelsWithContext(ctx context.Context, frequencyMinutes int)
 }
 
 func syncAllChannelModels(ctx context.Context) {
+	if repo.DB == nil {
+		common.SysLog("model auto-sync: database not initialized, skipping")
+		return
+	}
+
 	channels, err := repo.GetAllChannels(0, 0, true, false)
 	if err != nil {
 		common.SysLog("model auto-sync: failed to get channels: " + err.Error())

@@ -118,6 +118,7 @@ func loadFromEnv() *Config {
 		},
 		CORS: CORSConfig{
 			AllowedOrigins: envStringSlice("ALLOWED_ORIGINS", []string{
+				"https://lurus.cn",
 				"https://www.lurus.cn",
 				"https://gushen.lurus.cn",
 				"https://webmail.lurus.cn",

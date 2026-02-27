@@ -114,8 +114,8 @@ func SetApiV2Router(router *gin.Engine) {
 			// 兑换码路由
 			redemptionRoute := tenantRoute.Group("/redemptions")
 			{
-				// Users can redeem codes
-				redemptionRoute.POST("/redeem", handler.RedeemCodeV2)
+				// Users can redeem codes (rate limited: 5 attempts/min per IP to prevent brute-force)
+				redemptionRoute.POST("/redeem", middleware.RedemptionRateLimit(), handler.RedeemCodeV2)
 
 				// Admin can manage redemption codes
 				redemptionRoute.GET("", middleware.RequireRole("admin"), handler.ListRedemptionsV2)

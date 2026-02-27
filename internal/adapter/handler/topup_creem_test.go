@@ -101,8 +101,9 @@ func TestVerifyCreemSignature(t *testing.T) {
 		setting.CreemTestMode = true
 		defer func() { setting.CreemTestMode = prevTestMode }()
 
-		if !verifyCreemSignature(payload, "anything", "") {
-			t.Error("expected verifyCreemSignature to return true when secret is empty in test mode")
+		// Empty secret must be rejected even in test mode - no bypass allowed (P0-2 fix)
+		if verifyCreemSignature(payload, "anything", "") {
+			t.Error("empty secret must be rejected even in test mode - no bypass allowed")
 		}
 	})
 

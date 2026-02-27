@@ -271,9 +271,47 @@ func TestDailyResetTimeCalculation(t *testing.T) {
 // BenchmarkNeedsDailyReset benchmarks the reset check function
 func BenchmarkNeedsDailyReset(b *testing.B) {
 	lastReset := time.Now().Add(-25 * time.Hour).Unix()
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		NeedsDailyReset(lastReset)
+	}
+}
+
+// TestResetDailyQuota_Idempotent verifies P1-3: calling ResetDailyQuota twice on the same day
+// must not error and must leave daily_used at 0 (idempotent - no double-reset side effects).
+func TestResetDailyQuota_Idempotent(t *testing.T) {
+	cleanup := SetupTestDB(t)
+	defer cleanup()
+
+	_, normal, _ := SeedTestUsers(t)
+
+	// Set user daily_used to non-zero and last_daily_reset to yesterday
+	yesterdayTS := time.Now().AddDate(0, 0, -1).Unix()
+	DB.Model(&User{}).Where("id = ?", normal.Id).Updates(map[string]interface{}{
+		"daily_used":       1000,
+		"last_daily_reset": yesterdayTS,
+	})
+
+	// First reset: should clear daily_used
+	if err := ResetDailyQuota(normal.Id); err != nil {
+		t.Fatalf("first ResetDailyQuota() failed: %v", err)
+	}
+
+	var user User
+	DB.First(&user, "id = ?", normal.Id)
+	if user.DailyUsed != 0 {
+		t.Errorf("after first reset: DailyUsed = %d, want 0", user.DailyUsed)
+	}
+
+	// Second reset on the same day: must return nil (idempotent)
+	if err := ResetDailyQuota(normal.Id); err != nil {
+		t.Fatalf("second ResetDailyQuota() (same day) returned error: %v", err)
+	}
+
+	// daily_used must still be 0 - no corruption from second call
+	DB.First(&user, "id = ?", normal.Id)
+	if user.DailyUsed != 0 {
+		t.Errorf("after second reset: DailyUsed = %d, want 0 (idempotent - must not corrupt state)", user.DailyUsed)
 	}
 }

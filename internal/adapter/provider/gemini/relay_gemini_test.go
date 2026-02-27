@@ -405,3 +405,228 @@ func TestAdaptor_GetModelList(t *testing.T) {
 		t.Error("expected gemini-2.0-flash in model list")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// buildUsageFromGeminiMetadata
+// ---------------------------------------------------------------------------
+
+func TestBuildUsageFromGeminiMetadata(t *testing.T) {
+	tests := []struct {
+		name              string
+		metadata          dto.GeminiUsageMetadata
+		wantPrompt        int
+		wantCompletion    int
+		wantTotal         int
+		wantReasoning     int
+		wantAudioTokens   int
+		wantTextTokens    int
+	}{
+		{
+			name: "basic all fields",
+			metadata: dto.GeminiUsageMetadata{
+				PromptTokenCount:        100,
+				CandidatesTokenCount:    50,
+				TotalTokenCount:         200,
+				ThoughtsTokenCount:      30,
+				ToolUsePromptTokenCount: 20,
+				PromptTokensDetails: []dto.GeminiPromptTokensDetails{
+					{Modality: "TEXT", TokenCount: 80},
+					{Modality: "AUDIO", TokenCount: 20},
+				},
+			},
+			wantPrompt:     120, // 100 + 20 (ToolUse)
+			wantCompletion: 80,  // 50 + 30 (Thoughts)
+			wantTotal:      200,
+			wantReasoning:  30,
+			wantAudioTokens: 20,
+			wantTextTokens:  80,
+		},
+		{
+			name: "no tool use",
+			metadata: dto.GeminiUsageMetadata{
+				PromptTokenCount:        100,
+				CandidatesTokenCount:    50,
+				TotalTokenCount:         150,
+				ToolUsePromptTokenCount: 0,
+			},
+			wantPrompt:     100,
+			wantCompletion: 50,
+			wantTotal:      150,
+		},
+		{
+			name: "with thinking",
+			metadata: dto.GeminiUsageMetadata{
+				PromptTokenCount:     100,
+				CandidatesTokenCount: 50,
+				ThoughtsTokenCount:   50,
+				TotalTokenCount:      200,
+			},
+			wantPrompt:     100,
+			wantCompletion: 100, // 50 + 50
+			wantTotal:      200,
+			wantReasoning:  50,
+		},
+		{
+			name: "audio only",
+			metadata: dto.GeminiUsageMetadata{
+				PromptTokensDetails: []dto.GeminiPromptTokensDetails{
+					{Modality: "AUDIO", TokenCount: 100},
+				},
+			},
+			wantAudioTokens: 100,
+			wantTextTokens:  0,
+		},
+		{
+			name: "text only",
+			metadata: dto.GeminiUsageMetadata{
+				PromptTokensDetails: []dto.GeminiPromptTokensDetails{
+					{Modality: "TEXT", TokenCount: 100},
+				},
+			},
+			wantAudioTokens: 0,
+			wantTextTokens:  100,
+		},
+		{
+			name: "unknown modality",
+			metadata: dto.GeminiUsageMetadata{
+				PromptTokensDetails: []dto.GeminiPromptTokensDetails{
+					{Modality: "IMAGE", TokenCount: 30},
+					{Modality: "VIDEO", TokenCount: 20},
+				},
+			},
+			wantAudioTokens: 0,
+			wantTextTokens:  0,
+		},
+		{
+			name: "empty details",
+			metadata: dto.GeminiUsageMetadata{
+				PromptTokensDetails: []dto.GeminiPromptTokensDetails{},
+			},
+			wantAudioTokens: 0,
+			wantTextTokens:  0,
+		},
+		{
+			name:            "nil details",
+			metadata:        dto.GeminiUsageMetadata{},
+			wantAudioTokens: 0,
+			wantTextTokens:  0,
+		},
+		{
+			name:     "all zeros",
+			metadata: dto.GeminiUsageMetadata{},
+		},
+		{
+			name: "large numbers",
+			metadata: dto.GeminiUsageMetadata{
+				PromptTokenCount:        1_000_000,
+				ToolUsePromptTokenCount: 200_000,
+				CandidatesTokenCount:    500_000,
+				TotalTokenCount:         1_700_000,
+			},
+			wantPrompt:     1_200_000,
+			wantCompletion: 500_000,
+			wantTotal:      1_700_000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usage := buildUsageFromGeminiMetadata(tt.metadata)
+
+			if usage.PromptTokens != tt.wantPrompt {
+				t.Errorf("PromptTokens = %d, want %d", usage.PromptTokens, tt.wantPrompt)
+			}
+			if usage.CompletionTokens != tt.wantCompletion {
+				t.Errorf("CompletionTokens = %d, want %d", usage.CompletionTokens, tt.wantCompletion)
+			}
+			if usage.TotalTokens != tt.wantTotal {
+				t.Errorf("TotalTokens = %d, want %d", usage.TotalTokens, tt.wantTotal)
+			}
+			if usage.CompletionTokenDetails.ReasoningTokens != tt.wantReasoning {
+				t.Errorf("ReasoningTokens = %d, want %d", usage.CompletionTokenDetails.ReasoningTokens, tt.wantReasoning)
+			}
+			if usage.PromptTokensDetails.AudioTokens != tt.wantAudioTokens {
+				t.Errorf("AudioTokens = %d, want %d", usage.PromptTokensDetails.AudioTokens, tt.wantAudioTokens)
+			}
+			if usage.PromptTokensDetails.TextTokens != tt.wantTextTokens {
+				t.Errorf("TextTokens = %d, want %d", usage.PromptTokensDetails.TextTokens, tt.wantTextTokens)
+			}
+		})
+	}
+}
+
+// TestBuildUsageFromGeminiMetadata_RecalculationNote documents the known
+// inconsistency (BUG-3): the helper computes CompletionTokens as
+// CandidatesTokenCount + ThoughtsTokenCount, but some callers overwrite it
+// with TotalTokens - PromptTokens. This test records the discrepancy.
+func TestBuildUsageFromGeminiMetadata_RecalculationNote(t *testing.T) {
+	metadata := dto.GeminiUsageMetadata{
+		PromptTokenCount:        100,
+		CandidatesTokenCount:    50,
+		TotalTokenCount:         200,
+		ThoughtsTokenCount:      30,
+		ToolUsePromptTokenCount: 20,
+	}
+
+	usage := buildUsageFromGeminiMetadata(metadata)
+
+	// Helper calculation: CompletionTokens = Candidates + Thoughts = 50 + 30 = 80
+	helperCompletion := usage.CompletionTokens
+	// Caller recalculation: TotalTokens - PromptTokens = 200 - 120 = 80
+	// (In this case they happen to match, but with different ToolUse values they may diverge)
+	callerCompletion := metadata.TotalTokenCount - usage.PromptTokens
+
+	t.Logf("BUG-3 documentation: helper CompletionTokens=%d, caller recalculation=%d",
+		helperCompletion, callerCompletion)
+
+	// Verify the helper's own calculation is internally consistent
+	expectedCompletion := metadata.CandidatesTokenCount + metadata.ThoughtsTokenCount
+	if helperCompletion != expectedCompletion {
+		t.Errorf("helper CompletionTokens = %d, want %d (Candidates + Thoughts)",
+			helperCompletion, expectedCompletion)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GeminiModelList tests
+// ---------------------------------------------------------------------------
+
+func TestGeminiModelList_NoDuplicates(t *testing.T) {
+	seen := make(map[string]bool, len(ModelList))
+	for _, m := range ModelList {
+		if seen[m] {
+			t.Errorf("duplicate model in ModelList: %q", m)
+		}
+		seen[m] = true
+	}
+}
+
+func TestGeminiModelList_ContainsExpectedModels(t *testing.T) {
+	expected := []string{
+		"gemini-2.0-flash",
+		"gemini-1.5-pro",
+		"gemini-1.5-flash",
+		"imagen-3.0-generate-002",
+		"text-embedding-004",
+		"gemini-2.5-pro-exp-03-25",
+		"gemini-2.5-flash-preview-04-17",
+	}
+
+	modelSet := make(map[string]bool, len(ModelList))
+	for _, m := range ModelList {
+		modelSet[m] = true
+	}
+
+	for _, want := range expected {
+		if !modelSet[want] {
+			t.Errorf("ModelList missing expected model %q", want)
+		}
+	}
+}
+
+func TestGeminiModelList_NonEmpty(t *testing.T) {
+	if len(ModelList) == 0 {
+		t.Error("ModelList should not be empty")
+	}
+}
+

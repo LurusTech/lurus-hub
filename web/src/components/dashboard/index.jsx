@@ -30,10 +30,13 @@ import AnnouncementsPanel from './AnnouncementsPanel';
 import FaqPanel from './FaqPanel';
 import UptimePanel from './UptimePanel';
 import SearchModal from './modals/SearchModal';
+import UsageGauge from './UsageGauge';
+import UsageAlertBanner from './UsageAlertBanner';
 
 import { useDashboardData } from '../../hooks/dashboard/useDashboardData';
 import { useDashboardStats } from '../../hooks/dashboard/useDashboardStats';
 import { useDashboardCharts } from '../../hooks/dashboard/useDashboardCharts';
+import { useUsageGauge } from '../../hooks/dashboard/useUsageGauge';
 
 import {
   CHART_CONFIG,
@@ -72,6 +75,9 @@ const Dashboard = () => {
     dashboardData.setModelColors,
     dashboardData.t,
   );
+
+  // ========== 用量仪表 ==========
+  const gauge = useUsageGauge(userState, dashboardData.trendData);
 
   // ========== 统计数据 ==========
   const { groupedStatsData } = useDashboardStats(
@@ -133,6 +139,27 @@ const Dashboard = () => {
     }),
   );
 
+  // ========== Browser notification for low quota ==========
+  useEffect(() => {
+    if (gauge.level !== 'red' && gauge.level !== 'critical') return;
+    const notifKey = `usage_alert_${gauge.level}_${new Date().toISOString().slice(0, 10)}`;
+    if (sessionStorage.getItem(notifKey)) return;
+
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(
+        gauge.level === 'critical' ? '额度即将耗尽' : '额度不足提醒',
+        {
+          body: `您的额度已使用 ${gauge.usagePercent}%${gauge.daysRemaining ? `，预计 ${gauge.daysRemaining} 天后用完` : ''}`,
+          icon: '/favicon.ico',
+        },
+      );
+      sessionStorage.setItem(notifKey, '1');
+    }
+  }, [gauge.level, gauge.usagePercent, gauge.daysRemaining]);
+
   // ========== Effects ==========
   useEffect(() => {
     initChart();
@@ -160,6 +187,13 @@ const Dashboard = () => {
         timeOptions={dashboardData.timeOptions}
         handleInputChange={dashboardData.handleInputChange}
         t={dashboardData.t}
+      />
+
+      <UsageAlertBanner gauge={gauge} />
+      <UsageGauge
+        gauge={gauge}
+        loading={dashboardData.loading}
+        CARD_PROPS={CARD_PROPS}
       />
 
       <StatsCards

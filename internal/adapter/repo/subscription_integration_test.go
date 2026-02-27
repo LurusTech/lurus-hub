@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -202,5 +203,54 @@ func TestSubscription_ActivateSubscription(t *testing.T) {
 	expectedQuota := normal.Quota + 2000000
 	if user.Quota != expectedQuota {
 		t.Errorf("user Quota = %d, want %d", user.Quota, expectedQuota)
+	}
+}
+
+// TestSubscription_ActivateSubscription_Idempotent verifies that calling ActivateSubscription
+// twice on the same subscription (P0-4 idempotency fix) is safe:
+// - First call succeeds and grants TotalQuota
+// - Second call returns an error containing "already processed"
+// - User quota is only incremented ONCE (no double-credit)
+func TestSubscription_ActivateSubscription_Idempotent(t *testing.T) {
+	cleanup := SetupTestDB(t)
+	defer cleanup()
+
+	_, normal, _ := SeedTestUsers(t)
+	startQuota := normal.Quota
+
+	sub := &Subscription{
+		UserId:        normal.Id,
+		PlanCode:      "monthly",
+		PlanName:      "Monthly Plan",
+		Status:        SubscriptionStatusPending,
+		DailyQuota:    500000,
+		TotalQuota:    2_000_000,
+		BaseGroup:     "premium",
+		FallbackGroup: "default",
+		StartedAt:     time.Now(),
+		ExpiresAt:     time.Now().Add(30 * 24 * time.Hour),
+	}
+	DB.Create(sub)
+
+	// First activation: must succeed
+	if err := ActivateSubscription(sub); err != nil {
+		t.Fatalf("first ActivateSubscription() failed: %v", err)
+	}
+
+	// Second activation: must return an error (idempotency check)
+	err := ActivateSubscription(sub)
+	if err == nil {
+		t.Fatal("second ActivateSubscription() should return an error, got nil")
+	}
+	if errMsg := err.Error(); !strings.Contains(errMsg, "already processed") {
+		t.Errorf("second ActivateSubscription() error = %q, want message containing 'already processed'", errMsg)
+	}
+
+	// User quota must only be incremented once (no double-credit)
+	var user User
+	DB.First(&user, "id = ?", normal.Id)
+	expectedQuota := startQuota + 2_000_000
+	if user.Quota != expectedQuota {
+		t.Errorf("Quota = %d after double activation, want %d (TotalQuota must only be granted once)", user.Quota, expectedQuota)
 	}
 }

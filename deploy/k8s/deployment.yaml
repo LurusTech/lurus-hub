@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/name: lurus-api
     app.kubernetes.io/part-of: lurus
 spec:
-  replicas: 2
+  # Replicas managed by HPA (hpa.yaml), do not set here
   selector:
     matchLabels:
       app: lurus-api
@@ -34,9 +34,18 @@ spec:
                   matchLabels:
                     app: lurus-api
                 topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
       containers:
         - name: lurus-api
           image: ghcr.io/hanmahong5-arch/lurus-api:main
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
@@ -168,6 +177,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: data
+          emptyDir: {}
+        - name: tmp
           emptyDir: {}

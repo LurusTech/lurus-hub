@@ -5,7 +5,7 @@
 - [支持的支付方式](#支持的支付方式)
 - [计费模式](#计费模式)
 - [收费流程](#收费流程)
-- [多产品计费方案](#多产品计费方案)
+- [多产品计费能力评估](#多产品计费能力评估)
 - [配置指南](#配置指南)
 - [常见问题](#常见问题)
 
@@ -46,7 +46,7 @@
 |------|------|--------|
 | **充值系统** | 一次性购买额度 | `topups` |
 | **订阅系统** | 周期性订阅套餐 | `subscriptions`, `subscription_plans` |
-| **额度管理** | 追踪用户剩余额度、日限额 | `users.quota`, `users.used_quota` |
+| **额度管理** | 追踪用户剩余额度、日限额 | `users.quota`, `users.daily_quota` |
 | **扣费系统** | AI 调用后自动扣费 | `logs` |
 | **兑换码** | 批量发放额度 | `redemptions` |
 
@@ -56,43 +56,34 @@
 
 ### 已集成支付渠道
 
-| 支付方式 | 代码标识 | 适用地区 | 手续费 | 状态 |
-|---------|---------|---------|--------|------|
-| **Stripe** | `stripe` | 🌍 全球 | 2.9% + $0.30 | ✅ 生产可用 |
-| **易支付 (Epay)** | `epay` | 🇨🇳 中国 | 自定义 | ✅ 生产可用 |
-| **Creem** | `creem` | 🌍 全球 | 3.5% | ✅ 生产可用 |
-| **支付宝** | `alipay` | 🇨🇳 中国 | 0.6% | 🚧 集成中 |
-| **微信支付** | `wechat` | 🇨🇳 中国 | 0.6% | 🚧 集成中 |
+| 支付方式 | 代码标识 | 适用地区 | 手续费 | 状态 | 说明 |
+|---------|---------|---------|--------|------|------|
+| **Stripe** | `stripe` | 🌍 全球 | 2.9% + $0.30 | ✅ 生产可用 | Checkout Session + Webhook 验签 |
+| **易支付 (Epay)** | `epay` | 🇨🇳 中国 | 自定义 | ✅ 生产可用 | 聚合支付商，可走支付宝/微信/银联通道 |
+| **Creem** | `creem` | 🌍 全球 | 3.5% | ✅ 生产可用 | 固定产品定价，Webhook 验签 |
+| **支付宝** | `alipay` | 🇨🇳 中国 | 0.6% | ❌ 仅 OAuth 登录 | 无支付层，直连需企业资质 |
+| **微信支付** | `wechat` | 🇨🇳 中国 | 0.6% | ❌ 仅 OAuth 登录 | 无支付层，直连需企业资质 |
+
+> **国内支付说明**：通过**易支付**已可走支付宝和微信通道（中间商方式，约 1-2% 手续费）。
+> 若需官方直连，须持有企业营业执照并通过平台审核。
 
 ### 配置方式
 
 **通过系统设置 → 支付配置**
 
-```go
-// 每种支付方式的配置示例
-
-// 1. Stripe
+```bash
+# 1. Stripe
 STRIPE_SECRET_KEY=sk_live_xxxxx
 STRIPE_WEBHOOK_SECRET=whsec_xxxxx
 
-// 2. Epay (易支付)
+# 2. Epay (易支付，含支付宝/微信通道)
 EPAY_URL=https://pay.example.com
 EPAY_PID=12345
 EPAY_KEY=xxxxx
 
-// 3. Creem
+# 3. Creem
 CREEM_API_KEY=xxxxx
 CREEM_SECRET=xxxxx
-
-// 4. 支付宝
-ALIPAY_APP_ID=xxxxx
-ALIPAY_PRIVATE_KEY=xxxxx
-ALIPAY_PUBLIC_KEY=xxxxx
-
-// 5. 微信支付
-WECHAT_APP_ID=xxxxx
-WECHAT_MCH_ID=xxxxx
-WECHAT_API_KEY=xxxxx
 ```
 
 ---
@@ -108,34 +99,29 @@ WECHAT_API_KEY=xxxxx
 
 **充值流程：**
 ```
-用户 → 选择充值金额 (¥100) → 支付 → 到账额度 (100万 tokens)
+用户 → 选择充值金额 (¥100) → 支付 → 到账额度 (5000万 quota 单位)
 ```
 
 **换算关系（可配置）：**
 ```
-¥1 = 10,000 tokens
-¥100 = 1,000,000 tokens
+QuotaPerUnit = 500,000 (每元对应 quota 单位，可按汇率配置)
+¥1 = 500,000 quota 单位
+¥100 = 50,000,000 quota 单位
 ```
 
 **API 端点：**
 ```bash
-# 1. 创建充值订单
-POST /api/v2/{tenant}/billing/topup
-{
-  "amount": 1000000,  # 额度数量
-  "money": 100        # 支付金额（元）
-}
+# 1. 获取充值信息
+GET /api/user/topup
 
-# 2. 发起支付
-POST /api/v2/{tenant}/billing/pay
-{
-  "trade_no": "xxx",
-  "payment_method": "stripe"  # stripe | epay | creem
-}
+# 2. 发起易支付
+POST /api/user/pay
+{ "amount": 100, "payment_method": "alipay" }
 
-# 响应: { "payment_url": "https://stripe.com/checkout/..." }
-
-# 3. 用户跳转支付 → 支付完成 → Webhook 回调 → 自动到账
+# 3. 回调通知
+GET /api/user/epay/notify  (易支付异步通知)
+POST /api/pay/stripe (Stripe Webhook)
+POST /api/pay/creem  (Creem Webhook)
 ```
 
 ---
@@ -143,38 +129,32 @@ POST /api/v2/{tenant}/billing/pay
 ### 模式 2：订阅制
 
 **特点：**
-- ✅ 周期性自动扣费（月/年）
-- ✅ 包含固定额度 + 日限额
+- ✅ 周期性额度，包含日限额
+- ✅ 到期自动从余额扣费续费（`auto_renew=true`）
 - ✅ 适合高频用户
 
-**套餐示例：**
+**默认套餐：**
 
 | 套餐 | 价格 | 总额度 | 日限额 | 有效期 |
 |------|------|--------|--------|--------|
-| 基础版 | ¥99/月 | 100万 tokens | 5万/天 | 30天 |
-| 专业版 | ¥299/月 | 500万 tokens | 20万/天 | 30天 |
-| 企业版 | ¥999/月 | 2000万 tokens | 100万/天 | 30天 |
+| 周付 | ¥19.9 | 500万 quota | 50万/天 | 7天 |
+| 月付 | ¥59.9 | 5000万 quota | 100万/天 | 30天 |
+| 季付 | ¥149.9 | 2亿 quota | 200万/天 | 90天 |
+| 年付 | ¥499.9 | 无上限 | 500万/天 | 365天 |
 
 **订阅流程：**
 ```
-用户 → 选择套餐 → 支付 → 订阅生效 → 每月自动续费
+用户 → 选择套餐 → 支付 → 订阅生效 → 到期前 24h 尝试自动扣费续费
 ```
 
-**API 端点：**
-```bash
-# 1. 获取套餐列表
-GET /api/v2/{tenant}/billing/plans
-
-# 2. 创建订阅
-POST /api/v2/{tenant}/billing/subscriptions
-{
-  "plan_code": "monthly-basic",
-  "payment_method": "stripe",
-  "auto_renew": true
-}
-
-# 3. 取消订阅
-DELETE /api/v2/{tenant}/billing/subscriptions/{id}
+**自动续费逻辑（已实现）：**
+```
+1. Cron 每小时检查：expires_at 在 24h 内 + auto_renew=true
+2. 计算续费成本 = plan.Price * QuotaPerUnit
+3. 检查 user.Quota >= 续费成本
+   - 足够：原子事务扣费 + 延长 expires_at + 补充新期 TotalQuota
+   - 不足：记录日志（待接入邮件通知）
+4. 写入充值日志
 ```
 
 ---
@@ -183,30 +163,14 @@ DELETE /api/v2/{tenant}/billing/subscriptions/{id}
 
 **特点：**
 - ✅ 订阅 + 充值并存
-- ✅ 订阅提供基础额度，充值用于超额部分
+- ✅ 订阅提供日限额上限，充值增加余额
 - ✅ 适合所有场景
 
 **计算逻辑：**
 ```
-1. 优先消耗订阅额度（日限额内）
-2. 日限额用完后，消耗充值余额
-3. 次日重置日限额
-```
-
-**示例：**
-```
-用户订阅"专业版"（日限额 20万）+ 充值 50万
-
-Day 1:
-  - 使用 15万 → 消耗订阅日限额 (剩余 5万)
-
-Day 2:
-  - 日限额重置为 20万
-  - 使用 25万 → 消耗订阅 20万 + 充值 5万
-
-用户总剩余:
-  - 订阅额度: 500万 - 35万 = 465万
-  - 充值余额: 50万 - 5万 = 45万
+1. 用户 quota 是统一余额池（订阅激活时加 TotalQuota，充值时加 Money*QuotaPerUnit）
+2. daily_quota 控制每日最大消耗上限
+3. 次日凌晨 Cron 重置 daily_used = 0
 ```
 
 ---
@@ -224,7 +188,7 @@ Day 2:
        ▼
 ┌─────────────┐
 │  选择金额   │ ← 可配置充值档位: ¥50, ¥100, ¥200, ¥500
-│  选择支付   │
+│  选择支付   │ ← Stripe / 易支付 / Creem
 └──────┬──────┘
        │
        ▼
@@ -234,8 +198,7 @@ Day 2:
        │
        ▼
 ┌─────────────┐
-│ 调用支付API │
-│ (Stripe等)  │ → 获取支付链接
+│ 调用支付API │ → 获取支付链接
 └──────┬──────┘
        │
        ▼
@@ -245,13 +208,7 @@ Day 2:
        │
        ▼
 ┌─────────────┐
-│ 用户支付    │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│Webhook 回调 │ → POST /api/webhooks/stripe
-│验证签名      │ → 验证 trade_no, amount
+│Webhook 回调 │ → 验证签名 + 防重放（status=pending 校验）
 └──────┬──────┘
        │
        ▼
@@ -263,7 +220,6 @@ Day 2:
        ▼
 ┌─────────────┐
 │ 充值成功    │ → 跳转回控制台
-│ 发送通知    │ → 邮件/站内信
 └─────────────┘
 ```
 
@@ -272,126 +228,100 @@ Day 2:
 **1. 订单防重放**
 ```go
 // 每个订单使用唯一 trade_no
-tradeNo := common.GetRandomString(32)
+tradeNo := fmt.Sprintf("USR%dNO%s%d", userId, common.GetRandomString(6), time.Now().Unix())
 
 // Webhook 验证 trade_no 未处理过
 if topup.Status != common.TopUpStatusPending {
-    return // 已处理，忽略
+    return // 已处理，忽略（幂等）
 }
 ```
 
-**2. 金额验证**
-```go
-// Webhook 中必须验证金额匹配
-if webhookAmount != topup.Money {
-    log.Error("Amount mismatch!")
-    return
-}
-```
-
-**3. 签名验证**
+**2. 签名验证**
 ```go
 // Stripe Webhook 签名验证
-signature := r.Header.Get("Stripe-Signature")
 event, err := webhook.ConstructEvent(body, signature, webhookSecret)
-if err != nil {
-    return // 非法请求
+
+// 易支付签名验证
+verifyInfo, err := client.Verify(params)
+
+// Creem 签名验证（HMAC-SHA256）
+mac := hmac.New(sha256.New, []byte(secret))
+```
+
+**3. 租户隔离**
+```go
+// Webhook 回调中验证租户一致性
+if user.TenantId != topup.TenantId {
+    return errors.New("租户验证失败")
 }
 ```
 
-**4. 幂等性保证**
-```sql
--- 使用事务 + 乐观锁
-BEGIN;
-UPDATE users SET quota = quota + 1000000
-WHERE id = 123 AND version = current_version;
-UPDATE topups SET status = 'success' WHERE trade_no = 'xxx' AND status = 'pending';
-COMMIT;
-```
-
----
-
-## 多产品计费方案
-
-### 方案对比
-
-#### **方案 A：共享钱包（推荐）**
-
-**特点：**
-- ✅ 用户在所有产品共享一个余额
-- ✅ 在产品 A 充值，可在产品 B 使用
-- ✅ 统一计费，用户体验好
-
-**实现：**
-```sql
--- 用户表：所有产品共享 quota
-users
-  ├─ id (用户全局唯一)
-  ├─ quota (总额度)
-  └─ used_quota (已使用)
-
--- 使用日志：按产品分开记录
-logs
-  ├─ user_id
-  ├─ tenant_id  ← 区分产品
-  └─ quota_used
-```
-
-**查询示例：**
-```sql
--- 查询用户在产品 B 的消费
-SELECT SUM(quota_used) FROM logs
-WHERE user_id = 123 AND tenant_id = (SELECT id FROM tenants WHERE slug = 'product-b');
-
--- 用户总余额（所有产品共享）
-SELECT quota - used_quota FROM users WHERE id = 123;
-```
-
----
-
-#### **方案 B：独立钱包**
-
-**特点：**
-- ✅ 每个产品的余额独立
-- ✅ 产品 A 的余额不能在产品 B 使用
-- ✅ 适合需要严格财务隔离的场景
-
-**实现：**
-```sql
--- 用户-租户关系表：每个产品独立额度
-user_tenant_quotas
-  ├─ user_id
-  ├─ tenant_id
-  ├─ quota        ← 产品独立额度
-  └─ used_quota
-```
-
-**缺点：**
-- ❌ 用户体验差（需要在每个产品分别充值）
-- ❌ 增加开发复杂度
-
----
-
-### **推荐配置：方案 A（共享钱包）**
-
-**理由：**
-1. 用户体验最佳
-2. 降低用户充值门槛
-3. 提高资金利用率
-4. 便于用户在产品间流转
-
-**特殊需求：**
-如果某产品需要独立定价，可通过**价格系数**实现：
-
+**4. 行级锁防并发**
 ```go
-// 产品 B 使用额度 = 实际消耗 × 价格系数
-tenants
-  ├─ slug: product-b
-  └─ pricing_multiplier: 1.5  ← 产品 B 的 AI 调用价格是基准的 1.5 倍
-
-// 扣费时
-quotaToDeduct := actualUsage * tenant.PricingMultiplier
+tx.Set("gorm:query_option", "FOR UPDATE").Where("trade_no = ?", tradeNo).First(&topUp)
 ```
+
+---
+
+## 多产品计费能力评估
+
+> 本节回答：当前 lurus-api 计费系统能否支撑整个公司所有产品的计费需求？
+
+### 当前计费模式支持状态
+
+| 模式 | 实现状态 | 机制 |
+|------|---------|------|
+| 按 Token/Quota 计费 | ✅ 完整 | `PreConsumeQuota` + `PostConsumeQuota` |
+| 按次计费 | ✅ 完整 | `logs.request_count` 记录每次请求 |
+| 包月/包年订阅 | ✅ 完整 | `subscriptions` 表 + Cron 管理 |
+| 一次性充值 | ✅ 完整 | `topups` 表，Webhook 自动到账 |
+| 充值档位折扣 | ✅ 完整 | `AmountDiscount` map |
+| 分组差异化定价 | ✅ 完整 | `TopupGroupRatio`，VIP 可配不同比率 |
+| 订阅自动续费 | ✅ 已实现 | 余额扣费，每小时 Cron 检查（见 `subscription_cron.go`） |
+
+### 对 AI 网关自身的结论
+
+**✅ 可以支撑**（条件：不依赖直连官方支付宝/微信）
+
+- 所有计费模式均已实现并具备生产级安全机制
+- 国内支付通过**易支付**已可走支付宝/微信通道
+- 若要官方直连（0.6% 费率），需企业资质 + 接入支付宝开放平台/微信支付商户
+
+### 对多产品公司计费中台的结论
+
+**❌ 不能直接支撑（当前架构限制）**
+
+| 问题 | 当前状态 | 影响 |
+|------|---------|------|
+| 计费单位与 Token 强耦合 | Quota = Token 数量 | 非 AI 产品无法直接复用 |
+| 无通用扣费 API | 外部服务无法调用 | 无法集成其他产品 |
+| 无产品维度隔离 | `tenant_id` 是组织维度 | 跨产品统计无法细分 |
+| 无统一账单视图 | 只展示 AI 调用记录 | 无法展示多产品消费明细 |
+| 退款系统 | ❌ 缺失 | 无法处理投诉退款 |
+| 发票/收据 | ❌ 缺失 | 企业合规需求无法满足 |
+
+### 推荐路径
+
+**路径 B（推荐）：保持 lurus-api 专注 AI 网关，各产品自治计费**
+
+```
+短期：
+  lurus-api       → AI 网关计费（现有方案，已生产就绪）
+  其他产品        → 各自接入支付 SDK（共享 Zitadel SSO 用户体系）
+
+长期（规模扩大后）：
+  lurus-billing   → 独立计费中台（统一账单、退款、对账）
+                    所有产品通过内部 API 调用
+```
+
+**路径 A（可选）：扩展 lurus-api 为计费中台**
+
+需要引入：
+1. `product_id` 字段（区分不同产品）
+2. 通用扣费 API（供其他服务调用）
+3. 通用计量单位（非仅 Token）
+
+改动较大，影响现有逻辑，建议在 Epic 级别规划。
 
 ---
 
@@ -407,29 +337,23 @@ quotaToDeduct := actualUsage * tenant.PricingMultiplier
 # 1. 获取 Stripe 密钥
 https://dashboard.stripe.com/apikeys
 
-# 2. 在系统设置中填入
-Secret Key: sk_live_xxxxx
-Webhook Secret: whsec_xxxxx
-
-# 3. 配置 Webhook 端点
-https://api.lurus.cn/api/webhooks/stripe
-
-# 4. 选择事件
+# 2. 配置 Webhook 端点（选择以下事件）
+https://api.lurus.cn/api/pay/stripe
 ✅ checkout.session.completed
 ✅ payment_intent.succeeded
 ```
 
-#### 易支付配置
+#### 易支付配置（含支付宝/微信通道）
 
 ```bash
-# 1. 从易支付服务商获取
+# 从易支付服务商获取以下信息
 PID: 12345
 密钥: xxxxx
 API地址: https://pay.example.com
 
-# 2. 配置回调地址
-Notify URL: https://api.lurus.cn/api/webhooks/epay
-Return URL: https://api.lurus.cn/console/topup?payment=success
+# 回调地址
+Notify URL: https://api.lurus.cn/api/user/epay/notify
+Return URL: https://api.lurus.cn/console/log
 ```
 
 ---
@@ -440,61 +364,52 @@ Return URL: https://api.lurus.cn/console/topup?payment=success
 
 ```json
 {
-  "topup_amounts": [
-    { "money": 10, "quota": 100000, "bonus": 0 },
-    { "money": 50, "quota": 500000, "bonus": 10000 },
-    { "money": 100, "quota": 1000000, "bonus": 50000 },
-    { "money": 500, "quota": 5000000, "bonus": 500000 }
-  ],
-  "min_topup": 10,
-  "max_topup": 10000
+  "amount_options": [50, 100, 200, 500],
+  "amount_discount": {
+    "500": 0.95,
+    "1000": 0.90
+  },
+  "min_topup": 10
 }
 ```
 
 **字段说明：**
-- `money`: 支付金额（元）
-- `quota`: 到账额度（tokens）
-- `bonus`: 赠送额度（可选）
+- `amount_options`: 充值档位（元）
+- `amount_discount`: 充值档位折扣（充值越多折扣越大）
+- `min_topup`: 最低充值金额
 
 ---
 
 ### 3. 配置订阅套餐
 
-**系统设置 → 订阅管理 → 新建套餐**
+**Root 登录 → 系统设置 → 订阅套餐管理**
 
-```sql
--- 示例：创建月付套餐
-INSERT INTO subscription_plans (
-  code, name, price, quota, daily_quota, duration_days, auto_renew
-) VALUES (
-  'monthly-basic',
-  '基础版月付',
-  99.00,
-  1000000,    -- 总额度 100万
-  50000,      -- 日限额 5万
-  30,         -- 有效期 30天
-  true        -- 支持自动续费
-);
+```json
+[
+  {
+    "code": "monthly",
+    "name": "月付套餐",
+    "days": 30,
+    "price": 59.9,
+    "currency": "CNY",
+    "daily_quota": 1000000,
+    "total_quota": 50000000,
+    "base_group": "monthly",
+    "fallback_group": "weekly",
+    "enabled": true
+  }
+]
 ```
 
 ---
 
-### 4. 配置价格系数（可选）
+### 4. 自动续费说明
 
-**适用场景：** 不同产品使用不同定价
-
-```sql
--- 产品 B 的 AI 调用价格为基准价的 1.2 倍
-UPDATE tenants
-SET pricing_multiplier = 1.2
-WHERE slug = 'product-b';
-```
-
-**效果：**
-```
-基准价格: GPT-4o = ¥0.1/1000 tokens
-产品 B 价格: GPT-4o = ¥0.12/1000 tokens
-```
+- 自动续费每小时运行一次（`autoRenewalProcessorWithContext`）
+- 检查 24h 内到期 + `auto_renew=true` 的订阅
+- 从用户 `quota` 余额中扣除续费费用（`plan.Price * QuotaPerUnit`）
+- 扣费同时补充新期 `TotalQuota` 到余额（原子事务）
+- 余额不足时：记录警告日志，不续费（待接入邮件通知）
 
 ---
 
@@ -504,72 +419,46 @@ WHERE slug = 'product-b';
 
 **A:** 取决于支付方式：
 - **Stripe**: 即时到账（Webhook 1-3秒）
-- **易支付**: 即时到账（Webhook 1-5秒）
-- **支付宝**: 即时到账（Webhook 实时）
-- **银行转账**: 人工核对后到账（1-24小时）
+- **易支付（支付宝/微信通道）**: 即时到账（Webhook 1-5秒）
+- **Creem**: 即时到账（Webhook 实时）
+- **银行转账**: 管理员人工核对后到账
 
 ---
 
 ### Q2: 订阅到期后会自动续费吗？
 
 **A:** 取决于用户设置：
-- **auto_renew = true**: 到期前 3 天自动扣费续费
-- **auto_renew = false**: 到期后失效，不自动续费
+- **`auto_renew = true`**: 到期前 24 小时尝试从 quota 余额扣费续费
+- **`auto_renew = false`**: 到期后失效，不续费
 
-**自动续费逻辑：**
+**自动续费逻辑（`subscription_cron.go: processOneAutoRenewal`）：**
 ```go
-// 每天凌晨定时任务检查即将到期的订阅
-func renewSubscriptions() {
-    // 查询 3 天内到期 + 开启自动续费的订阅
-    expiringSubs := getExpiringSubscriptions(3 days)
+// 1. 计算续费成本（CNY 转换为 quota 单位）
+renewalCost := int(plan.Price * common.QuotaPerUnit)
 
-    for sub := range expiringSubs {
-        // 从用户余额扣费（充值余额，非订阅额度）
-        if user.Quota >= sub.Plan.Price {
-            user.Quota -= sub.Plan.Price
-            sub.ExpiresAt = sub.ExpiresAt.Add(30 days)
-            sub.Quota = sub.Plan.Quota  // 重置额度
-        } else {
-            // 余额不足，发送通知
-            sendEmail(user, "订阅即将到期，余额不足")
-        }
-    }
-}
+// 2. 余额足够：原子事务扣费 + 延长有效期 + 补充新期额度
+DB.Transaction(func(tx *gorm.DB) error {
+    tx.Model(&User{}).Where("id = ?", userId).
+        Update("quota", gorm.Expr("quota + ?", plan.TotalQuota - renewalCost))
+    tx.Model(&sub).Update("expires_at", sub.ExpiresAt.AddDate(0, 0, plan.Days))
+    return nil
+})
+
+// 3. 余额不足：记录日志，待邮件通知（TODO）
 ```
 
 ---
 
 ### Q3: 用户可以退款吗？
 
-**A:** 取决于您的退款政策：
+**A:** 当前系统**无退款模块**（计划在独立计费中台实现）。
 
-**建议策略：**
-```yaml
-充值退款:
-  - 未使用的额度: ✅ 可退款（扣除手续费）
-  - 已使用的额度: ❌ 不可退款
-
-订阅退款:
-  - 7天内未使用: ✅ 全额退款
-  - 已使用部分: ❌ 按比例退款
+临时处理方案：
 ```
-
-**实现退款：**
-```sql
--- 1. 计算可退金额
-SELECT
-  (quota - used_quota) / 10000 AS refundable_cny,
-  used_quota / 10000 AS non_refundable_cny
-FROM users WHERE id = 123;
-
--- 2. 创建退款订单
-INSERT INTO refunds (user_id, amount, status)
-VALUES (123, 50.00, 'pending');
-
--- 3. 扣减用户额度
-UPDATE users SET quota = used_quota WHERE id = 123;
-
--- 4. 通过支付平台退款（Stripe Refund API）
+1. 用户提交工单说明退款原因
+2. 管理员在 Stripe/易支付后台手动退款
+3. 管理员通过 API 扣减用户 quota：
+   Root 登录 → 用户管理 → 选择用户 → 调整额度
 ```
 
 ---
@@ -578,32 +467,21 @@ UPDATE users SET quota = used_quota WHERE id = 123;
 
 **A:** 多重防护措施：
 
-**1. 设置冷静期**
+**1. 设置冷静期（需手动实施）**
 ```go
 // 充值后 7 天内使用超过 50% 不可退款
 if time.Since(topup.CreateTime) < 7*24*time.Hour &&
-   user.UsedQuota > topup.Amount * 0.5 {
+   user.UsedQuota > topup.Amount*0.5 {
     return errors.New("已使用超过50%，不可退款")
 }
 ```
 
-**2. 限制退款次数**
-```go
-// 每个用户每年最多退款 3 次
-refundCount := getRefundCount(userID, thisYear)
-if refundCount >= 3 {
-    return errors.New("已达退款次数上限")
-}
-```
-
-**3. 黑名单机制**
-```sql
--- 标记恶意用户
-UPDATE users SET risk_level = 'high' WHERE id IN (
-  SELECT user_id FROM refunds
-  GROUP BY user_id
-  HAVING COUNT(*) > 5
-);
+**2. 风控监控（需接入告警系统）**
+```yaml
+自动触发审核:
+  - 单笔充值 > ¥1000
+  - 24小时内充值 > 3 次
+  - 充值后 1 小时内使用超过 80%
 ```
 
 ---
@@ -612,20 +490,11 @@ UPDATE users SET risk_level = 'high' WHERE id IN (
 
 **A:** 支持，需要管理员手动处理：
 
-**流程：**
 ```
 1. 用户提交工单 → 提供转账凭证
 2. 管理员验证到账
-3. 手动增加额度:
-
-   Root 登录 → 用户管理 → 选择用户 → 调整额度
-
-   或使用 API:
-   POST /api/admin/users/{id}/quota
-   {
-     "amount": 1000000,
-     "reason": "企业对公转账 - 发票号 xxx"
-   }
+3. 管理员补单：Root 登录 → 充值管理 → 手动补单（输入订单号）
+   或调整用户额度：用户管理 → 选择用户 → 调整额度
 ```
 
 ---
@@ -634,146 +503,86 @@ UPDATE users SET risk_level = 'high' WHERE id IN (
 
 **A:** 三种方式：
 
-**方式 1：直接分配额度**
-```sql
--- 给企业用户直接分配 1 亿 tokens
-UPDATE users SET quota = quota + 100000000 WHERE id = 大客户ID;
+**方式 1：兑换码**
+```
+Root 登录 → 兑换码管理 → 批量生成（指定额度 + 有效期）
+发送给大客户 → 客户自行兑换
 ```
 
-**方式 2：创建专属套餐**
-```sql
--- 创建企业专属套餐（不在前台显示）
-INSERT INTO subscription_plans (code, name, price, quota, is_public)
-VALUES ('enterprise-custom', '企业定制版', 9999, 100000000, false);
+**方式 2：直接调整额度**
+```
+Root 登录 → 用户管理 → 选择用户 → 调整额度
 ```
 
-**方式 3：生成兑换码**
-```sql
--- 生成 100 个兑换码，每个 100 万额度
-INSERT INTO redemptions (code, quota, remain)
-SELECT
-  CONCAT('VIP-', UPPER(SUBSTRING(MD5(RANDOM()::text), 1, 8))),
-  1000000,
-  1
-FROM generate_series(1, 100);
+**方式 3：内部订阅（不走支付）**
+```go
+// 管理员通过 Internal API 直接激活订阅
+POST /api/v2/{tenant}/internal/subscriptions
+{
+  "user_id": 123,
+  "plan_code": "monthly",
+  "days": 90,
+  "reason": "大客户合作"
+}
 ```
 
 ---
 
 ### Q7: 多产品如何财务对账？
 
-**A:** 使用租户维度的财务报表：
+**A:** 通过 `tenant_id` 维度统计（当前能力）：
 
 ```sql
--- 按产品统计收入
+-- 按产品统计充值收入
 SELECT
-  t.slug AS product,
-  t.name,
-  COUNT(DISTINCT tu.user_id) AS active_users,
-  SUM(tu.money) AS revenue,
-  SUM(tu.amount) AS quota_sold
+  tu.tenant_id AS product,
+  COUNT(DISTINCT tu.user_id) AS paying_users,
+  SUM(tu.money) AS revenue_cny,
+  COUNT(*) AS order_count
 FROM topups tu
-JOIN users u ON tu.user_id = u.id
-JOIN tenants t ON u.tenant_id = t.id
 WHERE tu.status = 'success'
   AND tu.create_time >= '2026-02-01'
-  AND tu.create_time < '2026-03-01'
-GROUP BY t.slug, t.name;
+GROUP BY tu.tenant_id;
+
+-- 按产品统计消耗（AI 调用）
+SELECT
+  l.tenant_id AS product,
+  SUM(l.quota) AS quota_consumed,
+  COUNT(*) AS api_calls
+FROM logs l
+WHERE l.created_at >= '2026-02-01'
+GROUP BY l.tenant_id;
 ```
 
-**输出示例：**
-```
-product    | name        | active_users | revenue | quota_sold
------------|-------------|--------------|---------|------------
-lurus      | Lurus AI    | 1500         | ¥45,000 | 45,000,000
-product-b  | Product B   | 300          | ¥9,000  | 9,000,000
-product-c  | Product C   | 150          | ¥4,500  | 4,500,000
-```
-
----
-
-## 最佳实践
-
-### 1. 推荐的收费策略
-
-**对于 SaaS 产品：**
-```
-✅ 订阅制为主 + 充值补充
-✅ 提供免费试用额度（1万 tokens）
-✅ 订阅自动续费，降低流失率
-```
-
-**对于 API 平台：**
-```
-✅ 充值为主 + 订阅可选
-✅ 按量计费，灵活透明
-✅ 提供充值档位赠送（充 500 送 50）
-```
-
----
-
-### 2. 定价参考
-
-| AI 模型 | OpenAI 官方价格 | Lurus 建议售价 | 毛利率 |
-|---------|----------------|---------------|--------|
-| GPT-4o | $2.5/1M input | ¥0.025/1k | 30% |
-| GPT-4o-mini | $0.15/1M | ¥0.002/1k | 35% |
-| Claude 3.5 | $3/1M | ¥0.03/1k | 30% |
-| Gemini Pro | $0.5/1M | ¥0.006/1k | 40% |
-
-**换算关系：**
-```
-¥1 = 10,000 tokens (针对 GPT-4o-mini)
-¥100 充值 = 1,000,000 tokens = 可调用约 500 次对话
-```
-
----
-
-### 3. 防欺诈建议
-
-**高风险行为监控：**
-```yaml
-自动触发审核:
-  - 单笔充值 > ¥1000
-  - 24小时内充值 > 3 次
-  - 充值后 1 小时内使用超过 80%
-  - 来自代理/VPN 的支付
-
-自动冻结:
-  - 同一 IP 注册超过 10 个账号
-  - 使用盗用信用卡支付（Stripe 风控告警）
-```
+> **注意**：当前 `tenant_id` 是组织/产品维度，非独立产品账户维度。
+> 多产品统一对账账单功能在规划中的 `lurus-billing` 服务中实现。
 
 ---
 
 ## 总结
 
-### Zitadel vs Lurus 分工清晰
+### 计费能力矩阵
 
-| 功能 | Zitadel | Lurus |
-|------|---------|-------|
-| 用户登录 | ✅ | - |
-| 账号管理 | ✅ | - |
-| 充值/订阅 | - | ✅ |
-| 额度管理 | - | ✅ |
-| AI 服务 | - | ✅ |
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| 按量充值 | ✅ | Stripe/易支付/Creem |
+| 包月订阅 | ✅ | 四档套餐，可自定义 |
+| 订阅自动续费 | ✅ | 余额扣费，24h 前触发 |
+| 国内支付（易支付通道） | ✅ | 支付宝/微信/银联 |
+| 国际支付 | ✅ | Stripe + Creem |
+| 兑换码 | ✅ | 批量发放 |
+| 多产品计费中台 | ❌ | 需独立服务 |
+| 退款系统 | ❌ | 计划中 |
+| 发票/收据 | ❌ | 计划中 |
 
 ### 多产品接入推荐方案
 
 - **认证**: Zitadel 统一 SSO（账号共享）
-- **计费**: Lurus 共享钱包（余额通用）
-- **数据**: 按 tenant_id 隔离
-
-### 支持的支付方式
-
-✅ Stripe（国际）
-✅ 易支付（国内）
-✅ Creem（国际）
-🚧 支付宝（开发中）
-🚧 微信支付（开发中）
+- **AI 计费**: lurus-api 共享钱包（余额通用，按 tenant_id 分组统计）
+- **非 AI 产品**: 各自独立处理支付，共享 Zitadel 用户 ID
+- **未来**: 独立 `lurus-billing` 服务作为统一计费中台
 
 ---
 
 **文档维护**: Lurus 技术团队
-**最后更新**: 2026-02-10
-**反馈**: support@quantumnous.com
+**最后更新**: 2026-02-25

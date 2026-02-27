@@ -89,8 +89,9 @@ func createRootAccountIfNeed() error {
 			DisplayName: "Root User",
 			AccessToken: nil,
 			Quota:       100000000,
+			TenantId:    "default",
 		}
-		DB.Create(&rootUser)
+		WithTenantID(DB, "default").Create(&rootUser)
 	}
 	return nil
 }

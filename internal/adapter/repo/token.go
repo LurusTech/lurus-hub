@@ -175,7 +175,7 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 
 func (token *Token) Insert() error {
 	var err error
-	err = DB.Create(token).Error
+	err = WithTenantID(DB, token.TenantId).Create(token).Error
 	return err
 }
 

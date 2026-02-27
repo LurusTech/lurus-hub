@@ -777,6 +777,7 @@ func AddChannel(c *gin.Context) {
 		return
 	}
 
+	tenantId := app.GetTenantIdFromContext(common.GetContextKeyString(c, "tenant_id"))
 	channels := make([]repo.Channel, 0, len(keys))
 	for _, key := range keys {
 		if key == "" {
@@ -784,6 +785,7 @@ func AddChannel(c *gin.Context) {
 		}
 		localChannel := addChannelRequest.Channel
 		localChannel.Key = key
+		localChannel.TenantId = tenantId
 		if addChannelRequest.BatchAddSetKeyPrefix2Name && len(keys) > 1 {
 			keyPrefix := localChannel.Key
 			if len(localChannel.Key) > 8 {

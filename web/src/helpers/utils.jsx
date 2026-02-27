@@ -150,10 +150,14 @@ export function showError(error) {
     if (error.name === 'AxiosError') {
       switch (error.response.status) {
         case 401:
-          // Clear user state and redirect to Zitadel OAuth login
+          // Clear user state and redirect to appropriate login page
           localStorage.removeItem('user');
-          const slug = localStorage.getItem('tenant_slug') || 'lurus';
-          window.location.href = `/api/v2/${slug}/auth/login?redirect_url=/oauth/zitadel`;
+          if (localStorage.getItem('tenant_slug')) {
+            const slug = localStorage.getItem('tenant_slug');
+            window.location.href = `/api/v2/${slug}/auth/login?redirect_url=/oauth/zitadel`;
+          } else {
+            window.location.href = '/login/password';
+          }
           break;
         case 429:
           Toast.error('错误：请求次数过多，请稍后再试！');

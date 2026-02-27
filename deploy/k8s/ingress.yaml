@@ -13,9 +13,7 @@ spec:
       kind: Rule
       middlewares:
         - name: global-ratelimit
-          namespace: traefik
         - name: circuit-breaker
-          namespace: traefik
       services:
         - name: lurus-api
           port: 8850

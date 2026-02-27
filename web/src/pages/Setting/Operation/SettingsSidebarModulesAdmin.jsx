@@ -65,7 +65,6 @@ export default function SettingsSidebarModulesAdmin(props) {
       deployment: true,
       redemption: true,
       user: true,
-      subscription: true,
       setting: true,
     },
   });
@@ -126,7 +125,6 @@ export default function SettingsSidebarModulesAdmin(props) {
         deployment: true,
         redemption: true,
         user: true,
-        subscription: true,
         setting: true,
       },
     };
@@ -195,7 +193,6 @@ export default function SettingsSidebarModulesAdmin(props) {
             deployment: true,
             redemption: true,
             user: true,
-            subscription: true,
             setting: true,
           },
         };
@@ -262,11 +259,6 @@ export default function SettingsSidebarModulesAdmin(props) {
           description: t('兑换码生成管理'),
         },
         { key: 'user', title: t('用户管理'), description: t('用户账户管理') },
-        {
-          key: 'subscription',
-          title: t('订阅管理'),
-          description: t('用户订阅管理'),
-        },
         {
           key: 'setting',
           title: t('系统设置'),

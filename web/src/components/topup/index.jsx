@@ -18,98 +18,43 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useEffect, useState, useContext, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import {
   API,
   showError,
   showInfo,
   showSuccess,
   renderQuota,
-  renderQuotaWithAmount,
   copy,
   getQuotaPerUnit,
   isV2Mode,
   v2Url,
-  setTenantSlug,
 } from '../../helpers';
-import { Modal, Toast, Tabs, TabPane } from '@douyinfe/semi-ui';
+import { Modal } from '@douyinfe/semi-ui';
 import { useTranslation } from 'react-i18next';
-import SubscriptionPurchase from './SubscriptionPurchase';
 import { UserContext } from '../../context/User';
 import { StatusContext } from '../../context/Status';
 
 import RechargeCard from './RechargeCard';
 import InvitationCard from './InvitationCard';
 import TransferModal from './modals/TransferModal';
-import PaymentConfirmModal from './modals/PaymentConfirmModal';
-import TopupHistoryModal from './modals/TopupHistoryModal';
 
 const TopUp = () => {
   const { t } = useTranslation();
   const [userState, userDispatch] = useContext(UserContext);
   const [statusState] = useContext(StatusContext);
-  const [searchParams] = useSearchParams();
-
-  // Restore tenant context from payment return URL
-  useEffect(() => {
-    const tenant = searchParams.get('tenant');
-    if (tenant) {
-      setTenantSlug(tenant);
-    }
-  }, [searchParams]);
 
   const [redemptionCode, setRedemptionCode] = useState('');
-  const [amount, setAmount] = useState(0.0);
-  const [minTopUp, setMinTopUp] = useState(statusState?.status?.min_topup || 1);
-  const [topUpCount, setTopUpCount] = useState(
-    statusState?.status?.min_topup || 1,
-  );
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [topUpLink, setTopUpLink] = useState(
     statusState?.status?.top_up_link || '',
   );
-  const [enableOnlineTopUp, setEnableOnlineTopUp] = useState(
-    statusState?.status?.enable_online_topup || false,
-  );
-  const [priceRatio, setPriceRatio] = useState(statusState?.status?.price || 1);
-
-  const [enableStripeTopUp, setEnableStripeTopUp] = useState(
-    statusState?.status?.enable_stripe_topup || false,
-  );
-  const [statusLoading, setStatusLoading] = useState(true);
-
-  // Creem 相关状态
-  const [creemProducts, setCreemProducts] = useState([]);
-  const [enableCreemTopUp, setEnableCreemTopUp] = useState(false);
-  const [creemOpen, setCreemOpen] = useState(false);
-  const [selectedCreemProduct, setSelectedCreemProduct] = useState(null);
-
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [payWay, setPayWay] = useState('');
-  const [amountLoading, setAmountLoading] = useState(false);
-  const [paymentLoading, setPaymentLoading] = useState(false);
-  const [confirmLoading, setConfirmLoading] = useState(false);
-  const [payMethods, setPayMethods] = useState([]);
 
   const affFetchedRef = useRef(false);
 
-  // 邀请相关状态
+  // Invitation states
   const [affLink, setAffLink] = useState('');
   const [openTransfer, setOpenTransfer] = useState(false);
   const [transferAmount, setTransferAmount] = useState(0);
-
-  // 账单Modal状态
-  const [openHistory, setOpenHistory] = useState(false);
-
-  // 预设充值额度选项
-  const [presetAmounts, setPresetAmounts] = useState([]);
-  const [selectedPreset, setSelectedPreset] = useState(null);
-
-  // 充值配置信息
-  const [topupInfo, setTopupInfo] = useState({
-    amount_options: [],
-    discount: {},
-  });
 
   const topUp = async () => {
     if (redemptionCode === '') {
@@ -119,9 +64,7 @@ const TopUp = () => {
     setIsSubmitting(true);
     try {
       const url = isV2Mode() ? v2Url('/redemptions/redeem') : '/api/user/topup';
-      const res = await API.post(url, {
-        key: redemptionCode,
-      });
+      const res = await API.post(url, { key: redemptionCode });
       const { success, message, data } = res.data;
       if (success) {
         showSuccess(t('兑换成功！'));
@@ -156,200 +99,9 @@ const TopUp = () => {
     window.open(topUpLink, '_blank');
   };
 
-  const preTopUp = async (payment) => {
-    if (payment === 'stripe') {
-      if (!enableStripeTopUp) {
-        showError(t('管理员未开启Stripe充值！'));
-        return;
-      }
-    } else {
-      if (!enableOnlineTopUp) {
-        showError(t('管理员未开启在线充值！'));
-        return;
-      }
-    }
-
-    setPayWay(payment);
-    setPaymentLoading(true);
-    try {
-      if (payment === 'stripe') {
-        await getStripeAmount();
-      } else {
-        await getAmount();
-      }
-
-      if (topUpCount < minTopUp) {
-        showError(t('充值数量不能小于') + minTopUp);
-        return;
-      }
-      setOpen(true);
-    } catch (error) {
-      showError(t('获取金额失败'));
-    } finally {
-      setPaymentLoading(false);
-    }
-  };
-
-  const onlineTopUp = async () => {
-    if (payWay === 'stripe') {
-      // Stripe 支付处理
-      if (amount === 0) {
-        await getStripeAmount();
-      }
-    } else {
-      // 普通支付处理
-      if (amount === 0) {
-        await getAmount();
-      }
-    }
-
-    if (topUpCount < minTopUp) {
-      showError('充值数量不能小于' + minTopUp);
-      return;
-    }
-    setConfirmLoading(true);
-    try {
-      let res;
-      if (isV2Mode()) {
-        // V2: two-step process - create topup order then initiate payment
-        // Step 1: Create topup order
-        const topupRes = await API.post(v2Url('/billing/topup'), {
-          amount: parseInt(topUpCount),
-          payment_method: payWay,
-          money: amount,
-          currency: 'CNY',
-        });
-        if (!topupRes.data.success) {
-          showError(topupRes.data.message || t('创建订单失败'));
-          return;
-        }
-        const tradeNo = topupRes.data.data.trade_no;
-
-        // Step 2: Initiate payment
-        res = await API.post(v2Url('/billing/pay'), {
-          trade_no: tradeNo,
-          payment_method: payWay,
-        });
-      } else if (payWay === 'stripe') {
-        // V1: Stripe 支付请求
-        res = await API.post('/api/user/stripe/pay', {
-          amount: parseInt(topUpCount),
-          payment_method: 'stripe',
-        });
-      } else {
-        // V1: 普通支付请求
-        res = await API.post('/api/user/pay', {
-          amount: parseInt(topUpCount),
-          payment_method: payWay,
-        });
-      }
-
-      if (res !== undefined) {
-        const { success, message, data } = res.data;
-        if (isV2Mode()) {
-          // V2 API response format
-          if (success && data.payment_url) {
-            window.open(data.payment_url, '_blank');
-            showSuccess(t('跳转到支付页面'));
-          } else {
-            showError(message || t('支付发起失败'));
-          }
-        } else if (message === 'success') {
-          // V1 API response format
-          if (payWay === 'stripe') {
-            window.open(data.pay_link, '_blank');
-          } else {
-            // Epay form submission
-            let params = data;
-            let url = res.data.url;
-            let form = document.createElement('form');
-            form.action = url;
-            form.method = 'POST';
-            let isSafari =
-              navigator.userAgent.indexOf('Safari') > -1 &&
-              navigator.userAgent.indexOf('Chrome') < 1;
-            if (!isSafari) {
-              form.target = '_blank';
-            }
-            for (let key in params) {
-              let input = document.createElement('input');
-              input.type = 'hidden';
-              input.name = key;
-              input.value = params[key];
-              form.appendChild(input);
-            }
-            document.body.appendChild(form);
-            form.submit();
-            document.body.removeChild(form);
-          }
-        } else {
-          showError(data);
-        }
-      } else {
-        showError(res);
-      }
-    } catch (err) {
-      console.log(err);
-      showError(t('支付请求失败'));
-    } finally {
-      setOpen(false);
-      setConfirmLoading(false);
-    }
-  };
-
-  const creemPreTopUp = async (product) => {
-    if (!enableCreemTopUp) {
-      showError(t('管理员未开启 Creem 充值！'));
-      return;
-    }
-    setSelectedCreemProduct(product);
-    setCreemOpen(true);
-  };
-
-  const onlineCreemTopUp = async () => {
-    if (!selectedCreemProduct) {
-      showError(t('请选择产品'));
-      return;
-    }
-    // Validate product has required fields
-    if (!selectedCreemProduct.productId) {
-      showError(t('产品配置错误，请联系管理员'));
-      return;
-    }
-    setConfirmLoading(true);
-    try {
-      const creemUrl = isV2Mode() ? v2Url('/billing/pay') : '/api/user/creem/pay';
-      const creemBody = isV2Mode()
-        ? { trade_no: '', payment_method: 'creem', product_id: selectedCreemProduct.productId }
-        : { product_id: selectedCreemProduct.productId, payment_method: 'creem' };
-      const res = await API.post(creemUrl, creemBody);
-      if (res !== undefined) {
-        const { message, data } = res.data;
-        if (message === 'success') {
-          processCreemCallback(data);
-        } else {
-          showError(data);
-        }
-      } else {
-        showError(res);
-      }
-    } catch (err) {
-      console.log(err);
-      showError(t('支付请求失败'));
-    } finally {
-      setCreemOpen(false);
-      setConfirmLoading(false);
-    }
-  };
-
-  const processCreemCallback = (data) => {
-    // 与 Stripe 保持一致的实现方式
-    window.open(data.checkout_url, '_blank');
-  };
-
   const getUserQuota = async () => {
     const url = isV2Mode() ? v2Url('/user/me') : '/api/user/self';
-    let res = await API.get(url);
+    const res = await API.get(url);
     const { success, message, data } = res.data;
     if (success) {
       userDispatch({ type: 'login', payload: data });
@@ -358,161 +110,47 @@ const TopUp = () => {
     }
   };
 
-  // 获取充值配置信息
-  const getTopupInfo = async () => {
-    try {
-      const infoUrl = isV2Mode() ? v2Url('/billing/topup-info') : '/api/user/topup/info';
-      const res = await API.get(infoUrl);
-      const { message, data, success } = res.data;
-      if (success) {
-        setTopupInfo({
-          amount_options: data.amount_options || [],
-          discount: data.discount || {},
-        });
-
-        // 处理支付方式
-        let payMethods = data.pay_methods || [];
-        try {
-          if (typeof payMethods === 'string') {
-            payMethods = JSON.parse(payMethods);
-          }
-          if (payMethods && payMethods.length > 0) {
-            // 检查name和type是否为空
-            payMethods = payMethods.filter((method) => {
-              return method.name && method.type;
-            });
-            // 如果没有color，则设置默认颜色
-            payMethods = payMethods.map((method) => {
-              // 规范化最小充值数
-              const normalizedMinTopup = Number(method.min_topup);
-              method.min_topup = Number.isFinite(normalizedMinTopup)
-                ? normalizedMinTopup
-                : 0;
-
-              // Stripe 的最小充值从后端字段回填
-              if (
-                method.type === 'stripe' &&
-                (!method.min_topup || method.min_topup <= 0)
-              ) {
-                const stripeMin = Number(data.stripe_min_topup);
-                if (Number.isFinite(stripeMin)) {
-                  method.min_topup = stripeMin;
-                }
-              }
-
-              if (!method.color) {
-                if (method.type === 'alipay') {
-                  method.color = 'rgba(var(--semi-blue-5), 1)';
-                } else if (method.type === 'wxpay') {
-                  method.color = 'rgba(var(--semi-green-5), 1)';
-                } else if (method.type === 'stripe') {
-                  method.color = 'rgba(var(--semi-purple-5), 1)';
-                } else {
-                  method.color = 'rgba(var(--semi-primary-5), 1)';
-                }
-              }
-              return method;
-            });
-          } else {
-            payMethods = [];
-          }
-
-          // 如果启用了 Stripe 支付，添加到支付方法列表
-          // 这个逻辑现在由后端处理，如果 Stripe 启用，后端会在 pay_methods 中包含它
-
-          setPayMethods(payMethods);
-          const enableStripeTopUp = data.enable_stripe_topup || false;
-          const enableOnlineTopUp = data.enable_online_topup || false;
-          const enableCreemTopUp = data.enable_creem_topup || false;
-          const minTopUpValue = enableOnlineTopUp
-            ? data.min_topup
-            : enableStripeTopUp
-              ? data.stripe_min_topup
-              : 1;
-          setEnableOnlineTopUp(enableOnlineTopUp);
-          setEnableStripeTopUp(enableStripeTopUp);
-          setEnableCreemTopUp(enableCreemTopUp);
-          setMinTopUp(minTopUpValue);
-          setTopUpCount(minTopUpValue);
-
-          // 设置 Creem 产品
-          try {
-            console.log(' data is ?', data);
-            console.log(' creem products is ?', data.creem_products);
-            const products = JSON.parse(data.creem_products || '[]');
-            setCreemProducts(products);
-          } catch (e) {
-            setCreemProducts([]);
-          }
-
-          // 如果没有自定义充值数量选项，根据最小充值金额生成预设充值额度选项
-          if (topupInfo.amount_options.length === 0) {
-            setPresetAmounts(generatePresetAmounts(minTopUpValue));
-          }
-
-          // 初始化显示实付金额
-          getAmount(minTopUpValue);
-        } catch (e) {
-          console.log('解析支付方式失败:', e);
-          setPayMethods([]);
-        }
-
-        // 如果有自定义充值数量选项，使用它们替换默认的预设选项
-        if (data.amount_options && data.amount_options.length > 0) {
-          const customPresets = data.amount_options.map((amount) => ({
-            value: amount,
-            discount: data.discount[amount] || 1.0,
-          }));
-          setPresetAmounts(customPresets);
-        }
-      } else {
-        console.error('获取充值配置失败:', data);
-      }
-    } catch (error) {
-      console.error('获取充值配置异常:', error);
-    }
-  };
-
-  // 获取邀请链接
   const getAffLink = async () => {
     const res = await API.get('/api/user/aff');
     const { success, message, data } = res.data;
     if (success) {
-      let link = `${window.location.origin}/register?aff=${data}`;
+      const link = `${window.location.origin}/register?aff=${data}`;
       setAffLink(link);
     } else {
       showError(message);
     }
   };
 
-  // 划转邀请额度
   const transfer = async () => {
     if (transferAmount < getQuotaPerUnit()) {
       showError(t('划转金额最低为') + ' ' + renderQuota(getQuotaPerUnit()));
       return;
     }
-    const res = await API.post(`/api/user/aff_transfer`, {
+    const res = await API.post('/api/user/aff_transfer', {
       quota: transferAmount,
     });
     const { success, message } = res.data;
     if (success) {
       showSuccess(message);
       setOpenTransfer(false);
-      getUserQuota().then();
+      getUserQuota();
     } else {
       showError(message);
     }
   };
 
-  // 复制邀请链接
   const handleAffLinkClick = async () => {
     await copy(affLink);
     showSuccess(t('邀请链接已复制到剪切板'));
   };
 
+  const handleTransferCancel = () => {
+    setOpenTransfer(false);
+  };
+
   useEffect(() => {
     if (!userState?.user?.id) {
-      getUserQuota().then();
+      getUserQuota();
     }
     setTransferAmount(getQuotaPerUnit());
   }, []);
@@ -520,131 +158,17 @@ const TopUp = () => {
   useEffect(() => {
     if (affFetchedRef.current) return;
     affFetchedRef.current = true;
-    getAffLink().then();
-  }, []);
-
-  // 在 statusState 可用时获取充值信息
-  useEffect(() => {
-    getTopupInfo().then();
+    getAffLink();
   }, []);
 
   useEffect(() => {
     if (statusState?.status) {
-      // const minTopUpValue = statusState.status.min_topup || 1;
-      // setMinTopUp(minTopUpValue);
-      // setTopUpCount(minTopUpValue);
       setTopUpLink(statusState.status.top_up_link || '');
-      setPriceRatio(statusState.status.price || 1);
-
-      setStatusLoading(false);
     }
   }, [statusState?.status]);
 
-  const renderAmount = () => {
-    return amount + ' ' + t('元');
-  };
-
-  const getAmount = async (value) => {
-    if (value === undefined) {
-      value = topUpCount;
-    }
-    setAmountLoading(true);
-    try {
-      const res = await API.post('/api/user/amount', {
-        amount: parseFloat(value),
-      });
-      if (res !== undefined) {
-        const { message, data } = res.data;
-        if (message === 'success') {
-          setAmount(parseFloat(data));
-        } else {
-          setAmount(0);
-          Toast.error({ content: '错误：' + data, id: 'getAmount' });
-        }
-      } else {
-        showError(res);
-      }
-    } catch (err) {
-      console.log(err);
-    }
-    setAmountLoading(false);
-  };
-
-  const getStripeAmount = async (value) => {
-    if (value === undefined) {
-      value = topUpCount;
-    }
-    setAmountLoading(true);
-    try {
-      const res = await API.post('/api/user/stripe/amount', {
-        amount: parseFloat(value),
-      });
-      if (res !== undefined) {
-        const { message, data } = res.data;
-        if (message === 'success') {
-          setAmount(parseFloat(data));
-        } else {
-          setAmount(0);
-          Toast.error({ content: '错误：' + data, id: 'getAmount' });
-        }
-      } else {
-        showError(res);
-      }
-    } catch (err) {
-      console.log(err);
-    } finally {
-      setAmountLoading(false);
-    }
-  };
-
-  const handleCancel = () => {
-    setOpen(false);
-  };
-
-  const handleTransferCancel = () => {
-    setOpenTransfer(false);
-  };
-
-  const handleOpenHistory = () => {
-    setOpenHistory(true);
-  };
-
-  const handleHistoryCancel = () => {
-    setOpenHistory(false);
-  };
-
-  const handleCreemCancel = () => {
-    setCreemOpen(false);
-    setSelectedCreemProduct(null);
-  };
-
-  // 选择预设充值额度
-  const selectPresetAmount = (preset) => {
-    setTopUpCount(preset.value);
-    setSelectedPreset(preset.value);
-
-    // 计算实际支付金额，考虑折扣
-    const discount = preset.discount || topupInfo.discount[preset.value] || 1.0;
-    const discountedAmount = preset.value * priceRatio * discount;
-    setAmount(discountedAmount);
-  };
-
-  // 格式化大数字显示
-  const formatLargeNumber = (num) => {
-    return num.toString();
-  };
-
-  // 根据最小充值金额生成预设充值额度选项
-  const generatePresetAmounts = (minAmount) => {
-    const multipliers = [1, 5, 10, 30, 50, 100, 300, 500];
-    return multipliers.map((multiplier) => ({
-      value: minAmount * multiplier,
-    }));
-  };
-
   return (
     <div className='w-full max-w-7xl mx-auto relative min-h-screen lg:min-h-0 mt-[60px] px-2'>
-      {/* 划转模态框 */}
       <TransferModal
         t={t}
         openTransfer={openTransfer}
@@ -657,120 +181,33 @@ const TopUp = () => {
         setTransferAmount={setTransferAmount}
       />
 
-      {/* 充值确认模态框 */}
-      <PaymentConfirmModal
-        t={t}
-        open={open}
-        onlineTopUp={onlineTopUp}
-        handleCancel={handleCancel}
-        confirmLoading={confirmLoading}
-        topUpCount={topUpCount}
-        renderQuotaWithAmount={renderQuotaWithAmount}
-        amountLoading={amountLoading}
-        renderAmount={renderAmount}
-        payWay={payWay}
-        payMethods={payMethods}
-        amountNumber={amount}
-        discountRate={topupInfo?.discount?.[topUpCount] || 1.0}
-      />
-
-      {/* 充值账单模态框 */}
-      <TopupHistoryModal
-        visible={openHistory}
-        onCancel={handleHistoryCancel}
-        t={t}
-      />
-
-      {/* Creem 充值确认模态框 */}
-      <Modal
-        title={t('确定要充值 $')}
-        visible={creemOpen}
-        onOk={onlineCreemTopUp}
-        onCancel={handleCreemCancel}
-        maskClosable={false}
-        size='small'
-        centered
-        confirmLoading={confirmLoading}
-      >
-        {selectedCreemProduct && (
-          <>
-            <p>
-              {t('产品名称')}：{selectedCreemProduct.name}
-            </p>
-            <p>
-              {t('价格')}：{selectedCreemProduct.currency === 'EUR' ? '€' : '$'}{selectedCreemProduct.price}
-            </p>
-            <p>
-              {t('充值额度')}：{selectedCreemProduct.quota}
-            </p>
-            <p>{t('是否确认充值？')}</p>
-          </>
-        )}
-      </Modal>
-
-      {/* Tab 切换：余额充值 / 订阅套餐 */}
-      <Tabs type='card' defaultActiveKey='balance'>
-        <TabPane tab={t('余额充值')} itemKey='balance'>
-          <div className='space-y-6'>
-            <div className='grid grid-cols-1 lg:grid-cols-12 gap-6'>
-              {/* 左侧充值区域 */}
-              <div className='lg:col-span-7 space-y-6 w-full'>
-                <RechargeCard
-                  t={t}
-                  enableOnlineTopUp={enableOnlineTopUp}
-                  enableStripeTopUp={enableStripeTopUp}
-                  enableCreemTopUp={enableCreemTopUp}
-                  creemProducts={creemProducts}
-                  creemPreTopUp={creemPreTopUp}
-                  presetAmounts={presetAmounts}
-                  selectedPreset={selectedPreset}
-                  selectPresetAmount={selectPresetAmount}
-                  formatLargeNumber={formatLargeNumber}
-                  priceRatio={priceRatio}
-                  topUpCount={topUpCount}
-                  minTopUp={minTopUp}
-                  renderQuotaWithAmount={renderQuotaWithAmount}
-                  getAmount={getAmount}
-                  setTopUpCount={setTopUpCount}
-                  setSelectedPreset={setSelectedPreset}
-                  renderAmount={renderAmount}
-                  amountLoading={amountLoading}
-                  payMethods={payMethods}
-                  preTopUp={preTopUp}
-                  paymentLoading={paymentLoading}
-                  payWay={payWay}
-                  redemptionCode={redemptionCode}
-                  setRedemptionCode={setRedemptionCode}
-                  topUp={topUp}
-                  isSubmitting={isSubmitting}
-                  topUpLink={topUpLink}
-                  openTopUpLink={openTopUpLink}
-                  userState={userState}
-                  renderQuota={renderQuota}
-                  statusLoading={statusLoading}
-                  topupInfo={topupInfo}
-                  onOpenHistory={handleOpenHistory}
-                />
-              </div>
-
-              {/* 右侧信息区域 */}
-              <div className='lg:col-span-5'>
-                <InvitationCard
-                  t={t}
-                  userState={userState}
-                  renderQuota={renderQuota}
-                  setOpenTransfer={setOpenTransfer}
-                  affLink={affLink}
-                  handleAffLinkClick={handleAffLinkClick}
-                />
-              </div>
-            </div>
+      <div className='space-y-6'>
+        <div className='grid grid-cols-1 lg:grid-cols-12 gap-6'>
+          <div className='lg:col-span-7 space-y-6 w-full'>
+            <RechargeCard
+              t={t}
+              redemptionCode={redemptionCode}
+              setRedemptionCode={setRedemptionCode}
+              topUp={topUp}
+              isSubmitting={isSubmitting}
+              topUpLink={topUpLink}
+              openTopUpLink={openTopUpLink}
+              userState={userState}
+              renderQuota={renderQuota}
+            />
           </div>
-        </TabPane>
-        <TabPane tab={t('订阅套餐')} itemKey='subscription'>
-          <SubscriptionPurchase />
-        </TabPane>
-      </Tabs>
+          <div className='lg:col-span-5'>
+            <InvitationCard
+              t={t}
+              userState={userState}
+              renderQuota={renderQuota}
+              setOpenTransfer={setOpenTransfer}
+              affLink={affLink}
+              handleAffLinkClick={handleAffLinkClick}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

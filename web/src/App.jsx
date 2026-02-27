@@ -35,7 +35,6 @@ import RegisterForm from './components/auth/RegisterForm';
 import Channel from './pages/Channel';
 import Token from './pages/Token';
 import Redemption from './pages/Redemption';
-import Subscription from './pages/Subscription';
 import TopUp from './pages/TopUp';
 import Log from './pages/Log';
 import Chat from './pages/Chat';
@@ -157,14 +156,6 @@ function App() {
           element={
             <AdminRoute>
               <User />
-            </AdminRoute>
-          }
-        />
-        <Route
-          path='/console/subscription'
-          element={
-            <AdminRoute>
-              <Subscription />
             </AdminRoute>
           }
         />

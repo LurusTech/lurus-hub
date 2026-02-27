@@ -31,7 +31,6 @@ import {
   LayoutDashboard,
   MessageSquare,
   Palette,
-  CreditCard,
   Server,
 } from 'lucide-react';
 
@@ -45,7 +44,6 @@ import DashboardSetting from '../../components/settings/DashboardSetting';
 import RatioSetting from '../../components/settings/RatioSetting';
 import ChatsSetting from '../../components/settings/ChatsSetting';
 import DrawingSetting from '../../components/settings/DrawingSetting';
-import PaymentSetting from '../../components/settings/PaymentSetting';
 import ModelDeploymentSetting from '../../components/settings/ModelDeploymentSetting';
 
 const Setting = () => {
@@ -95,16 +93,6 @@ const Setting = () => {
       ),
       content: <DrawingSetting />,
       itemKey: 'drawing',
-    });
-    panes.push({
-      tab: (
-        <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-          <CreditCard size={18} />
-          {t('支付设置')}
-        </span>
-      ),
-      content: <PaymentSetting />,
-      itemKey: 'payment',
     });
     panes.push({
       tab: (

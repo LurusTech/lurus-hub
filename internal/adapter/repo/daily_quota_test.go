@@ -169,64 +169,6 @@ func TestFallbackGroupLogic(t *testing.T) {
 	}
 }
 
-// TestSubscriptionConfigValidation tests subscription config validation
-func TestSubscriptionConfigValidation(t *testing.T) {
-	tests := []struct {
-		name        string
-		config      SubscriptionConfig
-		expectError bool
-	}{
-		{
-			name: "valid config - full",
-			config: SubscriptionConfig{
-				DailyQuota:    1000000,
-				BaseGroup:     "pro",
-				FallbackGroup: "free",
-				Quota:         5000000,
-			},
-			expectError: false,
-		},
-		{
-			name: "valid config - no daily quota",
-			config: SubscriptionConfig{
-				DailyQuota:    0,
-				BaseGroup:     "unlimited",
-				FallbackGroup: "",
-				Quota:         0,
-			},
-			expectError: false,
-		},
-		{
-			name: "valid config - minimal",
-			config: SubscriptionConfig{
-				BaseGroup: "free",
-			},
-			expectError: false,
-		},
-		{
-			name: "negative daily quota should be treated as 0",
-			config: SubscriptionConfig{
-				DailyQuota: -100,
-				BaseGroup:  "test",
-			},
-			expectError: false, // System should handle negative as 0 (unlimited)
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Validation logic test
-			hasError := false
-			if tt.config.BaseGroup == "" && tt.config.DailyQuota > 0 {
-				hasError = true // Should have base group if daily quota is set
-			}
-			
-			if hasError != tt.expectError {
-				t.Errorf("Validation error = %v, want %v", hasError, tt.expectError)
-			}
-		})
-	}
-}
 
 // TestDailyResetTimeCalculation tests the reset time calculation
 func TestDailyResetTimeCalculation(t *testing.T) {

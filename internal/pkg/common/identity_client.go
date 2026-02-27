@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,7 +10,7 @@ import (
 	"time"
 )
 
-// IdentityServiceURL is the base URL for identity-service
+// IdentityServiceURL is the base URL for lurus-identity service.
 var IdentityServiceURL = getIdentityServiceURL()
 
 func getIdentityServiceURL() string {
@@ -19,98 +20,81 @@ func getIdentityServiceURL() string {
 	return "http://identity-service.lurus-identity.svc.cluster.local:18104"
 }
 
-// IdentityMapping represents the unified user identity mapping
-type IdentityMapping struct {
-	ID            string    `json:"id"`
-	ZitadelUserID string    `json:"zitadel_user_id"`
-	SupabaseUID   string    `json:"supabase_user_id,omitempty"`
-	LurusAPIUID   int       `json:"lurus_api_user_id,omitempty"`
-	Email         string    `json:"email"`
-	DisplayName   string    `json:"display_name"`
-	AvatarURL     string    `json:"avatar_url,omitempty"`
-	LinkedAt      time.Time `json:"linked_at"`
-	LastSyncAt    time.Time `json:"last_sync_at"`
-}
-
-// SyncUserRequest is the request to sync a user with identity-service
-type SyncUserRequest struct {
-	ZitadelUserID string `json:"zitadel_user_id"`
-	LurusAPIUID   int    `json:"lurus_api_user_id"`
-	Email         string `json:"email"`
-	DisplayName   string `json:"display_name"`
-}
-
-// SyncUserResponse is the response from sync operation
-type SyncUserResponse struct {
-	Success bool            `json:"success"`
-	Message string          `json:"message,omitempty"`
-	Data    IdentityMapping `json:"data,omitempty"`
-}
+// IdentityServiceInternalKey is the bearer token for /internal/v1/* endpoints.
+var IdentityServiceInternalKey = os.Getenv("IDENTITY_SERVICE_INTERNAL_KEY")
 
 var identityClient = &http.Client{
-	Timeout: 10 * time.Second,
+	Timeout: 5 * time.Second,
 }
 
-// SyncUserWithIdentityService syncs a user to the identity-service
-// This creates or updates the identity mapping after OIDC login
-func SyncUserWithIdentityService(zitadelUserID string, lurusAPIUID int, email, displayName string) (*IdentityMapping, error) {
+// IdentityMapping represents the unified user identity mapping returned by lurus-identity.
+type IdentityMapping struct {
+	ID          int64     `json:"id"`
+	LurusID     string    `json:"lurus_id"`
+	ZitadelSub  string    `json:"zitadel_sub"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
+	Status      int16     `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// Entitlements is a key→value map describing an account's product permissions.
+type Entitlements map[string]string
+
+// GetString returns a string entitlement value, falling back to defaultVal.
+func (e Entitlements) GetString(key, defaultVal string) string {
+	if v, ok := e[key]; ok {
+		return v
+	}
+	return defaultVal
+}
+
+// GetInt returns an integer entitlement value, falling back to defaultVal.
+func (e Entitlements) GetInt(key string, defaultVal int) int {
+	v := e.GetString(key, "")
+	if v == "" {
+		return defaultVal
+	}
+	var i int
+	if _, err := fmt.Sscanf(v, "%d", &i); err != nil {
+		return defaultVal
+	}
+	return i
+}
+
+// GetBool returns a boolean entitlement value, falling back to defaultVal.
+func (e Entitlements) GetBool(key string, defaultVal bool) bool {
+	v := e.GetString(key, "")
+	switch v {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		return defaultVal
+	}
+}
+
+// GetAccountByZitadelSub retrieves account info from lurus-identity by Zitadel OIDC sub.
+// Returns nil on not-found or network errors (callers degrade gracefully).
+func GetAccountByZitadelSub(ctx context.Context, sub string) (*IdentityMapping, error) {
 	if IdentityServiceURL == "" {
-		SysLog("Identity service URL not configured, skipping sync")
 		return nil, nil
 	}
-
-	req := SyncUserRequest{
-		ZitadelUserID: zitadelUserID,
-		LurusAPIUID:   lurusAPIUID,
-		Email:         email,
-		DisplayName:   displayName,
-	}
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal sync request: %w", err)
-	}
-
-	resp, err := identityClient.Post(
-		IdentityServiceURL+"/api/v1/users/sync",
-		"application/json",
-		bytes.NewReader(body),
+	req, err := http.NewRequestWithContext(ctx,
+		http.MethodGet,
+		IdentityServiceURL+"/internal/v1/accounts/by-zitadel-sub/"+sub,
+		nil,
 	)
 	if err != nil {
-		SysLog(fmt.Sprintf("Failed to sync user with identity-service: %v", err))
-		// Don't fail the login, just log the error
 		return nil, nil
 	}
-	defer resp.Body.Close()
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
 
-	if resp.StatusCode != http.StatusOK {
-		SysLog(fmt.Sprintf("Identity service returned status %d", resp.StatusCode))
-		return nil, nil
-	}
-
-	var syncResp SyncUserResponse
-	if err := json.NewDecoder(resp.Body).Decode(&syncResp); err != nil {
-		SysLog(fmt.Sprintf("Failed to decode sync response: %v", err))
-		return nil, nil
-	}
-
-	if !syncResp.Success {
-		SysLog(fmt.Sprintf("Identity service sync failed: %s", syncResp.Message))
-		return nil, nil
-	}
-
-	return &syncResp.Data, nil
-}
-
-// GetIdentityMappingByOidcID retrieves identity mapping by OIDC ID
-func GetIdentityMappingByOidcID(oidcID string) (*IdentityMapping, error) {
-	if IdentityServiceURL == "" {
-		return nil, nil
-	}
-
-	resp, err := identityClient.Get(IdentityServiceURL + "/api/v1/users/by-oidc/" + oidcID)
+	resp, err := identityClient.Do(req)
 	if err != nil {
-		SysLog(fmt.Sprintf("Failed to get identity mapping: %v", err))
+		SysLog(fmt.Sprintf("identity GetAccountByZitadelSub: %v", err))
 		return nil, nil
 	}
 	defer resp.Body.Close()
@@ -118,15 +102,112 @@ func GetIdentityMappingByOidcID(oidcID string) (*IdentityMapping, error) {
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
 	}
+	if resp.StatusCode != http.StatusOK {
+		SysLog(fmt.Sprintf("identity GetAccountByZitadelSub: status %d", resp.StatusCode))
+		return nil, nil
+	}
+	var a IdentityMapping
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
+		return nil, nil
+	}
+	return &a, nil
+}
+
+// UpsertAccount creates or updates an account in lurus-identity (called on OIDC login).
+func UpsertAccount(ctx context.Context, zitadelSub, email, displayName, avatarURL string) (*IdentityMapping, error) {
+	if IdentityServiceURL == "" {
+		return nil, nil
+	}
+	body, _ := json.Marshal(map[string]string{
+		"zitadel_sub":  zitadelSub,
+		"email":        email,
+		"display_name": displayName,
+		"avatar_url":   avatarURL,
+	})
+	req, err := http.NewRequestWithContext(ctx,
+		http.MethodPost,
+		IdentityServiceURL+"/internal/v1/accounts/upsert",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity UpsertAccount: %v", err))
+		return nil, nil
+	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		SysLog(fmt.Sprintf("identity UpsertAccount: status %d", resp.StatusCode))
 		return nil, nil
 	}
-
-	var mapping IdentityMapping
-	if err := json.NewDecoder(resp.Body).Decode(&mapping); err != nil {
+	var a IdentityMapping
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
 		return nil, nil
 	}
-
-	return &mapping, nil
+	return &a, nil
 }
+
+// GetEntitlements retrieves product entitlements for an account (Redis-cached in identity service).
+// Falls back to empty Entitlements map on any error — callers must handle the free/default case.
+func GetEntitlements(ctx context.Context, accountID int64, productID string) (Entitlements, error) {
+	if IdentityServiceURL == "" {
+		return Entitlements{"plan_code": "free"}, nil
+	}
+	url := fmt.Sprintf("%s/internal/v1/accounts/%d/entitlements/%s", IdentityServiceURL, accountID, productID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return Entitlements{"plan_code": "free"}, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity GetEntitlements: %v", err))
+		return Entitlements{"plan_code": "free"}, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return Entitlements{"plan_code": "free"}, nil
+	}
+	var em Entitlements
+	if err := json.NewDecoder(resp.Body).Decode(&em); err != nil {
+		return Entitlements{"plan_code": "free"}, nil
+	}
+	return em, nil
+}
+
+// ReportLLMUsage sends a usage record to lurus-identity for VIP accumulation.
+// Fire-and-forget — errors are logged but not propagated.
+func ReportLLMUsage(ctx context.Context, accountID int64, amountCNY float64) {
+	if IdentityServiceURL == "" {
+		return
+	}
+	body, _ := json.Marshal(map[string]any{
+		"account_id": accountID,
+		"amount_cny": amountCNY,
+	})
+	req, err := http.NewRequestWithContext(ctx,
+		http.MethodPost,
+		IdentityServiceURL+"/internal/v1/usage/report",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity ReportLLMUsage: %v", err))
+		return
+	}
+	resp.Body.Close()
+}
+

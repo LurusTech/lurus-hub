@@ -424,14 +424,6 @@ func InitResources(ctx context.Context) error {
 		}
 	}
 
-	// Initialize subscription plans
-	// 初始化订阅计划
-	repo.InitSubscriptionPlans()
-
-	// Start subscription cron jobs
-	// 启动订阅定时任务
-	repo.StartSubscriptionCronJobsWithContext(ctx)
-
 	// Initialize Zitadel authentication (multi-tenant OAuth)
 	// 初始化 Zitadel 认证（多租户 OAuth）
 	err = middleware.InitZitadelAuth()

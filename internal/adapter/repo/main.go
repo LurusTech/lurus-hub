@@ -263,7 +263,6 @@ func migrateDB() error {
 		&Ability{},
 		&Log{},
 		&Midjourney{},
-		&TopUp{},
 		&QuotaData{},
 		&Task{},
 		&Model{},
@@ -273,7 +272,6 @@ func migrateDB() error {
 		&TwoFA{},
 		&TwoFABackupCode{},
 		&Checkin{},
-		&Subscription{},
 		&InternalApiKey{},
 		&InvitationCode{},
 		// Multi-tenant models
@@ -317,7 +315,6 @@ func migrateDBFast() error {
 		{&Ability{}, "Ability"},
 		{&Log{}, "Log"},
 		{&Midjourney{}, "Midjourney"},
-		{&TopUp{}, "TopUp"},
 		{&QuotaData{}, "QuotaData"},
 		{&Task{}, "Task"},
 		{&Model{}, "Model"},
@@ -327,7 +324,6 @@ func migrateDBFast() error {
 		{&TwoFA{}, "TwoFA"},
 		{&TwoFABackupCode{}, "TwoFABackupCode"},
 		{&Checkin{}, "Checkin"},
-		{&Subscription{}, "Subscription"},
 		{&InternalApiKey{}, "InternalApiKey"},
 		{&InvitationCode{}, "InvitationCode"},
 		// Release/download management

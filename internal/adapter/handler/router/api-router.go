@@ -34,8 +34,6 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/oauth/discord", middleware.CriticalRateLimit(), handler.DiscordOAuth)
 		apiRouter.GET("/oauth/oidc", middleware.CriticalRateLimit(), handler.OidcAuth)
 		apiRouter.GET("/oauth/linuxdo", middleware.CriticalRateLimit(), handler.LinuxdoOAuth)
-		apiRouter.GET("/oauth/alipay", middleware.CriticalRateLimit(), handler.AlipayOAuth)
-		apiRouter.GET("/oauth/alipay/bind", middleware.CriticalRateLimit(), handler.AlipayBind)
 		apiRouter.GET("/oauth/state", middleware.CriticalRateLimit(), handler.GenerateOAuthCode)
 		apiRouter.GET("/oauth/wechat", middleware.CriticalRateLimit(), handler.WeChatAuth)
 		apiRouter.GET("/oauth/wechat/bind", middleware.CriticalRateLimit(), handler.WeChatBind)
@@ -43,9 +41,6 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/oauth/telegram/login", middleware.CriticalRateLimit(), handler.TelegramLogin)
 		apiRouter.GET("/oauth/telegram/bind", middleware.CriticalRateLimit(), handler.TelegramBind)
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), handler.GetRatioConfig)
-
-		apiRouter.POST("/stripe/webhook", handler.StripeWebhook)
-		apiRouter.POST("/creem/webhook", handler.CreemWebhook)
 
 		// Universal secure verification routes
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), handler.UniversalVerify)
@@ -77,7 +72,6 @@ func SetApiRouter(router *gin.Engine) {
 			userRoute.POST("/passkey/login/finish", middleware.CriticalRateLimit(), handler.PasskeyLoginFinish)
 			//userRoute.POST("/tokenlog", middleware.CriticalRateLimit(), handler.TokenLog)
 			userRoute.GET("/logout", handler.Logout)
-			userRoute.GET("/epay/notify", handler.EpayNotify)
 			userRoute.GET("/groups", handler.GetUserGroups)
 
 			selfRoute := userRoute.Group("/")
@@ -97,14 +91,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/passkey/verify/finish", handler.PasskeyVerifyFinish)
 				selfRoute.DELETE("/passkey", handler.PasskeyDelete)
 				selfRoute.GET("/aff", handler.GetAffCode)
-				selfRoute.GET("/topup/info", handler.GetTopUpInfo)
-				selfRoute.GET("/topup/self", handler.GetUserTopUps)
 				selfRoute.POST("/topup", middleware.CriticalRateLimit(), handler.TopUp)
-				selfRoute.POST("/pay", middleware.CriticalRateLimit(), handler.RequestEpay)
-				selfRoute.POST("/amount", handler.RequestAmount)
-				selfRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), handler.RequestStripePay)
-				selfRoute.POST("/stripe/amount", handler.RequestStripeAmount)
-				selfRoute.POST("/creem/pay", middleware.CriticalRateLimit(), handler.RequestCreemPay)
 				selfRoute.POST("/aff_transfer", handler.TransferAffQuota)
 				selfRoute.PUT("/setting", handler.UpdateUserSetting)
 
@@ -127,8 +114,6 @@ func SetApiRouter(router *gin.Engine) {
 			adminRoute.Use(middleware.AdminAuth())
 			{
 				adminRoute.GET("/", handler.GetAllUsers)
-				adminRoute.GET("/topup", handler.GetAllTopUps)
-				adminRoute.POST("/topup/complete", middleware.CriticalRateLimit(), handler.AdminCompleteTopUp)
 				adminRoute.GET("/search", handler.SearchUsers)
 				adminRoute.GET("/:id", handler.GetUser)
 				adminRoute.POST("/", handler.CreateUser)
@@ -141,11 +126,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.GET("/2fa/stats", handler.Admin2FAStats)
 				adminRoute.DELETE("/:id/2fa", handler.AdminDisable2FA)
 
-				// Subscription management API (for subscription-service)
-				adminRoute.PUT("/:id/subscription", handler.UpdateUserSubscriptionConfig)
-				adminRoute.GET("/:id/daily-quota", handler.GetUserDailyQuotaStatus)
-				adminRoute.POST("/:id/daily-quota/reset", handler.ResetUserDailyQuota)
-			}
+				}
 		}
 		optionRoute := apiRouter.Group("/option")
 		optionRoute.Use(middleware.RootAuth())
@@ -341,44 +322,7 @@ func SetApiRouter(router *gin.Engine) {
 			deploymentsRoute.DELETE("/:id", handler.DeleteDeployment)
 		}
 
-		// Subscription management
-		subscriptionRoute := apiRouter.Group("/subscription")
-		{
-			// Public routes
-			subscriptionRoute.GET("/plans", handler.GetSubscriptionPlans)
-
-			// User routes
-			subscriptionRoute.GET("/current", middleware.UserAuth(), handler.GetCurrentSubscription)
-			subscriptionRoute.GET("/history", middleware.UserAuth(), handler.GetSubscriptionHistory)
-			subscriptionRoute.POST("/create", middleware.UserAuth(), middleware.CriticalRateLimit(), handler.CreateSubscription)
-			subscriptionRoute.POST("/cancel", middleware.UserAuth(), handler.CancelSubscriptionRenewal)
-
-			// Payment routes
-			subscriptionRoute.POST("/pay", middleware.UserAuth(), middleware.CriticalRateLimit(), handler.InitiateSubscriptionPayment)
-			subscriptionRoute.GET("/:id/payment-status", middleware.UserAuth(), handler.GetSubscriptionPaymentStatus)
-			subscriptionRoute.POST("/:id/retry-payment", middleware.UserAuth(), middleware.CriticalRateLimit(), handler.RetrySubscriptionPayment)
-
-			// Payment webhooks (public, no auth - verified by signature)
-			subscriptionRoute.POST("/stripe/webhook", handler.StripeSubscriptionWebhook)
-			subscriptionRoute.POST("/creem/webhook", handler.CreemSubscriptionWebhook)
-			subscriptionRoute.GET("/epay/notify", handler.EpaySubscriptionNotify)
-
-			// Admin routes
-			adminSubRoute := subscriptionRoute.Group("/admin")
-			adminSubRoute.Use(middleware.AdminAuth())
-			{
-				adminSubRoute.GET("/all", handler.AdminGetAllSubscriptions)
-				adminSubRoute.PUT("/plans", handler.AdminUpdateSubscriptionPlans)
-				adminSubRoute.POST("/grant", handler.AdminCreateSubscription)
-				adminSubRoute.POST("/:id/activate", handler.AdminActivateSubscription)
-				adminSubRoute.POST("/:id/expire", handler.AdminExpireSubscription)
-				// User subscription info and role management
-				adminSubRoute.GET("/user/:id", handler.AdminGetUserSubscriptionInfo)
-				adminSubRoute.POST("/user/:id/role", handler.AdminUpdateUserRole)
-			}
-		}
-
-		// Internal API Key management (admin only)
+			// Internal API Key management (admin only)
 		apiKeyRoute := apiRouter.Group("/api-keys")
 		apiKeyRoute.Use(middleware.AdminAuth())
 		{

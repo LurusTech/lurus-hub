@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 )
 
 // ============================================================================
@@ -143,8 +142,6 @@ func TestGetSystemStatsV2_AllStats(t *testing.T) {
 	// Create some data to have stats
 	SeedV2Token(t, ctx, ctx.NormalUser.Id, "Test Token")
 	SeedV2Channel(t, ctx, "Test Channel")
-	SeedV2Subscription(t, ctx, ctx.NormalUser.Id, repo.SubscriptionStatusActive)
-	SeedV2TopUp(t, ctx, ctx.NormalUser.Id, common.TopUpStatusPending)
 	SeedV2Redemption(t, ctx, ctx.NormalUser.Id)
 
 	// Create a user mapping

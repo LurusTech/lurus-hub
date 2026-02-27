@@ -1,33 +1,72 @@
 package handler
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
 	"github.com/gin-gonic/gin"
 )
 
+// calculateDisplayAmount converts a raw quota value to the display amount
+// based on the configured display type (USD, CNY, or Tokens).
+func calculateDisplayAmount(quota int) float64 {
+	amount := float64(quota)
+	switch operation_setting.GetQuotaDisplayType() {
+	case operation_setting.QuotaDisplayTypeCNY:
+		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
+	case operation_setting.QuotaDisplayTypeTokens:
+		// Keep raw token count
+	default:
+		// USD
+		amount = amount / common.QuotaPerUnit
+	}
+	return amount
+}
+
 func GetSubscription(c *gin.Context) {
 	userId := c.GetInt("id")
 	tokenId := c.GetInt("token_id")
-	info, err := app.GetSubscriptionQuotaInfo(userId, tokenId, common.DisplayTokenStatEnabled)
-	if err != nil {
-		openAIError := types.OpenAIError{
-			Message: err.Error(),
-			Type:    "upstream_error",
+
+	var totalAmount, expiredTime float64
+	var expired int64
+
+	if common.DisplayTokenStatEnabled {
+		token, err := repo.GetTokenById(tokenId)
+		if err != nil {
+			c.JSON(200, gin.H{"error": types.OpenAIError{Message: err.Error(), Type: "upstream_error"}})
+			return
 		}
-		c.JSON(200, gin.H{
-			"error": openAIError,
-		})
-		return
+		totalAmount = calculateDisplayAmount(token.RemainQuota + token.UsedQuota)
+		expired = token.ExpiredTime
+		if expired <= 0 {
+			expired = 0
+		}
+		if token.UnlimitedQuota {
+			totalAmount = 100000000
+		}
+		_ = expiredTime
+	} else {
+		remainQuota, err := repo.GetUserQuota(userId, false)
+		if err != nil {
+			c.JSON(200, gin.H{"error": types.OpenAIError{Message: err.Error(), Type: "upstream_error"}})
+			return
+		}
+		usedQuota, err := repo.GetUserUsedQuota(userId)
+		if err != nil {
+			c.JSON(200, gin.H{"error": types.OpenAIError{Message: err.Error(), Type: "upstream_error"}})
+			return
+		}
+		totalAmount = calculateDisplayAmount(remainQuota + usedQuota)
 	}
+
 	subscription := OpenAISubscriptionResponse{
 		Object:             "billing_subscription",
 		HasPaymentMethod:   true,
-		SoftLimitUSD:       info.TotalAmount,
-		HardLimitUSD:       info.TotalAmount,
-		SystemHardLimitUSD: info.TotalAmount,
-		AccessUntil:        info.ExpiredTime,
+		SoftLimitUSD:       totalAmount,
+		HardLimitUSD:       totalAmount,
+		SystemHardLimitUSD: totalAmount,
+		AccessUntil:        expired,
 	}
 	c.JSON(200, subscription)
 }
@@ -35,20 +74,27 @@ func GetSubscription(c *gin.Context) {
 func GetUsage(c *gin.Context) {
 	userId := c.GetInt("id")
 	tokenId := c.GetInt("token_id")
-	amount, err := app.GetUsageAmount(userId, tokenId, common.DisplayTokenStatEnabled)
-	if err != nil {
-		openAIError := types.OpenAIError{
-			Message: err.Error(),
-			Type:    "new_api_error",
+
+	var quota int
+	if common.DisplayTokenStatEnabled {
+		token, err := repo.GetTokenById(tokenId)
+		if err != nil {
+			c.JSON(200, gin.H{"error": types.OpenAIError{Message: err.Error(), Type: "new_api_error"}})
+			return
 		}
-		c.JSON(200, gin.H{
-			"error": openAIError,
-		})
-		return
+		quota = token.UsedQuota
+	} else {
+		var err error
+		quota, err = repo.GetUserUsedQuota(userId)
+		if err != nil {
+			c.JSON(200, gin.H{"error": types.OpenAIError{Message: err.Error(), Type: "new_api_error"}})
+			return
+		}
 	}
+
 	usage := OpenAIUsageResponse{
 		Object:     "list",
-		TotalUsage: amount,
+		TotalUsage: calculateDisplayAmount(quota) * 100,
 	}
 	c.JSON(200, usage)
 }

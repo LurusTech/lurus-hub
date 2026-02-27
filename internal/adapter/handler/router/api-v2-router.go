@@ -65,23 +65,6 @@ func SetApiV2Router(router *gin.Engine) {
 				channelRoute.DELETE("/:id", middleware.RequireRole("admin"), handler.DeleteChannelV2)
 			}
 
-			// Billing routes
-			// 计费路由
-			billingRoute := tenantRoute.Group("/billing")
-			{
-				// Top-up info and payment
-				billingRoute.GET("/topup-info", handler.GetTopUpInfoV2)
-				billingRoute.GET("/topups", handler.GetTopUpsV2)
-				billingRoute.POST("/topup", handler.TopUpV2)
-				billingRoute.POST("/pay", handler.InitiatePaymentV2)
-
-				// Subscription plans and management
-				billingRoute.GET("/plans", handler.GetSubscriptionPlansV2)
-				billingRoute.GET("/subscriptions", handler.GetSubscriptionsV2)
-				billingRoute.POST("/subscribe", handler.SubscribeV2)
-				billingRoute.DELETE("/subscriptions/:id", handler.CancelSubscriptionV2)
-			}
-
 			// Token (API key) routes
 			// Token（API密钥）路由
 			tokenRoute := tenantRoute.Group("/tokens")

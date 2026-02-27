@@ -143,75 +143,6 @@ func TestInternalUpdateUserNoFields(t *testing.T) {
 	// In real test with DB, it would return 400 "No fields to update"
 }
 
-// TestInternalGrantSubscriptionValidation tests grant request validation
-func TestInternalGrantSubscriptionValidation(t *testing.T) {
-	tests := []struct {
-		name           string
-		requestBody    map[string]interface{}
-		expectedStatus int
-		expectedMsg    string
-	}{
-		{
-			name: "missing_user_id",
-			requestBody: map[string]interface{}{
-				"plan_code": "monthly",
-				"days":      30,
-				"reason":    "Test",
-			},
-			expectedStatus: http.StatusBadRequest,
-			expectedMsg:    "user_id",
-		},
-		{
-			name: "missing_plan_code",
-			requestBody: map[string]interface{}{
-				"user_id": 1,
-				"days":    30,
-				"reason":  "Test",
-			},
-			expectedStatus: http.StatusBadRequest,
-			expectedMsg:    "plan_code",
-		},
-		{
-			name: "missing_days",
-			requestBody: map[string]interface{}{
-				"user_id":   1,
-				"plan_code": "monthly",
-				"reason":    "Test",
-			},
-			expectedStatus: http.StatusBadRequest,
-			expectedMsg:    "days",
-		},
-		{
-			name: "zero_days",
-			requestBody: map[string]interface{}{
-				"user_id":   1,
-				"plan_code": "monthly",
-				"days":      0,
-				"reason":    "Test",
-			},
-			expectedStatus: http.StatusBadRequest,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			router := MockRouter()
-			router.POST("/internal/subscription/grant", InternalGrantSubscription)
-
-			jsonBody, _ := json.Marshal(tt.requestBody)
-			req := httptest.NewRequest("POST", "/internal/subscription/grant", bytes.NewBuffer(jsonBody))
-			req.Header.Set("Content-Type", "application/json")
-
-			w := httptest.NewRecorder()
-			router.ServeHTTP(w, req)
-
-			if w.Code != tt.expectedStatus {
-				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
-			}
-		})
-	}
-}
-
 // TestInternalAdjustQuotaValidation tests quota adjustment validation
 func TestInternalAdjustQuotaValidation(t *testing.T) {
 	tests := []struct {
@@ -554,20 +485,6 @@ func TestAdminGetApiKeyScopes(t *testing.T) {
 		if scope["description"] == nil {
 			t.Errorf("Scope %d missing 'description'", i)
 		}
-	}
-}
-
-// TestInternalGetUserSubscriptionInvalidId tests invalid user ID for subscription
-func TestInternalGetUserSubscriptionInvalidId(t *testing.T) {
-	router := MockRouter()
-	router.GET("/internal/subscription/user/:id", InternalGetUserSubscription)
-
-	req := httptest.NewRequest("GET", "/internal/subscription/user/invalid", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
 	}
 }
 

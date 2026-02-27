@@ -22,6 +22,10 @@ type GeneralSetting struct {
 	CustomCurrencyExchangeRate float64 `json:"custom_currency_exchange_rate"`
 }
 
+// Pricing variables (retained from removed payment_setting.go for quota display)
+var USDExchangeRate float64 = 7.3 // 1 USD = X CNY
+var Price float64 = 2.0           // unit price
+
 // 默认配置
 var generalSetting = GeneralSetting{
 	DocsLink:                   "https://docs.newapi.pro",

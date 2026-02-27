@@ -74,10 +74,6 @@ func GetStatus(c *gin.Context) {
 			"enabled":  common.TelegramOAuthEnabled,
 			"bot_name": common.TelegramBotName,
 		},
-		"alipay": gin.H{
-			"enabled": common.AlipayOAuthEnabled,
-			"app_id":  common.AlipayAppId,
-		},
 		"wechat": gin.H{
 			"enabled": common.WeChatAuthEnabled,
 			"qrcode":  common.WeChatAccountQRCodeImageURL,
@@ -128,8 +124,6 @@ func GetStatus(c *gin.Context) {
 		"linuxdo_oauth":               common.LinuxDOOAuthEnabled,
 		"linuxdo_client_id":           common.LinuxDOClientId,
 		"linuxdo_minimum_trust_level": common.LinuxDOMinimumTrustLevel,
-		"alipay_oauth":                common.AlipayOAuthEnabled,
-		"alipay_app_id":               common.AlipayAppId,
 		"telegram_oauth":              common.TelegramOAuthEnabled,
 		"telegram_bot_name":           common.TelegramBotName,
 		"system_name":                 common.SystemName,
@@ -140,7 +134,6 @@ func GetStatus(c *gin.Context) {
 		"server_address":              system_setting.ServerAddress,
 		"turnstile_check":             common.TurnstileCheckEnabled,
 		"turnstile_site_key":          common.TurnstileSiteKey,
-		"top_up_link":                 common.TopUpLink,
 		"docs_link":                   operation_setting.GetGeneralSetting().DocsLink,
 		"quota_per_unit":              common.QuotaPerUnit,
 		// 兼容旧前端：保留 display_in_currency，同时提供新的 quota_display_type
@@ -162,7 +155,6 @@ func GetStatus(c *gin.Context) {
 
 		"usd_exchange_rate": operation_setting.USDExchangeRate,
 		"price":             operation_setting.Price,
-		"stripe_unit_price": setting.StripeUnitPrice,
 
 		// 面板启用开关
 		"api_info_enabled":      cs.ApiInfoEnabled,

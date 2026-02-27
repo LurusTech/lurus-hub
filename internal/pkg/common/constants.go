@@ -46,7 +46,6 @@ var EmailVerificationEnabled = false
 var GitHubOAuthEnabled = false
 var LinuxDOOAuthEnabled = false
 var WeChatAuthEnabled = false
-var AlipayOAuthEnabled = false
 var TelegramOAuthEnabled = false
 var TurnstileCheckEnabled = false
 var RegisterEnabled = true
@@ -93,11 +92,6 @@ var WeChatAccountQRCodeImageURL = ""
 
 var TurnstileSiteKey = ""
 var TurnstileSecretKey = ""
-
-var AlipayAppId = ""
-
-// AlipayUsernamePrefix is the prefix for auto-generated Alipay usernames.
-const AlipayUsernamePrefix = "alipay_"
 
 var TelegramBotToken = ""
 var TelegramBotName = ""
@@ -210,12 +204,6 @@ const (
 	ChannelStatusEnabled          = 1 // don't use 0, 0 is the default value!
 	ChannelStatusManuallyDisabled = 2 // also don't use 0
 	ChannelStatusAutoDisabled     = 3
-)
-
-const (
-	TopUpStatusPending = "pending"
-	TopUpStatusSuccess = "success"
-	TopUpStatusExpired = "expired"
 )
 
 // Phone Verification Modes - controls when phone verification is required

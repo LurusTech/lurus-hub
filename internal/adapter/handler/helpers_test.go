@@ -3,7 +3,15 @@ package handler
 import (
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
+
+// MockRouter creates a minimal Gin engine for unit testing.
+func MockRouter() *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	return gin.New()
+}
 
 // ============================================================================
 // Utility Function Unit Tests

@@ -18,7 +18,6 @@ import (
 
 // Subtypes aliased from the canonical definition in domain/entity/user.go
 type DailyQuotaInfo = entity.DailyQuotaInfo
-type SubscriptionConfig = entity.SubscriptionConfig
 
 // Canonical definition: domain/entity/user.go
 // User if you add sensitive fields, don't forget to clean them in setupLogin function.
@@ -1103,39 +1102,6 @@ func RestoreToBaseGroup(userId int) error {
 	return nil
 }
 
-// UpdateUserSubscriptionConfig updates user's subscription-related fields
-// This is called by subscription-service when subscription changes
-func UpdateUserSubscriptionConfig(userId int, config *SubscriptionConfig) error {
-	updates := map[string]interface{}{
-		"daily_quota":    config.DailyQuota,
-		"base_group":     config.BaseGroup,
-		"fallback_group": config.FallbackGroup,
-	}
-
-	// If quota is provided, update it too
-	if config.Quota > 0 {
-		updates["quota"] = config.Quota
-	}
-
-	// Set current group to base group
-	if config.BaseGroup != "" {
-		updates["group"] = config.BaseGroup
-	}
-
-	err := DB.Model(&User{}).Where("id = ?", userId).Updates(updates).Error
-	if err != nil {
-		return err
-	}
-
-	// Invalidate cache to force refresh
-	gopool.Go(func() {
-		if err := invalidateUserCache(userId); err != nil {
-			common.SysLog("failed to invalidate user cache: " + err.Error())
-		}
-	})
-
-	return nil
-}
 
 // GetUsersNeedingDailyReset returns users who need daily quota reset
 func GetUsersNeedingDailyReset(limit int) ([]*User, error) {

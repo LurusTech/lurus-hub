@@ -843,75 +843,6 @@ func TestInteg_GetBalance_Complete(t *testing.T) {
 }
 
 // ============================================================
-// Subscription Tests
-// ============================================================
-
-func TestInteg_GrantSubscription_Success(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	w := internalRequest(router, "POST", "/internal/subscription/grant", map[string]interface{}{
-		"user_id":   2,
-		"plan_code": "monthly",
-		"days":      30,
-		"reason":    "integration test grant",
-	}, authHeaders())
-
-	// Production API returns 200 for grant subscription
-	if w.Code != http.StatusOK {
-		if w.Code == http.StatusBadRequest {
-			resp := parseResponse(t, w)
-			ec, _ := resp["error_code"].(string)
-			if ec == ErrCodeValidationFailed {
-				t.Skipf("plan_code 'monthly' not available in test environment: %s", w.Body.String())
-			}
-		}
-		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
-	}
-
-	resp := parseResponse(t, w)
-	assertSuccess(t, resp)
-}
-
-func TestInteg_GrantSubscription_DisabledUser(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	// Create and disable a user
-	wc := internalRequest(router, "POST", "/internal/user", map[string]interface{}{
-		"username": "sub_disabled",
-		"password": "password123",
-	}, authHeaders())
-	if wc.Code != http.StatusCreated {
-		t.Fatalf("setup failed: %d, %s", wc.Code, wc.Body.String())
-	}
-	cResp := parseResponse(t, wc)
-	cData, _ := cResp["data"].(map[string]interface{})
-	userId := int(cData["id"].(float64))
-
-	disableUser(t, userId)
-
-	w := internalRequest(router, "POST", "/internal/subscription/grant", map[string]interface{}{
-		"user_id":   userId,
-		"plan_code": "monthly",
-		"days":      30,
-		"reason":    "disabled user grant",
-	}, authHeaders())
-
-	// Production API does not check disabled user status for subscription grant;
-	// it succeeds with 200.
-	if w.Code != http.StatusOK {
-		if w.Code == http.StatusBadRequest {
-			t.Skipf("plan_code validation failed: %s", w.Body.String())
-		}
-		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
-	}
-
-	resp := parseResponse(t, w)
-	assertSuccess(t, resp)
-}
-
-// ============================================================
 // Token Management Tests
 // ============================================================
 
@@ -1264,27 +1195,6 @@ func TestInteg_AdjustQuotaAndVerify(t *testing.T) {
 	quota := data["quota"].(float64)
 	if quota < 100000 {
 		t.Errorf("expected quota >= 100000 after adjust, got %v", quota)
-	}
-}
-
-func TestInteg_GetSubscription_NoSubscription(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	// User 2 has no subscription initially
-	w := internalRequest(router, "GET", "/internal/subscription/user/2", nil, authHeaders())
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
-	}
-
-	resp := parseResponse(t, w)
-	assertSuccess(t, resp)
-
-	data, _ := resp["data"].(map[string]interface{})
-	// subscription should be nil/null
-	if data["subscription"] != nil {
-		t.Log("user has an existing subscription, which is acceptable")
 	}
 }
 
@@ -1784,82 +1694,6 @@ func TestInteg_Login_CaseSensitivePassword(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for wrong-case password, got %d", w.Code)
-	}
-}
-
-// ============================================================
-// Subscription Edge Cases
-// ============================================================
-
-func TestInteg_GetSubscription_InvalidId(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	w := internalRequest(router, "GET", "/internal/subscription/user/abc", nil, authHeaders())
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
-}
-
-func TestInteg_GetSubscription_NonexistentUser(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	// For non-existent user, the system may return OK with null subscription
-	// or 404 depending on implementation
-	w := internalRequest(router, "GET", "/internal/subscription/user/99999", nil, authHeaders())
-
-	// Both 200 (with null sub) and 404 are acceptable
-	if w.Code != http.StatusOK && w.Code != http.StatusNotFound {
-		t.Fatalf("expected 200 or 404, got %d, body: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestInteg_GrantSubscription_InvalidPlan(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	w := internalRequest(router, "POST", "/internal/subscription/grant", map[string]interface{}{
-		"user_id":   2,
-		"plan_code": "nonexistent_plan_xyz",
-		"days":      30,
-		"reason":    "invalid plan test",
-	}, authHeaders())
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestInteg_GrantSubscription_MissingFields(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	// Missing plan_code
-	w := internalRequest(router, "POST", "/internal/subscription/grant", map[string]interface{}{
-		"user_id": 2,
-		"days":    30,
-	}, authHeaders())
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestInteg_GrantSubscription_ZeroDays(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	w := internalRequest(router, "POST", "/internal/subscription/grant", map[string]interface{}{
-		"user_id":   2,
-		"plan_code": "monthly",
-		"days":      0,
-		"reason":    "zero days",
-	}, authHeaders())
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
 	}
 }
 

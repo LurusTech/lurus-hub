@@ -221,12 +221,6 @@ func GetTenantStats(tenantID string) (*TenantStats, error) {
 	stats.TotalQuotaUsed = usedQuota
 	stats.TotalQuotaRemaining = remainingQuota
 
-	// Subscription count
-	stats.ActiveSubscriptions, _ = GetTenantActiveSubscriptionCount(tenantID)
-
-	// TopUp total amount
-	stats.TotalTopUpAmount, _ = GetTenantTotalTopUpAmount(tenantID)
-
 	// Redemption count
 	stats.TotalRedemptions, _ = GetTenantRedemptionCount(tenantID)
 
@@ -270,28 +264,6 @@ func GetTenantQuotaStats(tenantID string) (usedQuota int64, remainingQuota int64
 	return result.UsedQuota, result.RemainQuota, err
 }
 
-// GetTenantActiveSubscriptionCount returns the number of active subscriptions in a tenant
-func GetTenantActiveSubscriptionCount(tenantID string) (int64, error) {
-	var count int64
-	err := DB.Model(&Subscription{}).
-		Where("tenant_id = ? AND status = ?", tenantID, 1). // status 1 = active
-		Count(&count).Error
-	return count, err
-}
-
-// GetTenantTotalTopUpAmount returns the total top-up amount for a tenant (in currency units)
-func GetTenantTotalTopUpAmount(tenantID string) (float64, error) {
-	var total *float64
-	err := DB.Model(&TopUp{}).
-		Select("COALESCE(SUM(amount), 0)").
-		Where("tenant_id = ? AND status = ?", tenantID, "success").
-		Scan(&total).Error
-
-	if total == nil {
-		return 0, err
-	}
-	return *total, err
-}
 
 // GetTenantRedemptionCount returns the number of redemption codes in a tenant
 func GetTenantRedemptionCount(tenantID string) (int64, error) {

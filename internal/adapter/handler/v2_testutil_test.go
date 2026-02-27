@@ -52,8 +52,6 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		&repo.User{},
 		&repo.Token{},
 		&repo.Log{},
-		&repo.Subscription{},
-		&repo.TopUp{},
 		&repo.Option{},
 		&repo.Setup{},
 		&repo.Tenant{},
@@ -225,13 +223,6 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		v2.PUT("/channels/:id", UpdateChannelV2)
 		v2.DELETE("/channels/:id", DeleteChannelV2)
 
-		// Billing routes
-		v2.GET("/billing/topups", GetTopUpsV2)
-		v2.POST("/billing/topup", TopUpV2)
-		v2.GET("/billing/subscriptions", GetSubscriptionsV2)
-		v2.POST("/billing/subscribe", SubscribeV2)
-		v2.POST("/billing/subscriptions/:id/cancel", CancelSubscriptionV2)
-
 		// Redemption routes
 		v2.POST("/redeem", RedeemCodeV2)
 		v2.GET("/redemptions", ListRedemptionsV2)
@@ -398,47 +389,6 @@ func SeedV2Channel(t *testing.T, ctx *V2TestContext, name string) *repo.Channel 
 		t.Fatalf("failed to seed channel: %v", err)
 	}
 	return channel
-}
-
-// SeedV2Subscription creates a test subscription for the given user
-func SeedV2Subscription(t *testing.T, ctx *V2TestContext, userID int, status string) *repo.Subscription {
-	t.Helper()
-	now := time.Now()
-	sub := &repo.Subscription{
-		UserId:        userID,
-		TenantId:      ctx.TenantID,
-		PlanCode:      "monthly",
-		PlanName:      "Monthly Plan",
-		Status:        status,
-		PaymentMethod: "stripe",
-		Amount:        99.0,
-		Currency:      "CNY",
-		StartedAt:     now,
-		ExpiresAt:     now.AddDate(0, 1, 0), // 1 month from now
-	}
-	if err := repo.CreateSubscription(sub); err != nil {
-		t.Fatalf("failed to seed subscription: %v", err)
-	}
-	return sub
-}
-
-// SeedV2TopUp creates a test topup for the given user
-func SeedV2TopUp(t *testing.T, ctx *V2TestContext, userID int, status string) *repo.TopUp {
-	t.Helper()
-	topup := &repo.TopUp{
-		UserId:        userID,
-		TenantId:      ctx.TenantID,
-		Amount:        100,
-		Money:         10.0,
-		TradeNo:       "trade_" + common.GetRandomString(16),
-		PaymentMethod: "stripe",
-		CreateTime:    common.GetTimestamp(),
-		Status:        status,
-	}
-	if err := repo.TopUpInsert(topup); err != nil {
-		t.Fatalf("failed to seed topup: %v", err)
-	}
-	return topup
 }
 
 // SeedV2Redemption creates a test redemption code

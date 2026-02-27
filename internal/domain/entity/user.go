@@ -48,7 +48,6 @@ type User struct {
 	PhoneVerified    bool           `json:"phone_verified" gorm:"column:phone_verified;default:false"`
 	Setting          string         `json:"setting" gorm:"type:text;column:setting"`
 	Remark           string         `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
-	StripeCustomer   string         `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -144,14 +143,6 @@ type DailyQuotaInfo struct {
 	CurrentGroup    string `json:"current_group"`
 	IsUsingFallback bool   `json:"is_using_fallback"`
 	NeedsReset      bool   `json:"needs_reset"`
-}
-
-// SubscriptionConfig represents subscription configuration for updating user
-type SubscriptionConfig struct {
-	DailyQuota    int    `json:"daily_quota"`
-	BaseGroup     string `json:"base_group"`
-	FallbackGroup string `json:"fallback_group"`
-	Quota         int    `json:"quota,omitempty"`
 }
 
 // NeedsDailyReset checks if daily quota needs to be reset based on last reset timestamp

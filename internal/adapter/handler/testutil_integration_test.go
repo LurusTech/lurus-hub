@@ -51,8 +51,6 @@ func SetupIntegrationRouter(t *testing.T) (*gin.Engine, func()) {
 		&repo.Token{},
 		&repo.Log{},
 		&repo.InternalApiKey{},
-		&repo.Subscription{},
-		&repo.TopUp{},
 		&repo.Option{},
 		&repo.Setup{},
 		&repo.Tenant{},
@@ -124,7 +122,7 @@ func SetupIntegrationRouter(t *testing.T) (*gin.Engine, func()) {
 
 	// Seed read-only API key
 	readScopes, _ := json.Marshal([]string{
-		repo.ScopeUserRead, repo.ScopeSubscriptionRead,
+		repo.ScopeUserRead,
 		repo.ScopeQuotaRead, repo.ScopeBalanceRead, repo.ScopeTokenRead,
 	})
 	db.Create(&repo.InternalApiKey{
@@ -147,8 +145,6 @@ func SetupIntegrationRouter(t *testing.T) (*gin.Engine, func()) {
 		internal.POST("/user", middleware.RequireScope(repo.ScopeUserWrite), InternalCreateUser)
 		internal.PUT("/user/:id", middleware.RequireScope(repo.ScopeUserWrite), InternalUpdateUser)
 		internal.DELETE("/user/:id", middleware.RequireScope(repo.ScopeUserDelete), InternalDeleteUser)
-		internal.GET("/subscription/user/:id", middleware.RequireScope(repo.ScopeSubscriptionRead), InternalGetUserSubscription)
-		internal.POST("/subscription/grant", middleware.RequireScope(repo.ScopeSubscriptionWrite), InternalGrantSubscription)
 		internal.GET("/quota/user/:id", middleware.RequireScope(repo.ScopeQuotaRead), InternalGetUserQuota)
 		internal.POST("/quota/adjust", middleware.RequireScope(repo.ScopeQuotaWrite), InternalAdjustQuota)
 		internal.GET("/balance/user/:id", middleware.RequireScope(repo.ScopeBalanceRead), InternalGetUserBalance)

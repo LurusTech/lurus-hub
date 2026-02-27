@@ -261,8 +261,6 @@ func GetSystemStatsV2(c *gin.Context) {
 	var totalChannels int64
 	var totalTenants int64
 	var totalMappings int64
-	var totalTopUps int64
-	var totalSubscriptions int64
 	var totalRedemptions int64
 
 	db := repo.GetSystemDB()
@@ -282,12 +280,6 @@ func GetSystemStatsV2(c *gin.Context) {
 	// Count user mappings
 	db.Model(&repo.UserIdentityMapping{}).Where("is_active = ?", true).Count(&totalMappings)
 
-	// Count topups
-	db.Model(&repo.TopUp{}).Count(&totalTopUps)
-
-	// Count subscriptions
-	db.Model(&repo.Subscription{}).Count(&totalSubscriptions)
-
 	// Count redemptions
 	db.Model(&repo.Redemption{}).Count(&totalRedemptions)
 
@@ -300,14 +292,6 @@ func GetSystemStatsV2(c *gin.Context) {
 
 	// Get channel statistics by type
 	channelsByType, _ := repo.CountChannelsGroupByType()
-
-	// Get active subscriptions count
-	var activeSubscriptions int64
-	db.Model(&repo.Subscription{}).Where("status = ?", repo.SubscriptionStatusActive).Count(&activeSubscriptions)
-
-	// Get pending topups count
-	var pendingTopUps int64
-	db.Model(&repo.TopUp{}).Where("status = ?", common.TopUpStatusPending).Count(&pendingTopUps)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -333,11 +317,7 @@ func GetSystemStatsV2(c *gin.Context) {
 				"used":  quotaStats.UsedQuota,
 			},
 			"billing": gin.H{
-				"topups_total":           totalTopUps,
-				"topups_pending":         pendingTopUps,
-				"subscriptions_total":    totalSubscriptions,
-				"subscriptions_active":   activeSubscriptions,
-				"redemptions_total":      totalRedemptions,
+				"redemptions_total": totalRedemptions,
 			},
 		},
 	})

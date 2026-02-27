@@ -81,8 +81,6 @@ func SetupTestDB(t *testing.T) func() {
 		&Token{},
 		&Log{},
 		&InternalApiKey{},
-		&Subscription{},
-		&TopUp{},
 		&InvitationCode{},
 		&Setup{},
 		&Tenant{},
@@ -255,7 +253,7 @@ func SeedTestApiKeys(t *testing.T) (fullKey, readOnlyKey *InternalApiKey, rawKey
 	readOnlyKey = makeKey(
 		"read-only-key",
 		readOnlyRaw,
-		[]string{ScopeUserRead, ScopeQuotaRead, ScopeSubscriptionRead, ScopeTokenRead, ScopeBalanceRead},
+		[]string{ScopeUserRead, ScopeQuotaRead, ScopeTokenRead, ScopeBalanceRead},
 		1,
 		time.Now().Add(24*time.Hour).Unix(),
 		"Read-only test key",

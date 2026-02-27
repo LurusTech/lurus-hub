@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -180,19 +181,6 @@ func OidcAuth(c *gin.Context) {
 		return
 	}
 
-	// Sync user with identity-service for unified identity management
-	go func() {
-		_, err := common.SyncUserWithIdentityService(
-			oidcUser.OpenID,
-			user.Id,
-			user.Email,
-			user.DisplayName,
-		)
-		if err != nil {
-			common.SysLog("Failed to sync user with identity-service: " + err.Error())
-		}
-	}()
-
 	setupLogin(&user, c)
 }
 
@@ -236,14 +224,10 @@ func OidcBind(c *gin.Context) {
 		return
 	}
 
-	// Sync user with identity-service for unified identity management
 	go func() {
-		_, err := common.SyncUserWithIdentityService(
-			oidcUser.OpenID,
-			user.Id,
-			user.Email,
-			user.DisplayName,
-		)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := common.UpsertAccount(ctx, oidcUser.OpenID, user.Email, user.DisplayName, "")
 		if err != nil {
 			common.SysLog("Failed to sync user with identity-service: " + err.Error())
 		}

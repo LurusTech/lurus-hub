@@ -30,20 +30,6 @@ func SetInternalApiRouter(router *gin.Engine) {
 		userWriteGroup.PUT("/:id", handler.InternalUpdateUser)
 	}
 
-	// Subscription APIs - read subscription information
-	subReadGroup := internalGroup.Group("/subscription")
-	subReadGroup.Use(middleware.RequireScope(repo.ScopeSubscriptionRead))
-	{
-		subReadGroup.GET("/user/:id", handler.InternalGetUserSubscription)
-	}
-
-	// Subscription APIs - grant subscriptions
-	subWriteGroup := internalGroup.Group("/subscription")
-	subWriteGroup.Use(middleware.RequireScope(repo.ScopeSubscriptionWrite))
-	{
-		subWriteGroup.POST("/grant", handler.InternalGrantSubscription)
-	}
-
 	// Quota APIs - read user quota
 	quotaReadGroup := internalGroup.Group("/quota")
 	quotaReadGroup.Use(middleware.RequireScope(repo.ScopeQuotaRead))

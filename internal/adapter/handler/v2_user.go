@@ -45,9 +45,6 @@ func GetSelfV2(c *gin.Context) {
 	// Get daily quota info
 	dailyQuotaInfo, _ := repo.GetUserDailyQuotaInfo(user.Id)
 
-	// Get active subscription
-	activeSub, _ := repo.GetActiveSubscription(user.Id)
-
 	// Build daily quota response
 	var dailyQuota interface{}
 	if dailyQuotaInfo != nil {
@@ -57,20 +54,6 @@ func GetSelfV2(c *gin.Context) {
 			"remaining":         dailyQuotaInfo.DailyRemaining,
 			"last_reset":        dailyQuotaInfo.LastDailyReset,
 			"is_using_fallback": dailyQuotaInfo.IsUsingFallback,
-		}
-	}
-
-	// Build subscription response
-	var subscription interface{}
-	if activeSub != nil {
-		subscription = gin.H{
-			"plan_code":   activeSub.PlanCode,
-			"plan_name":   activeSub.PlanName,
-			"status":      activeSub.Status,
-			"expires_at":  activeSub.ExpiresAt,
-			"auto_renew":  activeSub.AutoRenew,
-			"daily_quota": activeSub.DailyQuota,
-			"total_quota": activeSub.TotalQuota,
 		}
 	}
 
@@ -96,7 +79,6 @@ func GetSelfV2(c *gin.Context) {
 			"zitadel_user":    tenantCtx.ZitadelUserID,
 			"roles":           tenantCtx.Roles,
 			"daily_quota":     dailyQuota,
-			"subscription":    subscription,
 		},
 	})
 }

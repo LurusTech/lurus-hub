@@ -193,14 +193,8 @@ func TestGetSystemStatsV2_AllStats(t *testing.T) {
 		t.Errorf("expected at least 1 channel, got %v", channels["total"])
 	}
 
-	// Verify billing stats
+	// Verify billing stats (API only returns redemptions_total)
 	billing := data["billing"].(map[string]interface{})
-	if billing["topups_total"].(float64) < 1 {
-		t.Errorf("expected at least 1 topup, got %v", billing["topups_total"])
-	}
-	if billing["subscriptions_total"].(float64) < 1 {
-		t.Errorf("expected at least 1 subscription, got %v", billing["subscriptions_total"])
-	}
 	if billing["redemptions_total"].(float64) < 1 {
 		t.Errorf("expected at least 1 redemption, got %v", billing["redemptions_total"])
 	}

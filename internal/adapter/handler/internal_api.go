@@ -154,18 +154,7 @@ func InternalUpdateUser(c *gin.Context) {
 		return
 	}
 
-	// Check user exists
-	_, err = repo.GetUserById(userId, false)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success":    false,
-			"message":    "User not found",
-			"error_code": "USER_NOT_FOUND",
-		})
-		return
-	}
-
-	// Build updates map
+	// Build updates map before DB lookup to fail fast on empty requests
 	updates := make(map[string]interface{})
 	if req.DisplayName != nil {
 		updates["display_name"] = *req.DisplayName
@@ -188,6 +177,17 @@ func InternalUpdateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "No fields to update",
+		})
+		return
+	}
+
+	// Check user exists
+	_, err = repo.GetUserById(userId, false)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success":    false,
+			"message":    "User not found",
+			"error_code": "USER_NOT_FOUND",
 		})
 		return
 	}

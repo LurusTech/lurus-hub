@@ -133,14 +133,21 @@ func TestInternalUpdateUserNoFields(t *testing.T) {
 	router := MockRouter()
 	router.PUT("/internal/user/:id", InternalUpdateUser)
 
-	// Empty body
+	// Empty body — should return 400 before any DB access
 	req := httptest.NewRequest("PUT", "/internal/user/1", bytes.NewBuffer([]byte("{}")))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	// Will fail user lookup without DB, but we're testing validation
-	// In real test with DB, it would return 400 "No fields to update"
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
+	}
+
+	var response map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &response)
+	if msg, ok := response["message"].(string); !ok || msg != "No fields to update" {
+		t.Errorf("Expected message %q, got %v", "No fields to update", response["message"])
+	}
 }
 
 // TestInternalAdjustQuotaValidation tests quota adjustment validation

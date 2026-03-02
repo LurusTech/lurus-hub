@@ -108,6 +108,32 @@ func SetApiV2Router(router *gin.Engine) {
 		}
 
 		// ================================================================
+		// Switch Public Routes (no authentication required)
+		// lurus-switch 公共路由（无需认证）
+		// ================================================================
+
+		switchGroup := apiV2.Group("/switch")
+		{
+			// Tool version endpoint — polled by lurus-switch to check for updates.
+			switchGroup.GET("/tools/versions", handler.GetToolVersions)
+
+			// Config preset library — read-only for clients.
+			switchGroup.GET("/presets", handler.ListSwitchPresets)
+		}
+
+		// ================================================================
+		// Platform-wide User Routes (Zitadel JWT auth, no tenant context)
+		// 平台用户路由（Zitadel JWT 认证，无需 tenant context）
+		// ================================================================
+
+		platformUser := apiV2.Group("/user")
+		platformUser.Use(middleware.ZitadelAuth())
+		{
+			// Identity overview — returns VIP level, Lubell wallet balance and subscription status.
+			platformUser.GET("/identity-overview", handler.GetIdentityOverview)
+		}
+
+		// ================================================================
 		// Platform Admin Routes (System-level, requires Platform Admin role)
 		// 平台管理员路由（系统级，需要平台管理员角色）
 		// ================================================================
@@ -150,6 +176,10 @@ func SetApiV2Router(router *gin.Engine) {
 			// System-wide statistics (Platform Admin)
 			// 系统级统计（平台管理员）
 			adminRoute.GET("/stats", handler.GetSystemStatsV2)
+
+			// Switch preset management (Platform Admin)
+			// switch 配置预设管理（平台管理员）
+			adminRoute.POST("/switch/presets", handler.CreateSwitchPreset)
 		}
 	}
 }

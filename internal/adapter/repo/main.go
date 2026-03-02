@@ -282,6 +282,8 @@ func migrateDB() error {
 		&entity.Release{},
 		&entity.ReleaseArtifact{},
 		&entity.DownloadLog{},
+		// Switch config presets
+		&SwitchConfigPresetRow{},
 	)
 	if err != nil {
 		return err

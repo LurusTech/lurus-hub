@@ -1,12 +1,42 @@
 package handler
 
 import (
+	"net/http"
+
+	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
 	"github.com/gin-gonic/gin"
 )
+
+// GetIdentityOverview returns the authenticated user's aggregated identity overview
+// from lurus-identity (VIP level, Lubell balance, subscription status).
+// Degrades gracefully when lurus-identity is unavailable.
+// GET /api/v2/user/identity-overview?product_id=<pid>
+func GetIdentityOverview(c *gin.Context) {
+	tenantCtx, err := middleware.GetTenantContext(c)
+	if err != nil || tenantCtx.ZitadelUserID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+
+	im, err := common.GetAccountByZitadelSub(c.Request.Context(), tenantCtx.ZitadelUserID)
+	if err != nil || im == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "identity account not found"})
+		return
+	}
+
+	productID := c.DefaultQuery("product_id", "lurus-api")
+	ov, _ := common.GetAccountOverview(c.Request.Context(), im.ID, productID)
+	if ov == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "identity service unavailable"})
+		return
+	}
+
+	c.JSON(http.StatusOK, ov)
+}
 
 // calculateDisplayAmount converts a raw quota value to the display amount
 // based on the configured display type (USD, CNY, or Tokens).

@@ -269,6 +269,11 @@ func run(ctx context.Context, startTime time.Time) error {
 	// Initialize release service
 	handler.InitReleaseService()
 
+	// Start tool version background worker (polls npm / GitHub, caches in Redis)
+	if common.RedisEnabled && common.RDB != nil {
+		handler.StartToolVersionWorker(ctx, common.RDB)
+	}
+
 	// Setup routes
 	router.SetRouter(engine, buildFS, indexPage)
 

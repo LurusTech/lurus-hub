@@ -183,6 +183,71 @@ func GetEntitlements(ctx context.Context, accountID int64, productID string) (En
 	return em, nil
 }
 
+// AccountOverview mirrors the aggregated read model from lurus-identity's overview endpoint.
+type AccountOverview struct {
+	Account struct {
+		ID          int64  `json:"id"`
+		LurusID     string `json:"lurus_id"`
+		DisplayName string `json:"display_name"`
+		AvatarURL   string `json:"avatar_url"`
+	} `json:"account"`
+	VIP struct {
+		Level          int16  `json:"level"`
+		LevelName      string `json:"level_name"`
+		LevelEN        string `json:"level_en"`
+		Points         int64  `json:"points"`
+		LevelExpiresAt *struct {
+			Time string `json:"time"`
+		} `json:"level_expires_at"`
+	} `json:"vip"`
+	Wallet struct {
+		Balance float64 `json:"balance"`
+		Frozen  float64 `json:"frozen"`
+	} `json:"wallet"`
+	Subscription *struct {
+		ProductID string  `json:"product_id"`
+		PlanCode  string  `json:"plan_code"`
+		Status    string  `json:"status"`
+		ExpiresAt *string `json:"expires_at"`
+		AutoRenew bool    `json:"auto_renew"`
+	} `json:"subscription"`
+	TopupURL string `json:"topup_url"`
+}
+
+// GetAccountOverview retrieves the aggregated overview for an account from lurus-identity.
+// Returns nil, nil on network errors or when identity service is not configured — callers degrade gracefully.
+func GetAccountOverview(ctx context.Context, accountID int64, productID string) (*AccountOverview, error) {
+	if IdentityServiceURL == "" {
+		return nil, nil
+	}
+	url := fmt.Sprintf("%s/internal/v1/accounts/%d/overview", IdentityServiceURL, accountID)
+	if productID != "" {
+		url += "?product_id=" + productID
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity GetAccountOverview: %v", err))
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		SysLog(fmt.Sprintf("identity GetAccountOverview: status %d", resp.StatusCode))
+		return nil, nil
+	}
+	var ov AccountOverview
+	if err := json.NewDecoder(resp.Body).Decode(&ov); err != nil {
+		return nil, nil
+	}
+	return &ov, nil
+}
+
 // ReportLLMUsage sends a usage record to lurus-identity for VIP accumulation.
 // Fire-and-forget — errors are logged but not propagated.
 func ReportLLMUsage(ctx context.Context, accountID int64, amountCNY float64) {

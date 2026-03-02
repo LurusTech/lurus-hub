@@ -32,7 +32,6 @@ import {
   onGitHubOAuthClicked,
   onDiscordOAuthClicked,
   onOIDCClicked,
-  onAlipayOAuthClicked,
   onLinuxDOOAuthClicked,
   prepareCredentialRequestOptions,
   buildAssertionResult,
@@ -79,7 +78,6 @@ const LoginForm = () => {
   const [githubLoading, setGithubLoading] = useState(false);
   const [discordLoading, setDiscordLoading] = useState(false);
   const [oidcLoading, setOidcLoading] = useState(false);
-  const [alipayLoading, setAlipayLoading] = useState(false);
   const [linuxdoLoading, setLinuxdoLoading] = useState(false);
   const [emailLoginLoading, setEmailLoginLoading] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
@@ -377,20 +375,6 @@ const LoginForm = () => {
     }
   };
 
-  // Alipay login handler
-  const handleAlipayClick = () => {
-    if ((hasUserAgreement || hasPrivacyPolicy) && !agreedToTerms) {
-      showInfo(t('请先阅读并同意用户协议和隐私政策'));
-      return;
-    }
-    setAlipayLoading(true);
-    try {
-      onAlipayOAuthClicked(status.alipay_app_id, { shouldLogout: true });
-    } finally {
-      setTimeout(() => setAlipayLoading(false), 3000);
-    }
-  };
-
   // 包装的邮箱登录选项点击处理
   const handleEmailLoginClick = () => {
     setEmailLoginLoading(true);
@@ -601,23 +585,6 @@ const LoginForm = () => {
                     loading={wechatLoading}
                   >
                     <span className='ml-3'>{t('使用 微信 继续')}</span>
-                  </Button>
-                )}
-
-                {status.alipay_oauth && (
-                  <Button
-                    theme='outline'
-                    className='w-full h-12 flex items-center justify-center !rounded-full border border-gray-200 hover:bg-gray-50 transition-colors'
-                    type='tertiary'
-                    icon={
-                      <svg viewBox="0 0 1024 1024" width="20" height="20" fill="#1677FF">
-                        <path d="M230.4 85.333h563.2c80.213 0 145.067 64.854 145.067 145.067v563.2c0 80.213-64.854 145.067-145.067 145.067H230.4c-80.213 0-145.067-64.854-145.067-145.067V230.4c0-80.213 64.854-145.067 145.067-145.067zM512 170.667c-188.587 0-341.333 152.746-341.333 341.333S323.413 853.333 512 853.333 853.333 700.587 853.333 512 700.587 170.667 512 170.667zm155.733 449.28c-40.106-17.493-84.906-35.84-84.906-35.84s23.893-56.747 37.12-113.493h-111.36v-34.134h130.56v-22.613h-130.56V379.733h-55.467v34.134h-126.827v22.613H453.12v34.134H337.493v24.747h158.294s-17.92 61.44-46.934 110.933c-54.613-17.92-117.76-31.573-155.306-23.04-53.334 12.374-87.04 46.934-90.454 93.014-4.266 59.306 44.8 105.813 120.32 101.546 53.334-2.986 107.52-36.266 150.187-99.84 58.453 23.467 154.027 56.32 154.027 56.32l39.253-14.507-.147.213zm-336.64 81.28c-59.307 0-79.787-38.827-74.24-71.254 5.547-32.426 37.547-56.32 72.107-59.306 34.56-2.987 81.92 7.68 124.16 25.6-37.974 68.267-82.347 104.96-122.027 104.96z"/>
-                      </svg>
-                    }
-                    onClick={handleAlipayClick}
-                    loading={alipayLoading}
-                  >
-                    <span className='ml-3'>{t('使用 支付宝 继续')}</span>
                   </Button>
                 )}
 
@@ -1170,7 +1137,6 @@ const LoginForm = () => {
               status.discord_oauth ||
               status.oidc_enabled ||
               status.wechat_login ||
-              status.alipay_oauth ||
               status.linuxdo_oauth ||
               status.telegram_oauth ||
               status.sms_enabled

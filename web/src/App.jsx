@@ -248,14 +248,6 @@ function App() {
           }
         />
         <Route
-          path='/oauth/alipay'
-          element={
-            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
-              <OAuth2Callback type='alipay'></OAuth2Callback>
-            </Suspense>
-          }
-        />
-        <Route
           path='/oauth/zitadel'
           element={
             <Suspense fallback={<Loading></Loading>} key={location.pathname}>

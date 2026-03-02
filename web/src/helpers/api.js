@@ -290,15 +290,6 @@ export async function onGitHubOAuthClicked(github_client_id, options = {}) {
   );
 }
 
-export async function onAlipayOAuthClicked(alipay_app_id, options = {}) {
-  const state = await prepareOAuthState(options);
-  if (!state) return;
-  const redirectUri = encodeURIComponent(
-    `${window.location.origin}/oauth/alipay`,
-  );
-  window.location.href = `https://openauth.alipay.com/oauth2/publicAppAuthorize.htm?app_id=${alipay_app_id}&scope=auth_user&redirect_uri=${redirectUri}&state=${state}`;
-}
-
 export async function onLinuxDOOAuthClicked(
   linuxdo_client_id,
   options = { shouldLogout: false },

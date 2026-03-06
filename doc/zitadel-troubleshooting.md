@@ -316,5 +316,29 @@ kubectl get deployment -n lurus-identity zitadel -o yaml > zitadel-deployment.ya
 
 ---
 
+---
+
+## 升级记录 / Upgrade History
+
+### 2026-03-06: v2.54.0 → v4.12.0
+
+**原因 / Reason**: v2.54.0 JWKS key rotation bug — 低流量实例签名密钥过期后不自动轮换，`/oauth/v2/keys` 返回空 `{"keys":[]}`，所有 OIDC 登录失败。
+
+**修复 / Fix**: 升级到 v4.12.0（Web Keys 特性：签名密钥手动管理，不自动过期）。
+
+**变更 / Changes**:
+- Image: `ghcr.io/zitadel/zitadel:v2.54.0` → `v4.12.0`
+- ConfigMap: `HandleActiveInstances` 从 `87600h` 恢复为 `720h`
+- ConfigMap: `SystemAPIUsers` 从列表格式改为 map 格式（v4 要求）
+- 首次启动使用 `--init-projections` flag 加速 projection 重建
+
+**验证 / Verification**:
+- `/oauth/v2/keys` 返回 2 个有效 RSA256 密钥
+- `/debug/healthz` → `ok`, `/debug/ready` → `ok`
+- lurus-api 日志: `Successfully refreshed 2 JWKS keys`
+- DB 备份: `/root/zitadel_backup_pre_v4_upgrade.dump` on master
+
+---
+
 **创建日期 / Created**: 2026-01-25
-**最后更新 / Last Updated**: 2026-01-25
+**最后更新 / Last Updated**: 2026-03-06

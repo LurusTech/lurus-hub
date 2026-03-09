@@ -1,0 +1,253 @@
+package common
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"sync"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+
+	identityv1 "github.com/hanmahong5-arch/lurus-proto/gen/go/identity/v1"
+)
+
+// identityGRPCAddr is the gRPC address for lurus-identity (host:port).
+var identityGRPCAddr = getIdentityGRPCAddr()
+
+func getIdentityGRPCAddr() string {
+	if addr := os.Getenv("IDENTITY_GRPC_ADDR"); addr != "" {
+		return addr
+	}
+	return "identity-service.lurus-identity.svc.cluster.local:18105"
+}
+
+var (
+	grpcClientOnce sync.Once
+	grpcClient     identityv1.IdentityServiceClient
+	grpcConn       *grpc.ClientConn
+)
+
+// getGRPCClient returns a singleton gRPC client. Returns nil if connection fails
+// (callers fall back to HTTP).
+func getGRPCClient() identityv1.IdentityServiceClient {
+	grpcClientOnce.Do(func() {
+		if identityGRPCAddr == "" {
+			return
+		}
+		conn, err := grpc.NewClient(identityGRPCAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
+		)
+		if err != nil {
+			slog.Error("identity grpc client: failed to connect", "addr", identityGRPCAddr, "err", err)
+			return
+		}
+		grpcConn = conn
+		grpcClient = identityv1.NewIdentityServiceClient(conn)
+		slog.Info("identity grpc client connected", "addr", identityGRPCAddr)
+	})
+	return grpcClient
+}
+
+// grpcCtx adds the internal API key as gRPC metadata.
+func grpcCtx(ctx context.Context) context.Context {
+	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+IdentityServiceInternalKey)
+}
+
+// grpcTimeout wraps a context with a 5s timeout for gRPC calls.
+func grpcTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(grpcCtx(ctx), 5*time.Second)
+}
+
+// GetAccountByZitadelSubGRPC retrieves account info via gRPC.
+// Falls back to HTTP if gRPC client is not available.
+func GetAccountByZitadelSubGRPC(ctx context.Context, sub string) (*IdentityMapping, error) {
+	client := getGRPCClient()
+	if client == nil {
+		return GetAccountByZitadelSub(ctx, sub) // fallback to HTTP
+	}
+
+	gctx, cancel := grpcTimeout(ctx)
+	defer cancel()
+
+	resp, err := client.GetAccountByZitadelSub(gctx, &identityv1.GetAccountByZitadelSubRequest{
+		ZitadelSub: sub,
+	})
+	if err != nil {
+		slog.Debug("identity grpc GetAccountByZitadelSub failed, falling back to HTTP", "err", err)
+		return GetAccountByZitadelSub(ctx, sub)
+	}
+
+	return protoToIdentityMapping(resp), nil
+}
+
+// UpsertAccountGRPC creates or updates an account via gRPC.
+// Falls back to HTTP if gRPC client is not available.
+func UpsertAccountGRPC(ctx context.Context, zitadelSub, email, displayName, avatarURL string) (*IdentityMapping, error) {
+	client := getGRPCClient()
+	if client == nil {
+		return UpsertAccount(ctx, zitadelSub, email, displayName, avatarURL)
+	}
+
+	gctx, cancel := grpcTimeout(ctx)
+	defer cancel()
+
+	resp, err := client.UpsertAccount(gctx, &identityv1.UpsertAccountRequest{
+		ZitadelSub:  zitadelSub,
+		Email:       email,
+		DisplayName: displayName,
+		AvatarUrl:   avatarURL,
+	})
+	if err != nil {
+		slog.Debug("identity grpc UpsertAccount failed, falling back to HTTP", "err", err)
+		return UpsertAccount(ctx, zitadelSub, email, displayName, avatarURL)
+	}
+
+	return protoToIdentityMapping(resp), nil
+}
+
+// GetEntitlementsGRPC retrieves entitlements via gRPC.
+// Falls back to HTTP if gRPC client is not available.
+func GetEntitlementsGRPC(ctx context.Context, accountID int64, productID string) (Entitlements, error) {
+	client := getGRPCClient()
+	if client == nil {
+		return GetEntitlements(ctx, accountID, productID)
+	}
+
+	gctx, cancel := grpcTimeout(ctx)
+	defer cancel()
+
+	resp, err := client.GetEntitlements(gctx, &identityv1.GetEntitlementsRequest{
+		AccountId: accountID,
+		ProductId: productID,
+	})
+	if err != nil {
+		slog.Debug("identity grpc GetEntitlements failed, falling back to HTTP", "err", err)
+		return GetEntitlements(ctx, accountID, productID)
+	}
+
+	return Entitlements(resp.Entitlements), nil
+}
+
+// GetAccountOverviewGRPC retrieves the aggregated overview via gRPC.
+// Falls back to HTTP if gRPC client is not available.
+func GetAccountOverviewGRPC(ctx context.Context, accountID int64, productID string) (*AccountOverview, error) {
+	client := getGRPCClient()
+	if client == nil {
+		return GetAccountOverview(ctx, accountID, productID)
+	}
+
+	gctx, cancel := grpcTimeout(ctx)
+	defer cancel()
+
+	resp, err := client.GetAccountOverview(gctx, &identityv1.GetAccountOverviewRequest{
+		AccountId: accountID,
+		ProductId: productID,
+	})
+	if err != nil {
+		slog.Debug("identity grpc GetAccountOverview failed, falling back to HTTP", "err", err)
+		return GetAccountOverview(ctx, accountID, productID)
+	}
+
+	return protoToAccountOverview(resp), nil
+}
+
+// ReportLLMUsageGRPC sends usage report via gRPC.
+// Falls back to HTTP if gRPC client is not available.
+func ReportLLMUsageGRPC(ctx context.Context, accountID int64, amountCNY float64) {
+	client := getGRPCClient()
+	if client == nil {
+		ReportLLMUsage(ctx, accountID, amountCNY)
+		return
+	}
+
+	gctx, cancel := grpcTimeout(ctx)
+	defer cancel()
+
+	_, err := client.ReportUsage(gctx, &identityv1.ReportUsageRequest{
+		AccountId: accountID,
+		AmountCny: amountCNY,
+	})
+	if err != nil {
+		slog.Debug("identity grpc ReportUsage failed, falling back to HTTP", "err", err)
+		ReportLLMUsage(ctx, accountID, amountCNY)
+	}
+}
+
+// protoToIdentityMapping converts a proto Account to IdentityMapping.
+func protoToIdentityMapping(a *identityv1.Account) *IdentityMapping {
+	m := &IdentityMapping{
+		ID:          a.Id,
+		LurusID:     a.LurusId,
+		ZitadelSub:  a.ZitadelSub,
+		Email:       a.Email,
+		DisplayName: a.DisplayName,
+		AvatarURL:   a.AvatarUrl,
+		Status:      int16(a.Status),
+	}
+	if a.CreatedAt != nil {
+		m.CreatedAt = a.CreatedAt.AsTime()
+	}
+	return m
+}
+
+// protoToAccountOverview converts a proto AccountOverview to the local struct.
+func protoToAccountOverview(ov *identityv1.AccountOverview) *AccountOverview {
+	result := &AccountOverview{
+		TopupURL: fmt.Sprintf("https://identity.lurus.cn/wallet/topup"),
+	}
+
+	if ov.Account != nil {
+		result.Account.ID = ov.Account.Id
+		result.Account.LurusID = ov.Account.LurusId
+		result.Account.DisplayName = ov.Account.DisplayName
+		result.Account.AvatarURL = ov.Account.AvatarUrl
+	}
+
+	if ov.Vip != nil {
+		result.VIP.Level = int16(ov.Vip.Level)
+		result.VIP.LevelName = ov.Vip.LevelName
+		result.VIP.LevelEN = ov.Vip.LevelEn
+		result.VIP.Points = ov.Vip.Points
+		if ov.Vip.LevelExpiresAt != nil {
+			t := ov.Vip.LevelExpiresAt.AsTime().Format(time.RFC3339)
+			result.VIP.LevelExpiresAt = &struct {
+				Time string `json:"time"`
+			}{Time: t}
+		}
+	}
+
+	if ov.Wallet != nil {
+		result.Wallet.Balance = ov.Wallet.Balance
+		result.Wallet.Frozen = ov.Wallet.Frozen
+	}
+
+	if ov.Subscription != nil {
+		expiresAt := ""
+		if ov.Subscription.ExpiresAt != nil {
+			t := ov.Subscription.ExpiresAt.AsTime().Format(time.RFC3339)
+			expiresAt = t
+		}
+		result.Subscription = &struct {
+			ProductID string  `json:"product_id"`
+			PlanCode  string  `json:"plan_code"`
+			Status    string  `json:"status"`
+			ExpiresAt *string `json:"expires_at"`
+			AutoRenew bool    `json:"auto_renew"`
+		}{
+			ProductID: ov.Subscription.ProductId,
+			PlanCode:  ov.Subscription.PlanCode,
+			Status:    ov.Subscription.Status,
+			AutoRenew: ov.Subscription.AutoRenew,
+		}
+		if expiresAt != "" {
+			result.Subscription.ExpiresAt = &expiresAt
+		}
+	}
+
+	return result
+}

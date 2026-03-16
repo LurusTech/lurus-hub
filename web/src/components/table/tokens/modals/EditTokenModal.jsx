@@ -153,7 +153,9 @@ const EditTokenModal = (props) => {
 
   const loadToken = async () => {
     setLoading(true);
-    const tokenUrl = isV2Mode() ? v2Url(`/tokens/${props.editingToken.id}`) : `/api/token/${props.editingToken.id}`;
+    const tokenUrl = isV2Mode()
+      ? v2Url(`/tokens/${props.editingToken.id}`)
+      : `/api/token/${props.editingToken.id}`;
     let res = await API.get(tokenUrl);
     const { success, message, data } = res.data;
     if (success) {
@@ -224,8 +226,12 @@ const EditTokenModal = (props) => {
       }
       localInputs.model_limits = localInputs.model_limits.join(',');
       localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
-      const updateUrl = isV2Mode() ? v2Url(`/tokens/${props.editingToken.id}`) : '/api/token/';
-      const updateBody = isV2Mode() ? localInputs : { ...localInputs, id: parseInt(props.editingToken.id) };
+      const updateUrl = isV2Mode()
+        ? v2Url(`/tokens/${props.editingToken.id}`)
+        : '/api/token/';
+      const updateBody = isV2Mode()
+        ? localInputs
+        : { ...localInputs, id: parseInt(props.editingToken.id) };
       let res = await API.put(updateUrl, updateBody);
       const { success, message } = res.data;
       if (success) {
@@ -381,7 +387,12 @@ const EditTokenModal = (props) => {
                       />
                     )}
                   </Col>
-                  <Col span={24} style={{ display: values.group === 'auto' ? 'block' : 'none' }}>
+                  <Col
+                    span={24}
+                    style={{
+                      display: values.group === 'auto' ? 'block' : 'none',
+                    }}
+                  >
                     <Form.Switch
                       field='cross_group_retry'
                       label={t('跨分组重试')}
@@ -564,7 +575,9 @@ const EditTokenModal = (props) => {
                       placeholder={t('允许的IP，一行一个，不填写则不限制')}
                       autosize
                       rows={1}
-                      extraText={t('请勿过度信任此功能，IP可能被伪造，请配合nginx和cdn等网关使用')}
+                      extraText={t(
+                        '请勿过度信任此功能，IP可能被伪造，请配合nginx和cdn等网关使用',
+                      )}
                       showClear
                       style={{ width: '100%' }}
                     />

@@ -44,7 +44,8 @@ const ZitadelCallback = () => {
         navigate('/console');
       } catch (err) {
         if (cancelled) return;
-        const msg = err?.response?.data?.message || err.message || t('登录失败');
+        const msg =
+          err?.response?.data?.message || err.message || t('登录失败');
         setError(msg);
         showError(msg);
         setTimeout(() => navigate('/login'), 3000);

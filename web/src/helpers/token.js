@@ -26,7 +26,9 @@ import { isV2Mode, v2Url } from './apiMode';
  */
 export async function fetchTokenKeys() {
   try {
-    const url = isV2Mode() ? v2Url('/tokens?p=1&size=10') : '/api/token/?p=1&size=10';
+    const url = isV2Mode()
+      ? v2Url('/tokens?p=1&size=10')
+      : '/api/token/?p=1&size=10';
     const response = await API.get(url);
     const { success, data } = response.data;
     if (!success) throw new Error('Failed to fetch token keys');

@@ -153,7 +153,11 @@ const renderQuotaUsage = (text, record, t) => {
   const dailyRemain = dailyQuota > 0 ? Math.max(0, dailyQuota - dailyUsed) : 0;
   const dailyPercent = dailyQuota > 0 ? (dailyRemain / dailyQuota) * 100 : 100;
   const hasDailyQuota = dailyQuota > 0;
-  const isUsingFallback = record.fallback_group && record.group === record.fallback_group && record.base_group && record.group !== record.base_group;
+  const isUsingFallback =
+    record.fallback_group &&
+    record.group === record.fallback_group &&
+    record.base_group &&
+    record.group !== record.base_group;
 
   const popoverContent = (
     <div className='text-xs p-2'>
@@ -173,19 +177,26 @@ const renderQuotaUsage = (text, record, t) => {
             {t('今日已用')}: {renderQuota(dailyUsed)}
           </Paragraph>
           <Paragraph copyable={{ content: renderQuota(dailyRemain) }}>
-            {t('今日剩余')}: {renderQuota(dailyRemain)} ({dailyPercent.toFixed(0)}%)
+            {t('今日剩余')}: {renderQuota(dailyRemain)} (
+            {dailyPercent.toFixed(0)}%)
           </Paragraph>
           <Paragraph copyable={{ content: renderQuota(dailyQuota) }}>
             {t('每日限额')}: {renderQuota(dailyQuota)}
           </Paragraph>
           {record.base_group && (
-            <div>{t('基础分组')}: {record.base_group}</div>
+            <div>
+              {t('基础分组')}: {record.base_group}
+            </div>
           )}
           {record.fallback_group && (
-            <div>{t('降级分组')}: {record.fallback_group}</div>
+            <div>
+              {t('降级分组')}: {record.fallback_group}
+            </div>
           )}
           {isUsingFallback && (
-            <Tag color='orange' size='small' className='mt-1'>{t('降级中')}</Tag>
+            <Tag color='orange' size='small' className='mt-1'>
+              {t('降级中')}
+            </Tag>
           )}
         </>
       )}

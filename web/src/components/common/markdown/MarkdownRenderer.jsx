@@ -405,16 +405,10 @@ function _MarkdownContent(props) {
           // If the paragraph contains only an image, render without <p> wrapper
           // to avoid HTML nesting issues and ensure proper image display
           const childArray = React.Children.toArray(children);
-          if (
-            childArray.length === 1 &&
-            childArray[0]?.type === 'img'
-          ) {
+          if (childArray.length === 1 && childArray[0]?.type === 'img') {
             return <>{children}</>;
           }
-          if (
-            childArray.length === 1 &&
-            childArray[0]?.props?.src
-          ) {
+          if (childArray.length === 1 && childArray[0]?.props?.src) {
             return <>{children}</>;
           }
           return (

@@ -1,11 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Button,
-  Card,
-  Form,
-  Modal,
-  Spin,
-} from '@douyinfe/semi-ui';
+import { Button, Card, Form, Modal, Spin } from '@douyinfe/semi-ui';
 import { API, showError, showSuccess, toBoolean } from '../../helpers';
 import { useTranslation } from 'react-i18next';
 import SettingsAnnouncements from '../../pages/Setting/Dashboard/SettingsAnnouncements';
@@ -74,7 +68,10 @@ const ContentSettingPage = () => {
   const submitUserAgreement = async () => {
     try {
       setLoadingInput((s) => ({ ...s, [LEGAL_USER_AGREEMENT_KEY]: true }));
-      await updateOption(LEGAL_USER_AGREEMENT_KEY, inputs[LEGAL_USER_AGREEMENT_KEY]);
+      await updateOption(
+        LEGAL_USER_AGREEMENT_KEY,
+        inputs[LEGAL_USER_AGREEMENT_KEY],
+      );
       showSuccess(t('用户协议已更新'));
     } catch (error) {
       showError(t('用户协议更新失败'));
@@ -86,7 +83,10 @@ const ContentSettingPage = () => {
   const submitPrivacyPolicy = async () => {
     try {
       setLoadingInput((s) => ({ ...s, [LEGAL_PRIVACY_POLICY_KEY]: true }));
-      await updateOption(LEGAL_PRIVACY_POLICY_KEY, inputs[LEGAL_PRIVACY_POLICY_KEY]);
+      await updateOption(
+        LEGAL_PRIVACY_POLICY_KEY,
+        inputs[LEGAL_PRIVACY_POLICY_KEY],
+      );
       showSuccess(t('隐私政策已更新'));
     } catch (error) {
       showError(t('隐私政策更新失败'));
@@ -154,15 +154,15 @@ const ContentSettingPage = () => {
   };
 
   return (
-    <Spin spinning={loading} size="large">
+    <Spin spinning={loading} size='large'>
       <Modal
-        title="配置迁移确认"
+        title='配置迁移确认'
         visible={showMigrateModal}
         onOk={handleMigrate}
         onCancel={() => setShowMigrateModal(false)}
         confirmLoading={loading}
-        okText="确认迁移"
-        cancelText="取消"
+        okText='确认迁移'
+        cancelText='取消'
       >
         <p>检测到旧版本的配置数据，是否要迁移到新的配置格式？</p>
         <p style={{ color: '#f57c00', marginTop: '10px' }}>
@@ -172,16 +172,13 @@ const ContentSettingPage = () => {
       </Modal>
 
       {/* Legal & notice content */}
-      <Form
-        values={inputs}
-        getFormApi={(api) => (formApiRef.current = api)}
-      >
+      <Form values={inputs} getFormApi={(api) => (formApiRef.current = api)}>
         <Card style={{ marginTop: '10px' }}>
           <Form.Section text={t('通用设置')}>
             <Form.TextArea
               label={t('公告')}
               placeholder={t('在此输入新的公告内容，支持 Markdown & HTML 代码')}
-              field="Notice"
+              field='Notice'
               onChange={handleInputChange}
               style={{ fontFamily: 'JetBrains Mono, Consolas' }}
               autosize={{ minRows: 6, maxRows: 12 }}
@@ -196,7 +193,9 @@ const ContentSettingPage = () => {
               onChange={handleInputChange}
               style={{ fontFamily: 'JetBrains Mono, Consolas' }}
               autosize={{ minRows: 6, maxRows: 12 }}
-              helpText={t('填写用户协议内容后，用户注册时将被要求勾选已阅读用户协议')}
+              helpText={t(
+                '填写用户协议内容后，用户注册时将被要求勾选已阅读用户协议',
+              )}
             />
             <Button
               onClick={submitUserAgreement}
@@ -211,7 +210,9 @@ const ContentSettingPage = () => {
               onChange={handleInputChange}
               style={{ fontFamily: 'JetBrains Mono, Consolas' }}
               autosize={{ minRows: 6, maxRows: 12 }}
-              helpText={t('填写隐私政策内容后，用户注册时将被要求勾选已阅读隐私政策')}
+              helpText={t(
+                '填写隐私政策内容后，用户注册时将被要求勾选已阅读隐私政策',
+              )}
             />
             <Button
               onClick={submitPrivacyPolicy}

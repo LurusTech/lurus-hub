@@ -39,7 +39,8 @@ export function useUsageGauge(userState, trendData) {
     if (balanceTrend && balanceTrend.length >= 2) {
       const recentPoints = balanceTrend.slice(-7);
       if (recentPoints.length >= 2) {
-        const totalDrop = recentPoints[0] - recentPoints[recentPoints.length - 1];
+        const totalDrop =
+          recentPoints[0] - recentPoints[recentPoints.length - 1];
         dailyRate = Math.max(0, totalDrop / (recentPoints.length - 1));
       }
     }

@@ -209,7 +209,7 @@ const BrandingSettingPage = () => {
                       {statusState?.status?.version || t('未知')}
                     </Text>
                     <Button
-                      type="primary"
+                      type='primary'
                       onClick={checkUpdate}
                       loading={loadingInput['CheckUpdate']}
                     >
@@ -230,16 +230,13 @@ const BrandingSettingPage = () => {
         </Form>
 
         {/* Branding / personalization */}
-        <Form
-          values={inputs}
-          getFormApi={(api) => (formApiRef.current = api)}
-        >
+        <Form values={inputs} getFormApi={(api) => (formApiRef.current = api)}>
           <Card>
             <Form.Section text={t('个性化设置')}>
               <Form.Input
                 label={t('系统名称')}
                 placeholder={t('在此输入系统名称')}
-                field="SystemName"
+                field='SystemName'
                 onChange={handleInputChange}
               />
               <Button
@@ -251,7 +248,7 @@ const BrandingSettingPage = () => {
               <Form.Input
                 label={t('Logo 图片地址')}
                 placeholder={t('在此输入 Logo 图片地址')}
-                field="Logo"
+                field='Logo'
                 onChange={handleInputChange}
               />
               <Button onClick={submitLogo} loading={loadingInput['Logo']}>
@@ -262,7 +259,7 @@ const BrandingSettingPage = () => {
                 placeholder={t(
                   '在此输入首页内容，支持 Markdown & HTML 代码，设置后首页的状态信息将不再显示。如果输入的是一个链接，则会使用该链接作为 iframe 的 src 属性，这允许你设置任意网页作为首页',
                 )}
-                field="HomePageContent"
+                field='HomePageContent'
                 onChange={handleInputChange}
                 style={{ fontFamily: 'JetBrains Mono, Consolas' }}
                 autosize={{ minRows: 6, maxRows: 12 }}
@@ -278,7 +275,7 @@ const BrandingSettingPage = () => {
                 placeholder={t(
                   '在此输入新的关于内容，支持 Markdown & HTML 代码。如果输入的是一个链接，则会使用该链接作为 iframe 的 src 属性，这允许你设置任意网页作为关于页面',
                 )}
-                field="About"
+                field='About'
                 onChange={handleInputChange}
                 style={{ fontFamily: 'JetBrains Mono, Consolas' }}
                 autosize={{ minRows: 6, maxRows: 12 }}
@@ -288,7 +285,7 @@ const BrandingSettingPage = () => {
               </Button>
               <Banner
                 fullMode={false}
-                type="info"
+                type='info'
                 description={t(
                   '移除 One API 的版权标识必须首先获得授权，项目维护需要花费大量精力，如果本项目对你有意义，请主动支持本项目',
                 )}
@@ -300,7 +297,7 @@ const BrandingSettingPage = () => {
                 placeholder={t(
                   '在此输入新的页脚，留空则使用默认页脚，支持 HTML 代码',
                 )}
-                field="Footer"
+                field='Footer'
                 onChange={handleInputChange}
               />
               <Button onClick={submitFooter} loading={loadingInput['Footer']}>
@@ -317,8 +314,8 @@ const BrandingSettingPage = () => {
         onCancel={() => setShowUpdateModal(false)}
         footer={[
           <Button
-            key="details"
-            type="primary"
+            key='details'
+            type='primary'
             onClick={() => {
               setShowUpdateModal(false);
               openGitHubRelease();

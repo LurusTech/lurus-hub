@@ -28,17 +28,26 @@
     {
       "icon": "shield",
       "title": { "zh": "多供应商管理", "en": "Multi-Provider Management" },
-      "description": { "zh": "统一管理 Claude、Codex、Gemini 等 AI 供应商", "en": "Unified management of Claude, Codex, Gemini providers" }
+      "description": {
+        "zh": "统一管理 Claude、Codex、Gemini 等 AI 供应商",
+        "en": "Unified management of Claude, Codex, Gemini providers"
+      }
     },
     {
       "icon": "chart",
       "title": { "zh": "运营分析", "en": "Operations Analytics" },
-      "description": { "zh": "成本、缓存、响应时间实时监控", "en": "Real-time cost, cache, and latency monitoring" }
+      "description": {
+        "zh": "成本、缓存、响应时间实时监控",
+        "en": "Real-time cost, cache, and latency monitoring"
+      }
     },
     {
       "icon": "zap",
       "title": { "zh": "智能缓存", "en": "Smart Caching" },
-      "description": { "zh": "节省高达 88% 的 API 成本", "en": "Save up to 88% on API costs" }
+      "description": {
+        "zh": "节省高达 88% 的 API 成本",
+        "en": "Save up to 88% on API costs"
+      }
     }
   ]
 }

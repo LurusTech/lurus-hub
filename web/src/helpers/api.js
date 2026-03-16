@@ -241,9 +241,7 @@ async function prepareOAuthState(options = {}) {
   if (shouldLogout) {
     try {
       await API.get('/api/user/logout', { skipErrorHandler: true });
-    } catch (err) {
-
-    }
+    } catch (err) {}
     localStorage.removeItem('user');
     updateAPI();
   }

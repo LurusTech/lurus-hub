@@ -13,7 +13,7 @@ const UIModulesSettingPage = () => {
   const { inputs, loading, refresh } = useSettingsOptions(INITIAL_STATE);
 
   return (
-    <Spin spinning={loading} size="large">
+    <Spin spinning={loading} size='large'>
       <div style={{ marginTop: '10px' }}>
         <SettingsHeaderNavModules options={inputs} refresh={refresh} />
       </div>

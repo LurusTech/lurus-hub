@@ -93,7 +93,9 @@ export const useTokensData = (openFluentNotification) => {
   // Load tokens function
   const loadTokens = async (page = 1, size = pageSize) => {
     setLoading(true);
-    const listUrl = isV2Mode() ? v2Url(`/tokens?p=${page}&size=${size}`) : `/api/token/?p=${page}&size=${size}`;
+    const listUrl = isV2Mode()
+      ? v2Url(`/tokens?p=${page}&size=${size}`)
+      : `/api/token/?p=${page}&size=${size}`;
     const res = await API.get(listUrl);
     const { success, message, data } = res.data;
     if (success) {
@@ -164,15 +166,23 @@ export const useTokensData = (openFluentNotification) => {
     let res;
     switch (action) {
       case 'delete':
-        res = await API.delete(isV2Mode() ? v2Url(`/tokens/${id}`) : `/api/token/${id}/`);
+        res = await API.delete(
+          isV2Mode() ? v2Url(`/tokens/${id}`) : `/api/token/${id}/`,
+        );
         break;
       case 'enable':
         data.status = 1;
-        res = await API.put(isV2Mode() ? v2Url(`/tokens/${id}`) : '/api/token/?status_only=true', data);
+        res = await API.put(
+          isV2Mode() ? v2Url(`/tokens/${id}`) : '/api/token/?status_only=true',
+          data,
+        );
         break;
       case 'disable':
         data.status = 2;
-        res = await API.put(isV2Mode() ? v2Url(`/tokens/${id}`) : '/api/token/?status_only=true', data);
+        res = await API.put(
+          isV2Mode() ? v2Url(`/tokens/${id}`) : '/api/token/?status_only=true',
+          data,
+        );
         break;
     }
     const { success, message } = res.data;

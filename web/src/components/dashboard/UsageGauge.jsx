@@ -24,7 +24,11 @@ const CARD_STYLE = {
   headerLine: true,
 };
 
-export default function UsageGauge({ gauge, loading, CARD_PROPS = CARD_STYLE }) {
+export default function UsageGauge({
+  gauge,
+  loading,
+  CARD_PROPS = CARD_STYLE,
+}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
 
@@ -58,7 +62,8 @@ export default function UsageGauge({ gauge, loading, CARD_PROPS = CARD_STYLE }) 
           <div>
             <div className='flex justify-between items-center mb-1'>
               <span className='text-sm text-gray-500'>
-                {t('已使用')} {renderQuota(gauge.usedQuota)} / {renderQuota(gauge.totalQuota)}
+                {t('已使用')} {renderQuota(gauge.usedQuota)} /{' '}
+                {renderQuota(gauge.totalQuota)}
               </span>
               <span
                 className='text-sm font-mono font-semibold'

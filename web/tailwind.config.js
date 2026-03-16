@@ -34,22 +34,31 @@ export default {
         'semi-color-primary-hover': 'var(--semi-color-primary-hover)',
         'semi-color-primary-active': 'var(--semi-color-primary-active)',
         'semi-color-primary-disabled': 'var(--semi-color-primary-disabled)',
-        'semi-color-primary-light-default': 'var(--semi-color-primary-light-default)',
-        'semi-color-primary-light-hover': 'var(--semi-color-primary-light-hover)',
-        'semi-color-primary-light-active': 'var(--semi-color-primary-light-active)',
+        'semi-color-primary-light-default':
+          'var(--semi-color-primary-light-default)',
+        'semi-color-primary-light-hover':
+          'var(--semi-color-primary-light-hover)',
+        'semi-color-primary-light-active':
+          'var(--semi-color-primary-light-active)',
         'semi-color-secondary': 'var(--semi-color-secondary)',
         'semi-color-secondary-hover': 'var(--semi-color-secondary-hover)',
         'semi-color-secondary-active': 'var(--semi-color-secondary-active)',
         'semi-color-secondary-disabled': 'var(--semi-color-secondary-disabled)',
-        'semi-color-secondary-light-default': 'var(--semi-color-secondary-light-default)',
-        'semi-color-secondary-light-hover': 'var(--semi-color-secondary-light-hover)',
-        'semi-color-secondary-light-active': 'var(--semi-color-secondary-light-active)',
+        'semi-color-secondary-light-default':
+          'var(--semi-color-secondary-light-default)',
+        'semi-color-secondary-light-hover':
+          'var(--semi-color-secondary-light-hover)',
+        'semi-color-secondary-light-active':
+          'var(--semi-color-secondary-light-active)',
         'semi-color-tertiary': 'var(--semi-color-tertiary)',
         'semi-color-tertiary-hover': 'var(--semi-color-tertiary-hover)',
         'semi-color-tertiary-active': 'var(--semi-color-tertiary-active)',
-        'semi-color-tertiary-light-default': 'var(--semi-color-tertiary-light-default)',
-        'semi-color-tertiary-light-hover': 'var(--semi-color-tertiary-light-hover)',
-        'semi-color-tertiary-light-active': 'var(--semi-color-tertiary-light-active)',
+        'semi-color-tertiary-light-default':
+          'var(--semi-color-tertiary-light-default)',
+        'semi-color-tertiary-light-hover':
+          'var(--semi-color-tertiary-light-hover)',
+        'semi-color-tertiary-light-active':
+          'var(--semi-color-tertiary-light-active)',
         'semi-color-default': 'var(--semi-color-default)',
         'semi-color-default-hover': 'var(--semi-color-default-hover)',
         'semi-color-default-active': 'var(--semi-color-default-active)',
@@ -64,21 +73,29 @@ export default {
         'semi-color-success-hover': 'var(--semi-color-success-hover)',
         'semi-color-success-active': 'var(--semi-color-success-active)',
         'semi-color-success-disabled': 'var(--semi-color-success-disabled)',
-        'semi-color-success-light-default': 'var(--semi-color-success-light-default)',
-        'semi-color-success-light-hover': 'var(--semi-color-success-light-hover)',
-        'semi-color-success-light-active': 'var(--semi-color-success-light-active)',
+        'semi-color-success-light-default':
+          'var(--semi-color-success-light-default)',
+        'semi-color-success-light-hover':
+          'var(--semi-color-success-light-hover)',
+        'semi-color-success-light-active':
+          'var(--semi-color-success-light-active)',
         'semi-color-danger': 'var(--semi-color-danger)',
         'semi-color-danger-hover': 'var(--semi-color-danger-hover)',
         'semi-color-danger-active': 'var(--semi-color-danger-active)',
-        'semi-color-danger-light-default': 'var(--semi-color-danger-light-default)',
+        'semi-color-danger-light-default':
+          'var(--semi-color-danger-light-default)',
         'semi-color-danger-light-hover': 'var(--semi-color-danger-light-hover)',
-        'semi-color-danger-light-active': 'var(--semi-color-danger-light-active)',
+        'semi-color-danger-light-active':
+          'var(--semi-color-danger-light-active)',
         'semi-color-warning': 'var(--semi-color-warning)',
         'semi-color-warning-hover': 'var(--semi-color-warning-hover)',
         'semi-color-warning-active': 'var(--semi-color-warning-active)',
-        'semi-color-warning-light-default': 'var(--semi-color-warning-light-default)',
-        'semi-color-warning-light-hover': 'var(--semi-color-warning-light-hover)',
-        'semi-color-warning-light-active': 'var(--semi-color-warning-light-active)',
+        'semi-color-warning-light-default':
+          'var(--semi-color-warning-light-default)',
+        'semi-color-warning-light-hover':
+          'var(--semi-color-warning-light-hover)',
+        'semi-color-warning-light-active':
+          'var(--semi-color-warning-light-active)',
         'semi-color-focus-border': 'var(--semi-color-focus-border)',
         'semi-color-disabled-text': 'var(--semi-color-disabled-text)',
         'semi-color-disabled-border': 'var(--semi-color-disabled-border)',
@@ -128,7 +145,8 @@ export default {
         'semi-color-data-19': 'var(--semi-color-data-19)',
       },
       borderRadius: {
-        'semi-border-radius-extra-small': 'var(--semi-border-radius-extra-small)',
+        'semi-border-radius-extra-small':
+          'var(--semi-border-radius-extra-small)',
         'semi-border-radius-small': 'var(--semi-border-radius-small)',
         'semi-border-radius-medium': 'var(--semi-border-radius-medium)',
         'semi-border-radius-large': 'var(--semi-border-radius-large)',

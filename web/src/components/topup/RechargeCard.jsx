@@ -26,12 +26,7 @@ import {
   Form,
   Space,
 } from '@douyinfe/semi-ui';
-import {
-  Wallet,
-  BarChart2,
-  TrendingUp,
-  Coins,
-} from 'lucide-react';
+import { Wallet, BarChart2, TrendingUp, Coins } from 'lucide-react';
 import { IconGift } from '@douyinfe/semi-icons';
 
 const { Text } = Typography;

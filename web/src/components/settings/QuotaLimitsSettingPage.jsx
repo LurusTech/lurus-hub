@@ -20,7 +20,7 @@ const QuotaLimitsSettingPage = () => {
   const { inputs, loading, refresh } = useSettingsOptions(INITIAL_STATE);
 
   return (
-    <Spin spinning={loading} size="large">
+    <Spin spinning={loading} size='large'>
       <Card style={{ marginTop: '10px' }}>
         <SettingsCreditLimit options={inputs} refresh={refresh} />
       </Card>

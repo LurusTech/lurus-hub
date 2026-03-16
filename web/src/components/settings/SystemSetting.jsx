@@ -485,10 +485,14 @@ const SystemSetting = () => {
     const options = [];
 
     if (originInputs['discord.client_id'] !== inputs['discord.client_id']) {
-      options.push({ key: 'discord.client_id', value: inputs['discord.client_id'] });
+      options.push({
+        key: 'discord.client_id',
+        value: inputs['discord.client_id'],
+      });
     }
     if (
-      originInputs['discord.client_secret'] !== inputs['discord.client_secret'] &&
+      originInputs['discord.client_secret'] !==
+        inputs['discord.client_secret'] &&
       inputs['discord.client_secret'] !== ''
     ) {
       options.push({
@@ -749,8 +753,8 @@ const SystemSetting = () => {
                       rel='noreferrer'
                     >
                       lurus-api-worker
-                    </a>
-                    {' '}{t('或其兼容lurus-api-worker格式的其他版本')}
+                    </a>{' '}
+                    {t('或其兼容lurus-api-worker格式的其他版本')}
                   </Text>
                   <Row
                     gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
@@ -1035,9 +1039,7 @@ const SystemSetting = () => {
                       <Form.Checkbox
                         field='SMSEnabled'
                         noLabel
-                        onChange={(e) =>
-                          handleCheckboxChange('SMSEnabled', e)
-                        }
+                        onChange={(e) => handleCheckboxChange('SMSEnabled', e)}
                       >
                         {t('允许通过手机短信进行登录')}
                       </Form.Checkbox>

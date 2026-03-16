@@ -76,14 +76,14 @@ const StatsCards = ({
                     </div>
                   </div>
                   {(loading ||
-                      (item.trendData && item.trendData.length > 0)) && (
-                      <div className='w-24 h-10'>
-                        <VChart
-                          spec={getTrendSpec(item.trendData, item.trendColor)}
-                          option={CHART_CONFIG}
-                        />
-                      </div>
-                    )}
+                    (item.trendData && item.trendData.length > 0)) && (
+                    <div className='w-24 h-10'>
+                      <VChart
+                        spec={getTrendSpec(item.trendData, item.trendColor)}
+                        option={CHART_CONFIG}
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

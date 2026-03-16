@@ -3,11 +3,7 @@
   "releaseDate": "2026-01-05",
   "channel": "stable",
   "changelog": {
-    "zh": [
-      "新增运营分析面板",
-      "优化缓存策略",
-      "修复若干已知问题"
-    ],
+    "zh": ["新增运营分析面板", "优化缓存策略", "修复若干已知问题"],
     "en": [
       "Added operations analytics panel",
       "Optimized caching strategy",

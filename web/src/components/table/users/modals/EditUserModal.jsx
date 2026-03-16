@@ -100,7 +100,7 @@ const EditUserModal = (props) => {
     }
   };
 
-const fetchDailyQuotaStatus = async () => {
+  const fetchDailyQuotaStatus = async () => {
     if (!userId) return;
     setDailyQuotaLoading(true);
     try {
@@ -361,7 +361,11 @@ const fetchDailyQuotaStatus = async () => {
                 {userId && (
                   <Card className='!rounded-2xl shadow-sm border-0'>
                     <div className='flex items-center mb-2'>
-                      <Avatar size='small' color='orange' className='mr-2 shadow-md'>
+                      <Avatar
+                        size='small'
+                        color='orange'
+                        className='mr-2 shadow-md'
+                      >
                         <IconClock size={16} />
                       </Avatar>
                       <div>
@@ -437,7 +441,8 @@ const fetchDailyQuotaStatus = async () => {
                         </div>
                         <div className='text-sm'>
                           <div>
-                            {t('已用')}: {renderQuota(dailyQuotaStatus.daily_used)} /{' '}
+                            {t('已用')}:{' '}
+                            {renderQuota(dailyQuotaStatus.daily_used)} /{' '}
                             {dailyQuotaStatus.daily_quota > 0
                               ? renderQuota(dailyQuotaStatus.daily_quota)
                               : t('无限制')}
@@ -446,7 +451,9 @@ const fetchDailyQuotaStatus = async () => {
                             {t('当前分组')}:{' '}
                             <Tag
                               color={
-                                dailyQuotaStatus.is_using_fallback ? 'orange' : 'green'
+                                dailyQuotaStatus.is_using_fallback
+                                  ? 'orange'
+                                  : 'green'
                               }
                             >
                               {dailyQuotaStatus.current_group || '-'}

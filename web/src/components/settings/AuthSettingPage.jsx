@@ -234,10 +234,16 @@ const AuthSettingPage = () => {
     if (originInputs['SMTPFrom'] !== inputs.SMTPFrom) {
       options.push({ key: 'SMTPFrom', value: inputs.SMTPFrom });
     }
-    if (originInputs['SMTPPort'] !== inputs.SMTPPort && inputs.SMTPPort !== '') {
+    if (
+      originInputs['SMTPPort'] !== inputs.SMTPPort &&
+      inputs.SMTPPort !== ''
+    ) {
       options.push({ key: 'SMTPPort', value: inputs.SMTPPort });
     }
-    if (originInputs['SMTPToken'] !== inputs.SMTPToken && inputs.SMTPToken !== '') {
+    if (
+      originInputs['SMTPToken'] !== inputs.SMTPToken &&
+      inputs.SMTPToken !== ''
+    ) {
       options.push({ key: 'SMTPToken', value: inputs.SMTPToken });
     }
     if (options.length > 0) {
@@ -282,14 +288,23 @@ const AuthSettingPage = () => {
         value: removeTrailingSlash(inputs.WeChatServerAddress),
       });
     }
-    if (originInputs['WeChatAccountQRCodeImageURL'] !== inputs.WeChatAccountQRCodeImageURL) {
+    if (
+      originInputs['WeChatAccountQRCodeImageURL'] !==
+      inputs.WeChatAccountQRCodeImageURL
+    ) {
       options.push({
         key: 'WeChatAccountQRCodeImageURL',
         value: inputs.WeChatAccountQRCodeImageURL,
       });
     }
-    if (originInputs['WeChatServerToken'] !== inputs.WeChatServerToken && inputs.WeChatServerToken !== '') {
-      options.push({ key: 'WeChatServerToken', value: inputs.WeChatServerToken });
+    if (
+      originInputs['WeChatServerToken'] !== inputs.WeChatServerToken &&
+      inputs.WeChatServerToken !== ''
+    ) {
+      options.push({
+        key: 'WeChatServerToken',
+        value: inputs.WeChatServerToken,
+      });
     }
     if (options.length > 0) {
       await updateOptions(options);
@@ -301,8 +316,14 @@ const AuthSettingPage = () => {
     if (originInputs['GitHubClientId'] !== inputs.GitHubClientId) {
       options.push({ key: 'GitHubClientId', value: inputs.GitHubClientId });
     }
-    if (originInputs['GitHubClientSecret'] !== inputs.GitHubClientSecret && inputs.GitHubClientSecret !== '') {
-      options.push({ key: 'GitHubClientSecret', value: inputs.GitHubClientSecret });
+    if (
+      originInputs['GitHubClientSecret'] !== inputs.GitHubClientSecret &&
+      inputs.GitHubClientSecret !== ''
+    ) {
+      options.push({
+        key: 'GitHubClientSecret',
+        value: inputs.GitHubClientSecret,
+      });
     }
     if (options.length > 0) {
       await updateOptions(options);
@@ -312,10 +333,20 @@ const AuthSettingPage = () => {
   const submitDiscordOAuth = async () => {
     const options = [];
     if (originInputs['discord.client_id'] !== inputs['discord.client_id']) {
-      options.push({ key: 'discord.client_id', value: inputs['discord.client_id'] });
+      options.push({
+        key: 'discord.client_id',
+        value: inputs['discord.client_id'],
+      });
     }
-    if (originInputs['discord.client_secret'] !== inputs['discord.client_secret'] && inputs['discord.client_secret'] !== '') {
-      options.push({ key: 'discord.client_secret', value: inputs['discord.client_secret'] });
+    if (
+      originInputs['discord.client_secret'] !==
+        inputs['discord.client_secret'] &&
+      inputs['discord.client_secret'] !== ''
+    ) {
+      options.push({
+        key: 'discord.client_secret',
+        value: inputs['discord.client_secret'],
+      });
     }
     if (options.length > 0) {
       await updateOptions(options);
@@ -333,34 +364,61 @@ const AuthSettingPage = () => {
       }
       try {
         const res = await axios.create().get(inputs['oidc.well_known']);
-        inputs['oidc.authorization_endpoint'] = res.data['authorization_endpoint'];
+        inputs['oidc.authorization_endpoint'] =
+          res.data['authorization_endpoint'];
         inputs['oidc.token_endpoint'] = res.data['token_endpoint'];
         inputs['oidc.user_info_endpoint'] = res.data['userinfo_endpoint'];
         showSuccess(t('获取 OIDC 配置成功！'));
       } catch (err) {
         console.error(err);
-        showError(t('获取 OIDC 配置失败，请检查网络状况和 Well-Known URL 是否正确'));
+        showError(
+          t('获取 OIDC 配置失败，请检查网络状况和 Well-Known URL 是否正确'),
+        );
         return;
       }
     }
     const options = [];
     if (originInputs['oidc.well_known'] !== inputs['oidc.well_known']) {
-      options.push({ key: 'oidc.well_known', value: inputs['oidc.well_known'] });
+      options.push({
+        key: 'oidc.well_known',
+        value: inputs['oidc.well_known'],
+      });
     }
     if (originInputs['oidc.client_id'] !== inputs['oidc.client_id']) {
       options.push({ key: 'oidc.client_id', value: inputs['oidc.client_id'] });
     }
-    if (originInputs['oidc.client_secret'] !== inputs['oidc.client_secret'] && inputs['oidc.client_secret'] !== '') {
-      options.push({ key: 'oidc.client_secret', value: inputs['oidc.client_secret'] });
+    if (
+      originInputs['oidc.client_secret'] !== inputs['oidc.client_secret'] &&
+      inputs['oidc.client_secret'] !== ''
+    ) {
+      options.push({
+        key: 'oidc.client_secret',
+        value: inputs['oidc.client_secret'],
+      });
     }
-    if (originInputs['oidc.authorization_endpoint'] !== inputs['oidc.authorization_endpoint']) {
-      options.push({ key: 'oidc.authorization_endpoint', value: inputs['oidc.authorization_endpoint'] });
+    if (
+      originInputs['oidc.authorization_endpoint'] !==
+      inputs['oidc.authorization_endpoint']
+    ) {
+      options.push({
+        key: 'oidc.authorization_endpoint',
+        value: inputs['oidc.authorization_endpoint'],
+      });
     }
     if (originInputs['oidc.token_endpoint'] !== inputs['oidc.token_endpoint']) {
-      options.push({ key: 'oidc.token_endpoint', value: inputs['oidc.token_endpoint'] });
+      options.push({
+        key: 'oidc.token_endpoint',
+        value: inputs['oidc.token_endpoint'],
+      });
     }
-    if (originInputs['oidc.user_info_endpoint'] !== inputs['oidc.user_info_endpoint']) {
-      options.push({ key: 'oidc.user_info_endpoint', value: inputs['oidc.user_info_endpoint'] });
+    if (
+      originInputs['oidc.user_info_endpoint'] !==
+      inputs['oidc.user_info_endpoint']
+    ) {
+      options.push({
+        key: 'oidc.user_info_endpoint',
+        value: inputs['oidc.user_info_endpoint'],
+      });
     }
     if (options.length > 0) {
       await updateOptions(options);
@@ -380,8 +438,14 @@ const AuthSettingPage = () => {
     if (originInputs['TurnstileSiteKey'] !== inputs.TurnstileSiteKey) {
       options.push({ key: 'TurnstileSiteKey', value: inputs.TurnstileSiteKey });
     }
-    if (originInputs['TurnstileSecretKey'] !== inputs.TurnstileSecretKey && inputs.TurnstileSecretKey !== '') {
-      options.push({ key: 'TurnstileSecretKey', value: inputs.TurnstileSecretKey });
+    if (
+      originInputs['TurnstileSecretKey'] !== inputs.TurnstileSecretKey &&
+      inputs.TurnstileSecretKey !== ''
+    ) {
+      options.push({
+        key: 'TurnstileSecretKey',
+        value: inputs.TurnstileSecretKey,
+      });
     }
     if (options.length > 0) {
       await updateOptions(options);
@@ -393,11 +457,23 @@ const AuthSettingPage = () => {
     if (originInputs['LinuxDOClientId'] !== inputs.LinuxDOClientId) {
       options.push({ key: 'LinuxDOClientId', value: inputs.LinuxDOClientId });
     }
-    if (originInputs['LinuxDOClientSecret'] !== inputs.LinuxDOClientSecret && inputs.LinuxDOClientSecret !== '') {
-      options.push({ key: 'LinuxDOClientSecret', value: inputs.LinuxDOClientSecret });
+    if (
+      originInputs['LinuxDOClientSecret'] !== inputs.LinuxDOClientSecret &&
+      inputs.LinuxDOClientSecret !== ''
+    ) {
+      options.push({
+        key: 'LinuxDOClientSecret',
+        value: inputs.LinuxDOClientSecret,
+      });
     }
-    if (originInputs['LinuxDOMinimumTrustLevel'] !== inputs.LinuxDOMinimumTrustLevel) {
-      options.push({ key: 'LinuxDOMinimumTrustLevel', value: inputs.LinuxDOMinimumTrustLevel });
+    if (
+      originInputs['LinuxDOMinimumTrustLevel'] !==
+      inputs.LinuxDOMinimumTrustLevel
+    ) {
+      options.push({
+        key: 'LinuxDOMinimumTrustLevel',
+        value: inputs.LinuxDOMinimumTrustLevel,
+      });
     }
     if (options.length > 0) {
       await updateOptions(options);
@@ -409,7 +485,10 @@ const AuthSettingPage = () => {
     const options = [];
     options.push({
       key: 'passkey.rp_display_name',
-      value: formValues['passkey.rp_display_name'] || inputs['passkey.rp_display_name'] || '',
+      value:
+        formValues['passkey.rp_display_name'] ||
+        inputs['passkey.rp_display_name'] ||
+        '',
     });
     options.push({
       key: 'passkey.rp_id',
@@ -417,11 +496,17 @@ const AuthSettingPage = () => {
     });
     options.push({
       key: 'passkey.user_verification',
-      value: formValues['passkey.user_verification'] || inputs['passkey.user_verification'] || 'preferred',
+      value:
+        formValues['passkey.user_verification'] ||
+        inputs['passkey.user_verification'] ||
+        'preferred',
     });
     options.push({
       key: 'passkey.attachment_preference',
-      value: formValues['passkey.attachment_preference'] || inputs['passkey.attachment_preference'] || '',
+      value:
+        formValues['passkey.attachment_preference'] ||
+        inputs['passkey.attachment_preference'] ||
+        '',
     });
     options.push({
       key: 'passkey.origins',
@@ -449,13 +534,17 @@ const AuthSettingPage = () => {
             >
               <Card>
                 <Form.Section text={t('通用设置')}>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={24} lg={24} xl={24}>
                       <Form.Input
-                        field="ServerAddress"
+                        field='ServerAddress'
                         label={t('服务器地址')}
-                        placeholder="https://yourdomain.com"
-                        extraText={t('该服务器地址将影响支付回调地址以及默认首页展示的地址，请确保正确配置')}
+                        placeholder='https://yourdomain.com'
+                        extraText={t(
+                          '该服务器地址将影响支付回调地址以及默认首页展示的地址，请确保正确配置',
+                        )}
                       />
                     </Col>
                   </Row>
@@ -467,98 +556,124 @@ const AuthSettingPage = () => {
 
               <Card>
                 <Form.Section text={t('配置登录注册')}>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Checkbox
-                        field="PasswordLoginEnabled"
+                        field='PasswordLoginEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('PasswordLoginEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('PasswordLoginEnabled', e)
+                        }
                       >
                         {t('允许通过密码进行登录')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="PasswordRegisterEnabled"
+                        field='PasswordRegisterEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('PasswordRegisterEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('PasswordRegisterEnabled', e)
+                        }
                       >
                         {t('允许通过密码进行注册')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="EmailVerificationEnabled"
+                        field='EmailVerificationEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('EmailVerificationEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('EmailVerificationEnabled', e)
+                        }
                       >
                         {t('通过密码注册时需要进行邮箱验证')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="RegisterEnabled"
+                        field='RegisterEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('RegisterEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('RegisterEnabled', e)
+                        }
                       >
                         {t('允许新用户注册')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="TurnstileCheckEnabled"
+                        field='TurnstileCheckEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('TurnstileCheckEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('TurnstileCheckEnabled', e)
+                        }
                       >
                         {t('允许 Turnstile 用户校验')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="SMSEnabled"
+                        field='SMSEnabled'
                         noLabel
                         onChange={(e) => handleCheckboxChange('SMSEnabled', e)}
                       >
                         {t('允许通过手机短信进行登录')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="SMSAutoRegister"
+                        field='SMSAutoRegister'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('SMSAutoRegister', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('SMSAutoRegister', e)
+                        }
                       >
                         {t('手机短信登录时允许自动注册新用户')}
                       </Form.Checkbox>
                     </Col>
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Checkbox
-                        field="GitHubOAuthEnabled"
+                        field='GitHubOAuthEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('GitHubOAuthEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('GitHubOAuthEnabled', e)
+                        }
                       >
                         {t('允许通过 GitHub 账户登录 & 注册')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="discord.enabled"
+                        field='discord.enabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('discord.enabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('discord.enabled', e)
+                        }
                       >
                         {t('允许通过 Discord 账户登录 & 注册')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="LinuxDOOAuthEnabled"
+                        field='LinuxDOOAuthEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('LinuxDOOAuthEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('LinuxDOOAuthEnabled', e)
+                        }
                       >
                         {t('允许通过 Linux DO 账户登录 & 注册')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="WeChatAuthEnabled"
+                        field='WeChatAuthEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('WeChatAuthEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('WeChatAuthEnabled', e)
+                        }
                       >
                         {t('允许通过微信登录 & 注册')}
                       </Form.Checkbox>
                       <Form.Checkbox
-                        field="TelegramOAuthEnabled"
+                        field='TelegramOAuthEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('TelegramOAuthEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('TelegramOAuthEnabled', e)
+                        }
                       >
                         {t('允许通过 Telegram 进行登录')}
                       </Form.Checkbox>
                       <Form.Checkbox
                         field="['oidc.enabled']"
                         noLabel
-                        onChange={(e) => handleCheckboxChange('oidc.enabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('oidc.enabled', e)
+                        }
                       >
                         {t('允许通过 OIDC 进行登录')}
                       </Form.Checkbox>
@@ -571,28 +686,38 @@ const AuthSettingPage = () => {
                 <Form.Section text={t('配置 Passkey')}>
                   <Text>{t('用以支持基于 WebAuthn 的无密码登录注册')}</Text>
                   <Banner
-                    type="info"
-                    description={t('Passkey 是基于 WebAuthn 标准的无密码身份验证方法，支持指纹、面容、硬件密钥等认证方式')}
+                    type='info'
+                    description={t(
+                      'Passkey 是基于 WebAuthn 标准的无密码身份验证方法，支持指纹、面容、硬件密钥等认证方式',
+                    )}
                     style={{ marginBottom: 20, marginTop: 16 }}
                   />
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={24} lg={24} xl={24}>
                       <Form.Checkbox
                         field="['passkey.enabled']"
                         noLabel
-                        onChange={(e) => handleCheckboxChange('passkey.enabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('passkey.enabled', e)
+                        }
                       >
                         {t('允许通过 Passkey 登录 & 认证')}
                       </Form.Checkbox>
                     </Col>
                   </Row>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
                         field="['passkey.rp_display_name']"
                         label={t('服务显示名称')}
                         placeholder={t('默认使用系统名称')}
-                        extraText={t("用户注册时看到的网站名称，比如'我的网站'")}
+                        extraText={t(
+                          "用户注册时看到的网站名称，比如'我的网站'",
+                        )}
                       />
                     </Col>
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
@@ -600,7 +725,9 @@ const AuthSettingPage = () => {
                         field="['passkey.rp_id']"
                         label={t('网站域名标识')}
                         placeholder={t('例如：example.com')}
-                        extraText={t('留空则默认使用服务器地址，注意不能携带http://或者https://')}
+                        extraText={t(
+                          '留空则默认使用服务器地址，注意不能携带http://或者https://',
+                        )}
                       />
                     </Col>
                   </Row>
@@ -614,7 +741,10 @@ const AuthSettingPage = () => {
                         label={t('安全验证级别')}
                         placeholder={t('是否要求指纹/面容等生物识别')}
                         optionList={[
-                          { label: t('推荐使用（用户可选）'), value: 'preferred' },
+                          {
+                            label: t('推荐使用（用户可选）'),
+                            value: 'preferred',
+                          },
                           { label: t('强制要求'), value: 'required' },
                           { label: t('不建议使用'), value: 'discouraged' },
                         ]}
@@ -631,7 +761,9 @@ const AuthSettingPage = () => {
                           { label: t('本设备内置'), value: 'platform' },
                           { label: t('外接设备'), value: 'cross-platform' },
                         ]}
-                        extraText={t('本设备：手机指纹/面容，外接：USB安全密钥')}
+                        extraText={t(
+                          '本设备：手机指纹/面容，外接：USB安全密钥',
+                        )}
                       />
                     </Col>
                   </Row>
@@ -644,7 +776,12 @@ const AuthSettingPage = () => {
                         field="['passkey.allow_insecure_origin']"
                         noLabel
                         extraText={t('仅用于开发环境，生产环境应使用 HTTPS')}
-                        onChange={(e) => handleCheckboxChange('passkey.allow_insecure_origin', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange(
+                            'passkey.allow_insecure_origin',
+                            e,
+                          )
+                        }
                       >
                         {t('允许不安全的 Origin（HTTP）')}
                       </Form.Checkbox>
@@ -659,11 +796,16 @@ const AuthSettingPage = () => {
                         field="['passkey.origins']"
                         label={t('允许的 Origins')}
                         placeholder={t('填写带https的域名，逗号分隔')}
-                        extraText={t('为空则默认使用服务器地址，多个 Origin 用逗号分隔，例如 https://api.lurus.cn,https://example.com ,注意不能携带[]，需使用https')}
+                        extraText={t(
+                          '为空则默认使用服务器地址，多个 Origin 用逗号分隔，例如 https://api.lurus.cn,https://example.com ,注意不能携带[]，需使用https',
+                        )}
                       />
                     </Col>
                   </Row>
-                  <Button onClick={submitPasskeySettings} style={{ marginTop: 16 }}>
+                  <Button
+                    onClick={submitPasskeySettings}
+                    style={{ marginTop: 16 }}
+                  >
                     {t('保存 Passkey 设置')}
                   </Button>
                 </Form.Section>
@@ -672,21 +814,33 @@ const AuthSettingPage = () => {
               <Card>
                 <Form.Section text={t('配置邮箱域名白名单')}>
                   <Text>{t('用以防止恶意用户利用临时邮箱批量注册')}</Text>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Checkbox
-                        field="EmailDomainRestrictionEnabled"
+                        field='EmailDomainRestrictionEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('EmailDomainRestrictionEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange(
+                            'EmailDomainRestrictionEnabled',
+                            e,
+                          )
+                        }
                       >
                         启用邮箱域名白名单
                       </Form.Checkbox>
                     </Col>
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Checkbox
-                        field="EmailAliasRestrictionEnabled"
+                        field='EmailAliasRestrictionEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('EmailAliasRestrictionEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange(
+                            'EmailAliasRestrictionEnabled',
+                            e,
+                          )
+                        }
                       >
                         启用邮箱别名限制
                       </Form.Checkbox>
@@ -704,13 +858,20 @@ const AuthSettingPage = () => {
                     onChange={(value) => setEmailToAdd(value)}
                     style={{ marginTop: 16 }}
                     suffix={
-                      <Button theme="solid" type="primary" onClick={handleAddEmail}>
+                      <Button
+                        theme='solid'
+                        type='primary'
+                        onClick={handleAddEmail}
+                      >
                         {t('添加')}
                       </Button>
                     }
                     onEnterPress={handleAddEmail}
                   />
-                  <Button onClick={submitEmailDomainWhitelist} style={{ marginTop: 10 }}>
+                  <Button
+                    onClick={submitEmailDomainWhitelist}
+                    style={{ marginTop: 10 }}
+                  >
                     {t('保存邮箱域名白名单设置')}
                   </Button>
                 </Form.Section>
@@ -719,15 +880,20 @@ const AuthSettingPage = () => {
               <Card>
                 <Form.Section text={t('配置 SMTP')}>
                   <Text>{t('用以支持系统的邮件发送')}</Text>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
-                      <Form.Input field="SMTPServer" label={t('SMTP 服务器地址')} />
+                      <Form.Input
+                        field='SMTPServer'
+                        label={t('SMTP 服务器地址')}
+                      />
                     </Col>
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
-                      <Form.Input field="SMTPPort" label={t('SMTP 端口')} />
+                      <Form.Input field='SMTPPort' label={t('SMTP 端口')} />
                     </Col>
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
-                      <Form.Input field="SMTPAccount" label={t('SMTP 账户')} />
+                      <Form.Input field='SMTPAccount' label={t('SMTP 账户')} />
                     </Col>
                   </Row>
                   <Row
@@ -735,21 +901,26 @@ const AuthSettingPage = () => {
                     style={{ marginTop: 16 }}
                   >
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
-                      <Form.Input field="SMTPFrom" label={t('SMTP 发送者邮箱')} />
+                      <Form.Input
+                        field='SMTPFrom'
+                        label={t('SMTP 发送者邮箱')}
+                      />
                     </Col>
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
                       <Form.Input
-                        field="SMTPToken"
+                        field='SMTPToken'
                         label={t('SMTP 访问凭证')}
-                        type="password"
-                        placeholder="敏感信息不会发送到前端显示"
+                        type='password'
+                        placeholder='敏感信息不会发送到前端显示'
                       />
                     </Col>
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
                       <Form.Checkbox
-                        field="SMTPSSLEnabled"
+                        field='SMTPSSLEnabled'
                         noLabel
-                        onChange={(e) => handleCheckboxChange('SMTPSSLEnabled', e)}
+                        onChange={(e) =>
+                          handleCheckboxChange('SMTPSSLEnabled', e)
+                        }
                       >
                         {t('启用SMTP SSL')}
                       </Form.Checkbox>
@@ -762,17 +933,23 @@ const AuthSettingPage = () => {
               <Card>
                 <Form.Section text={t('配置 OIDC')}>
                   <Text>
-                    {t('用以支持通过 OIDC 登录，例如 Okta、Auth0 等兼容 OIDC 协议的 IdP')}
+                    {t(
+                      '用以支持通过 OIDC 登录，例如 Okta、Auth0 等兼容 OIDC 协议的 IdP',
+                    )}
                   </Text>
                   <Banner
-                    type="info"
+                    type='info'
                     description={`${t('主页链接填')} ${inputs.ServerAddress ? inputs.ServerAddress : t('网站地址')}，${t('重定向 URL 填')} ${inputs.ServerAddress ? inputs.ServerAddress : t('网站地址')}/oauth/oidc`}
                     style={{ marginBottom: 20, marginTop: 16 }}
                   />
                   <Text>
-                    {t('若你的 OIDC Provider 支持 Discovery Endpoint，你可以仅填写 OIDC Well-Known URL，系统会自动获取 OIDC 配置')}
+                    {t(
+                      '若你的 OIDC Provider 支持 Discovery Endpoint，你可以仅填写 OIDC Well-Known URL，系统会自动获取 OIDC 配置',
+                    )}
                   </Text>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
                         field="['oidc.well_known']"
@@ -788,12 +965,14 @@ const AuthSettingPage = () => {
                       />
                     </Col>
                   </Row>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
                         field="['oidc.client_secret']"
                         label={t('Client Secret')}
-                        type="password"
+                        type='password'
                         placeholder={t('敏感信息不会发送到前端显示')}
                       />
                     </Col>
@@ -805,7 +984,9 @@ const AuthSettingPage = () => {
                       />
                     </Col>
                   </Row>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
                         field="['oidc.token_endpoint']"
@@ -831,19 +1012,24 @@ const AuthSettingPage = () => {
                 <Form.Section text={t('配置 GitHub OAuth App')}>
                   <Text>{t('用以支持通过 GitHub 进行登录注册')}</Text>
                   <Banner
-                    type="info"
+                    type='info'
                     description={`${t('Homepage URL 填')} ${inputs.ServerAddress ? inputs.ServerAddress : t('网站地址')}，${t('Authorization callback URL 填')} ${inputs.ServerAddress ? inputs.ServerAddress : t('网站地址')}/oauth/github`}
                     style={{ marginBottom: 20, marginTop: 16 }}
                   />
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
-                      <Form.Input field="GitHubClientId" label={t('GitHub Client ID')} />
+                      <Form.Input
+                        field='GitHubClientId'
+                        label={t('GitHub Client ID')}
+                      />
                     </Col>
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
-                        field="GitHubClientSecret"
+                        field='GitHubClientSecret'
                         label={t('GitHub Client Secret')}
-                        type="password"
+                        type='password'
                         placeholder={t('敏感信息不会发送到前端显示')}
                       />
                     </Col>
@@ -858,19 +1044,24 @@ const AuthSettingPage = () => {
                 <Form.Section text={t('配置 Discord OAuth')}>
                   <Text>{t('用以支持通过 Discord 进行登录注册')}</Text>
                   <Banner
-                    type="info"
+                    type='info'
                     description={`${t('Homepage URL 填')} ${inputs.ServerAddress ? inputs.ServerAddress : t('网站地址')}，${t('Authorization callback URL 填')} ${inputs.ServerAddress ? inputs.ServerAddress : t('网站地址')}/oauth/discord`}
                     style={{ marginBottom: 20, marginTop: 16 }}
                   />
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
-                      <Form.Input field="['discord.client_id']" label={t('Discord Client ID')} />
+                      <Form.Input
+                        field="['discord.client_id']"
+                        label={t('Discord Client ID')}
+                      />
                     </Col>
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
                         field="['discord.client_secret']"
                         label={t('Discord Client Secret')}
-                        type="password"
+                        type='password'
                         placeholder={t('敏感信息不会发送到前端显示')}
                       />
                     </Col>
@@ -886,41 +1077,47 @@ const AuthSettingPage = () => {
                   <Text>
                     {t('用以支持通过 Linux DO 进行登录注册')}
                     <a
-                      href="https://connect.linux.do/"
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ display: 'inline-block', marginLeft: 4, marginRight: 4 }}
+                      href='https://connect.linux.do/'
+                      target='_blank'
+                      rel='noreferrer'
+                      style={{
+                        display: 'inline-block',
+                        marginLeft: 4,
+                        marginRight: 4,
+                      }}
                     >
                       {t('点击此处')}
                     </a>
                     {t('管理你的 LinuxDO OAuth App')}
                   </Text>
                   <Banner
-                    type="info"
+                    type='info'
                     description={`${t('回调 URL 填')} ${inputs.ServerAddress ? inputs.ServerAddress : t('网站地址')}/oauth/linuxdo`}
                     style={{ marginBottom: 20, marginTop: 16 }}
                   />
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={10} lg={10} xl={10}>
                       <Form.Input
-                        field="LinuxDOClientId"
+                        field='LinuxDOClientId'
                         label={t('Linux DO Client ID')}
                         placeholder={t('输入你注册的 LinuxDO OAuth APP 的 ID')}
                       />
                     </Col>
                     <Col xs={24} sm={24} md={10} lg={10} xl={10}>
                       <Form.Input
-                        field="LinuxDOClientSecret"
+                        field='LinuxDOClientSecret'
                         label={t('Linux DO Client Secret')}
-                        type="password"
+                        type='password'
                         placeholder={t('敏感信息不会发送到前端显示')}
                       />
                     </Col>
                     <Col xs={24} sm={24} md={4} lg={4} xl={4}>
                       <Form.Input
-                        field="LinuxDOMinimumTrustLevel"
-                        label="LinuxDO Minimum Trust Level"
-                        placeholder="允许注册的最低信任等级"
+                        field='LinuxDOMinimumTrustLevel'
+                        label='LinuxDO Minimum Trust Level'
+                        placeholder='允许注册的最低信任等级'
                       />
                     </Col>
                   </Row>
@@ -933,24 +1130,26 @@ const AuthSettingPage = () => {
               <Card>
                 <Form.Section text={t('配置 WeChat Server')}>
                   <Text>{t('用以支持通过微信进行登录注册')}</Text>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
                       <Form.Input
-                        field="WeChatServerAddress"
+                        field='WeChatServerAddress'
                         label={t('WeChat Server 服务器地址')}
                       />
                     </Col>
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
                       <Form.Input
-                        field="WeChatServerToken"
+                        field='WeChatServerToken'
                         label={t('WeChat Server 访问凭证')}
-                        type="password"
+                        type='password'
                         placeholder={t('敏感信息不会发送到前端显示')}
                       />
                     </Col>
                     <Col xs={24} sm={24} md={8} lg={8} xl={8}>
                       <Form.Input
-                        field="WeChatAccountQRCodeImageURL"
+                        field='WeChatAccountQRCodeImageURL'
                         label={t('微信公众号二维码图片链接')}
                       />
                     </Col>
@@ -964,18 +1163,20 @@ const AuthSettingPage = () => {
               <Card>
                 <Form.Section text={t('配置 Telegram 登录')}>
                   <Text>{t('用以支持通过 Telegram 进行登录注册')}</Text>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
-                        field="TelegramBotToken"
+                        field='TelegramBotToken'
                         label={t('Telegram Bot Token')}
                         placeholder={t('敏感信息不会发送到前端显示')}
-                        type="password"
+                        type='password'
                       />
                     </Col>
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
-                        field="TelegramBotName"
+                        field='TelegramBotName'
                         label={t('Telegram Bot 名称')}
                       />
                     </Col>
@@ -989,15 +1190,20 @@ const AuthSettingPage = () => {
               <Card>
                 <Form.Section text={t('配置 Turnstile')}>
                   <Text>{t('用以支持用户校验')}</Text>
-                  <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                  >
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
-                      <Form.Input field="TurnstileSiteKey" label={t('Turnstile Site Key')} />
+                      <Form.Input
+                        field='TurnstileSiteKey'
+                        label={t('Turnstile Site Key')}
+                      />
                     </Col>
                     <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
-                        field="TurnstileSecretKey"
+                        field='TurnstileSecretKey'
                         label={t('Turnstile Secret Key')}
-                        type="password"
+                        type='password'
                         placeholder={t('敏感信息不会发送到前端显示')}
                       />
                     </Col>
@@ -1020,7 +1226,9 @@ const AuthSettingPage = () => {
                 cancelText={t('取消')}
               >
                 <p>
-                  {t('您确定要取消密码登录功能吗？这可能会影响用户的登录方式。')}
+                  {t(
+                    '您确定要取消密码登录功能吗？这可能会影响用户的登录方式。',
+                  )}
                 </p>
               </Modal>
             </div>
@@ -1035,7 +1243,7 @@ const AuthSettingPage = () => {
             height: '100vh',
           }}
         >
-          <Spin size="large" />
+          <Spin size='large' />
         </div>
       )}
     </div>

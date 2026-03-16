@@ -936,7 +936,9 @@ html:not(.dark) .semi-button {
   font-weight: 600 !important;
   border-radius: 12px 4px 14px 4px / 4px 14px 4px 12px !important;
   box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.08) !important;
-  transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease !important;
 }
 
 html:not(.dark) .semi-button:hover {
@@ -1448,7 +1450,9 @@ html.dark .sketchy-banner::after {
   border: 2px solid var(--sketchy-stroke-light) !important;
   border-radius: 12px 4px 16px 4px / 4px 16px 4px 12px !important;
   box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.05) !important;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease !important;
 }
 
 .sketchy-input:focus-within {
@@ -1470,7 +1474,9 @@ html.dark .sketchy-input {
   border: 2px solid var(--sketchy-stroke) !important;
   border-radius: 20px 8px 18px 8px / 8px 18px 8px 20px !important;
   box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.15) !important;
-  transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease !important;
 }
 
 .sketchy-button:hover {
@@ -1493,7 +1499,9 @@ html.dark .sketchy-input {
   border: 2px solid var(--sketchy-stroke-light) !important;
   border-radius: 18px 6px 20px 6px / 6px 20px 6px 18px !important;
   box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.1) !important;
-  transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease !important;
 }
 
 .sketchy-button-secondary:hover {

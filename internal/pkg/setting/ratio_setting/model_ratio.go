@@ -453,11 +453,24 @@ func GetModelRatio(name string) (float64, bool, string) {
 
 	name = FormatMatchingModelName(name)
 
+	// 1. Exact match in ratio map (admin-configured or default)
 	ratio, ok := modelRatioMap[name]
-	if !ok {
-		return 37.5, operation_setting.SelfUseModeEnabled, name
+	if ok {
+		return ratio, true, name
 	}
-	return ratio, true, name
+
+	// 2. Family-based fallback: match by provider prefix + tier keyword,
+	//    apply configurable markup (default 25%)
+	if baseRatio, matched := ModelFamilyFallback(name); matched {
+		markup := operation_setting.ModelFallbackMarkup
+		if markup <= 0 {
+			markup = 1.0
+		}
+		return baseRatio * markup, true, name
+	}
+
+	// 3. No family matched — fall back to self-use mode behavior
+	return 37.5, operation_setting.SelfUseModeEnabled, name
 }
 
 func DefaultModelRatio2JSONString() string {

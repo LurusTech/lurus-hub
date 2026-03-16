@@ -5,6 +5,10 @@ import "strings"
 var DemoSiteEnabled = false
 var SelfUseModeEnabled = false
 
+// ModelFallbackMarkup is a multiplier applied to family-based fallback ratios
+// for models not in the explicit ratio map. 1.25 = 25% markup over base cost.
+var ModelFallbackMarkup float64 = 1.25
+
 var AutomaticDisableKeywords = []string{
 	"Your credit balance is too low",
 	"This organization has been disabled.",

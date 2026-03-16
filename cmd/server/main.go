@@ -261,6 +261,14 @@ func run(ctx context.Context, startTime time.Time) error {
 		common.SysLog("Session store: cookie")
 	}
 	store.Options(sessionOpts)
+	// Propagate MaxAge to securecookie codecs — gin-contrib/sessions Options()
+	// only sets cookie MaxAge but leaves codec timestamp validation at the default
+	// 30 days, causing "securecookie: expired timestamp" for sessions between
+	// 30-90 days old. SetMaxAge updates both cookie options AND codec MaxAge.
+	type maxAger interface{ SetMaxAge(int) }
+	if ma, ok := store.(maxAger); ok {
+		ma.SetMaxAge(sessionOpts.MaxAge)
+	}
 	engine.Use(sessions.Sessions("session", store))
 
 	InjectUmamiAnalytics()

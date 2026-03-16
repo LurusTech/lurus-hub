@@ -22,6 +22,10 @@ spec:
       labels:
         app: lurus-api
         app.kubernetes.io/managed-by: argocd
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
     spec:
       nodeSelector:
         lurus.cn/vpn: "true"
@@ -113,7 +117,7 @@ spec:
             - name: OTEL_TRACING_ENABLED
               value: "false"  # Enable when Jaeger is deployed
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "jaeger:4318"  # OTLP HTTP endpoint
+              value: "jaeger-collector.observability.svc:4318"
             - name: OTEL_EXPORTER_OTLP_INSECURE
               value: "true"
             - name: OTEL_TRACE_SAMPLE_RATE
@@ -129,6 +133,25 @@ spec:
             # Model auto-sync frequency (minutes)
             - name: MODEL_SYNC_FREQUENCY
               value: "60"
+            # Identity session token validation (shared secret with lurus-identity)
+            - name: IDENTITY_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-api-secrets
+                  key: IDENTITY_SESSION_SECRET
+            # Identity service internal API
+            - name: IDENTITY_SERVICE_URL
+              value: "http://identity-service.lurus-identity.svc.cluster.local:18104"
+            - name: IDENTITY_SERVICE_INTERNAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-api-secrets
+                  key: IDENTITY_SERVICE_INTERNAL_KEY
+            # Identity auth redirect (set "true" to redirect register/login/topup to identity)
+            - name: IDENTITY_AUTH_REDIRECT
+              value: "false"
+            - name: IDENTITY_PUBLIC_URL
+              value: "https://identity.lurus.cn"
             # Alipay OAuth
             - name: ALIPAY_PRIVATE_KEY
               valueFrom:

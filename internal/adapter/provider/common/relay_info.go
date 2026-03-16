@@ -113,8 +113,9 @@ type RelayInfo struct {
 	UserQuota              int
 	RelayFormat            types.RelayFormat
 	SendResponseCount      int
-	FinalPreConsumedQuota  int  // 最终预消耗的配额
-	IsClaudeBetaQuery      bool // /v1/messages?beta=true
+	FinalPreConsumedQuota  int   // 最终预消耗的配额
+	IsClaudeBetaQuery      bool  // /v1/messages?beta=true
+	IdentityAccountID      int64 // lurus-identity account ID for wallet bridging (0 = not available)
 
 	PriceData types.PriceData
 
@@ -394,14 +395,21 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 
 	// firstResponseTime = time.Now() - 1 second
 
+	// Carry identity account ID for wallet bridging (set by auth middleware).
+	var identityAccountID int64
+	if v, exists := c.Get("identity_account_id"); exists {
+		identityAccountID, _ = v.(int64)
+	}
+
 	info := &RelayInfo{
 		Request: request,
 
-		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
-		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
-		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
-		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
-		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		UserId:            common.GetContextKeyInt(c, constant.ContextKeyUserId),
+		UsingGroup:        common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+		UserGroup:         common.GetContextKeyString(c, constant.ContextKeyUserGroup),
+		UserQuota:         common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
+		UserEmail:         common.GetContextKeyString(c, constant.ContextKeyUserEmail),
+		IdentityAccountID: identityAccountID,
 
 		OriginModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 

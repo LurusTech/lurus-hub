@@ -1,5 +1,8 @@
 package entity
 
+// Deprecated: Checkin entity has been migrated to lurus-identity (identity.checkins table).
+// This entity will be removed once the migration is fully verified.
+
 // Checkin represents a check-in record
 type Checkin struct {
 	Id           int    `json:"id" gorm:"primaryKey;autoIncrement"`

@@ -47,29 +47,55 @@ func authHelper(c *gin.Context, minRole int) {
 			c.Abort()
 			return
 		}
-		user := repo.ValidateAccessToken(accessToken)
-		if user != nil && user.Username != "" {
-			if !validUserInfo(user.Username, user.Role) {
+
+		// Try lurus-identity session token first (HS256, zero network overhead).
+		bearerToken := accessToken
+		if strings.HasPrefix(bearerToken, "Bearer ") || strings.HasPrefix(bearerToken, "bearer ") {
+			bearerToken = strings.TrimSpace(bearerToken[7:])
+		}
+		if accountID, err := common.ValidateIdentitySessionToken(bearerToken); err == nil && accountID > 0 {
+			// Identity session token validated — resolve to local user via identity account lookup.
+			idMapping, _ := common.GetAccountByZitadelSub_ByAccountID(c.Request.Context(), accountID)
+			if idMapping != nil && idMapping.ZitadelSub != "" {
+				user, _, userErr := repo.GetUserByZitadelID(idMapping.ZitadelSub, "default")
+				if userErr == nil && user != nil {
+					username = user.Username
+					role = user.Role
+					id = user.Id
+					status = user.Status
+					useAccessToken = true
+					// Carry identity account ID for wallet bridging.
+					c.Set("identity_account_id", accountID)
+				}
+			}
+		}
+
+		// Fall back to lurus-api access token if identity session token didn't match.
+		if username == nil {
+			user := repo.ValidateAccessToken(accessToken)
+			if user != nil && user.Username != "" {
+				if !validUserInfo(user.Username, user.Role) {
+					c.JSON(http.StatusOK, gin.H{
+						"success": false,
+						"message": "无权进行此操作，用户信息无效",
+					})
+					c.Abort()
+					return
+				}
+				// Token is valid
+				username = user.Username
+				role = user.Role
+				id = user.Id
+				status = user.Status
+				useAccessToken = true
+			} else {
 				c.JSON(http.StatusOK, gin.H{
 					"success": false,
-					"message": "无权进行此操作，用户信息无效",
+					"message": "无权进行此操作，access token 无效",
 				})
 				c.Abort()
 				return
 			}
-			// Token is valid
-			username = user.Username
-			role = user.Role
-			id = user.Id
-			status = user.Status
-			useAccessToken = true
-		} else {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无权进行此操作，access token 无效",
-			})
-			c.Abort()
-			return
 		}
 	}
 	// lurus-api-User header is optional. When provided, it must match the authenticated session

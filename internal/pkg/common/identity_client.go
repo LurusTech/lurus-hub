@@ -23,6 +23,20 @@ func getIdentityServiceURL() string {
 // IdentityServiceInternalKey is the bearer token for /internal/v1/* endpoints.
 var IdentityServiceInternalKey = os.Getenv("IDENTITY_SERVICE_INTERNAL_KEY")
 
+// IdentityAuthRedirect controls whether register/login/topup endpoints redirect to identity service.
+// Set IDENTITY_AUTH_REDIRECT=true to enable.
+var IdentityAuthRedirect = os.Getenv("IDENTITY_AUTH_REDIRECT") == "true"
+
+// IdentityPublicURL is the external-facing URL for lurus-identity (used in redirect responses).
+var IdentityPublicURL = getIdentityPublicURL()
+
+func getIdentityPublicURL() string {
+	if url := os.Getenv("IDENTITY_PUBLIC_URL"); url != "" {
+		return url
+	}
+	return "https://identity.lurus.cn"
+}
+
 var identityClient = &http.Client{
 	Timeout: 5 * time.Second,
 }
@@ -246,6 +260,211 @@ func GetAccountOverview(ctx context.Context, accountID int64, productID string) 
 		return nil, nil
 	}
 	return &ov, nil
+}
+
+// WalletBalance holds the wallet balance information from lurus-identity.
+type WalletBalance struct {
+	Balance float64 `json:"balance"`
+	Frozen  float64 `json:"frozen"`
+}
+
+// GetWalletBalance retrieves the wallet balance for an account from lurus-identity.
+// Returns nil on errors — callers degrade gracefully.
+func GetWalletBalance(ctx context.Context, accountID int64) (*WalletBalance, error) {
+	if IdentityServiceURL == "" {
+		return nil, nil
+	}
+	url := fmt.Sprintf("%s/internal/v1/accounts/%d/wallet/balance", IdentityServiceURL, accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity GetWalletBalance: %v", err))
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		SysLog(fmt.Sprintf("identity GetWalletBalance: status %d", resp.StatusCode))
+		return nil, nil
+	}
+	var wb WalletBalance
+	if err := json.NewDecoder(resp.Body).Decode(&wb); err != nil {
+		return nil, nil
+	}
+	return &wb, nil
+}
+
+// GetAccountByEmail retrieves account info from lurus-identity by email address.
+// Returns nil on not-found or network errors.
+func GetAccountByEmail(ctx context.Context, email string) (*IdentityMapping, error) {
+	if IdentityServiceURL == "" {
+		return nil, nil
+	}
+	req, err := http.NewRequestWithContext(ctx,
+		http.MethodGet,
+		IdentityServiceURL+"/internal/v1/accounts/by-email/"+email,
+		nil,
+	)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity GetAccountByEmail: %v", err))
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+	var a IdentityMapping
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
+		return nil, nil
+	}
+	return &a, nil
+}
+
+// GetAccountByZitadelSub_ByAccountID retrieves account info from lurus-identity by account ID.
+// Used to resolve identity session tokens to zitadel_sub for user mapping lookup.
+func GetAccountByZitadelSub_ByAccountID(ctx context.Context, accountID int64) (*IdentityMapping, error) {
+	if IdentityServiceURL == "" {
+		return nil, nil
+	}
+	url := fmt.Sprintf("%s/internal/v1/accounts/%d/overview", IdentityServiceURL, accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity GetAccountByAccountID: %v", err))
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+	// The overview endpoint returns a nested structure; extract the account part.
+	var ov struct {
+		Account struct {
+			ID         int64  `json:"id"`
+			LurusID    string `json:"lurus_id"`
+			ZitadelSub string `json:"zitadel_sub"`
+			Email      string `json:"email"`
+			DisplayName string `json:"display_name"`
+			AvatarURL  string `json:"avatar_url"`
+			Status     int16  `json:"status"`
+		} `json:"account"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&ov); err != nil {
+		return nil, nil
+	}
+	return &IdentityMapping{
+		ID:          ov.Account.ID,
+		LurusID:     ov.Account.LurusID,
+		ZitadelSub:  ov.Account.ZitadelSub,
+		Email:       ov.Account.Email,
+		DisplayName: ov.Account.DisplayName,
+		AvatarURL:   ov.Account.AvatarURL,
+		Status:      ov.Account.Status,
+	}, nil
+}
+
+// DebitWalletResult holds the response from a wallet debit call.
+type DebitWalletResult struct {
+	Success      bool    `json:"success"`
+	BalanceAfter float64 `json:"balance_after"`
+}
+
+// DebitWallet deducts credits from an account's wallet in lurus-identity.
+// Returns the remaining balance after the debit, or an error if insufficient balance.
+func DebitWallet(ctx context.Context, accountID int64, amount float64, txType, description, productID string) (*DebitWalletResult, error) {
+	if IdentityServiceURL == "" {
+		return nil, fmt.Errorf("identity service not configured")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"amount":      amount,
+		"type":        txType,
+		"description": description,
+		"product_id":  productID,
+	})
+	url := fmt.Sprintf("%s/internal/v1/accounts/%d/wallet/debit", IdentityServiceURL, accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("identity DebitWallet: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusBadRequest {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Error == "insufficient_balance" {
+			return nil, fmt.Errorf("insufficient_balance")
+		}
+		return nil, fmt.Errorf("debit failed: status %d", resp.StatusCode)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("debit failed: status %d", resp.StatusCode)
+	}
+	var result DebitWalletResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &result, nil
+}
+
+// CreditWallet adds credits to an account's wallet in lurus-identity.
+// Used for refunds or corrections.
+func CreditWallet(ctx context.Context, accountID int64, amount float64, txType, description, productID string) error {
+	if IdentityServiceURL == "" {
+		return fmt.Errorf("identity service not configured")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"amount":      amount,
+		"type":        txType,
+		"description": description,
+		"product_id":  productID,
+	})
+	url := fmt.Sprintf("%s/internal/v1/accounts/%d/wallet/credit", IdentityServiceURL, accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("identity CreditWallet: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("credit failed: status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // ReportLLMUsage sends a usage record to lurus-identity for VIP accumulation.

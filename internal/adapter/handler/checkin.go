@@ -1,3 +1,6 @@
+// Deprecated: Checkin functionality has been migrated to lurus-identity service.
+// When IDENTITY_AUTH_REDIRECT=true, all requests redirect to identity /api/v1/checkin/*.
+// This handler will be removed once the migration is fully verified.
 package handler
 
 import (
@@ -14,6 +17,15 @@ import (
 
 // GetCheckinStatus 获取用户签到状态和历史记录
 func GetCheckinStatus(c *gin.Context) {
+	// When identity auth redirect is enabled, direct clients to identity checkin.
+	if common.IdentityAuthRedirect {
+		c.JSON(http.StatusOK, gin.H{
+			"success":  false,
+			"message":  "签到功能已迁移到统一身份服务",
+			"redirect": common.IdentityPublicURL + "/api/v1/checkin/status",
+		})
+		return
+	}
 	setting := operation_setting.GetCheckinSetting()
 	if !setting.Enabled {
 		common.ApiErrorMsg(c, "签到功能未启用")
@@ -45,6 +57,15 @@ func GetCheckinStatus(c *gin.Context) {
 
 // DoCheckin 执行用户签到
 func DoCheckin(c *gin.Context) {
+	// When identity auth redirect is enabled, direct clients to identity checkin.
+	if common.IdentityAuthRedirect {
+		c.JSON(http.StatusOK, gin.H{
+			"success":  false,
+			"message":  "签到功能已迁移到统一身份服务",
+			"redirect": common.IdentityPublicURL + "/api/v1/checkin",
+		})
+		return
+	}
 	setting := operation_setting.GetCheckinSetting()
 	if !setting.Enabled {
 		common.ApiErrorMsg(c, "签到功能未启用")

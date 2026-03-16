@@ -29,6 +29,15 @@ type LoginRequest struct {
 }
 
 func Login(c *gin.Context) {
+	// When identity auth redirect is enabled, direct clients to lurus-identity.
+	if common.IdentityAuthRedirect {
+		c.JSON(http.StatusOK, gin.H{
+			"success":  false,
+			"message":  "请使用统一身份认证服务登录",
+			"redirect": common.IdentityPublicURL + "/api/v1/auth/login",
+		})
+		return
+	}
 	if !common.PasswordLoginEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "管理员关闭了密码登录",
@@ -143,6 +152,15 @@ func Logout(c *gin.Context) {
 }
 
 func Register(c *gin.Context) {
+	// When identity auth redirect is enabled, direct clients to lurus-identity.
+	if common.IdentityAuthRedirect {
+		c.JSON(http.StatusOK, gin.H{
+			"success":  false,
+			"message":  "请使用统一身份认证服务注册",
+			"redirect": common.IdentityPublicURL + "/api/v1/auth/register",
+		})
+		return
+	}
 	if !common.RegisterEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "管理员关闭了新用户注册",
@@ -1242,6 +1260,15 @@ func getTopUpLock(userID int) *topUpTryLock {
 }
 
 func TopUp(c *gin.Context) {
+	// When identity auth redirect is enabled, direct clients to lurus-identity wallet.
+	if common.IdentityAuthRedirect {
+		c.JSON(http.StatusOK, gin.H{
+			"success":  false,
+			"message":  "请使用统一身份认证服务进行充值",
+			"redirect": common.IdentityPublicURL + "/wallet",
+		})
+		return
+	}
 	id := c.GetInt("id")
 	lock := getTopUpLock(id)
 	if !lock.TryLock() {

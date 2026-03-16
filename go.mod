@@ -57,7 +57,7 @@ require (
 	golang.org/x/net v0.47.0
 	golang.org/x/sync v0.18.0
 	gorm.io/driver/mysql v1.4.3
-	gorm.io/driver/postgres v1.5.2
+	gorm.io/driver/postgres v1.5.11
 	gorm.io/gorm v1.25.12
 )
 

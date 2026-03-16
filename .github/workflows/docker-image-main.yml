@@ -23,11 +23,11 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Check out lurus-proto
+      - name: Check out lurus-platform
         uses: actions/checkout@v4
         with:
-          repository: hanmahong5-arch/lurus-proto
-          path: lurus-proto
+          repository: hanmahong5-arch/lurus-platform
+          path: lurus-platform
           fetch-depth: 1
 
       - name: Determine version

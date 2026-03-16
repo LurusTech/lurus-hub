@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"strconv"
@@ -195,9 +196,10 @@ func GetModelsPricingInfo(c *gin.Context) {
 }
 
 // SyncAllChannelsNow triggers an immediate model sync for all enabled channels.
+// Runs asynchronously so the HTTP response returns immediately.
 func SyncAllChannelsNow(c *gin.Context) {
-	syncAllChannelModels(c.Request.Context())
-	common.ApiSuccess(c, gin.H{"message": "channel model sync completed"})
+	go syncAllChannelModels(context.Background())
+	common.ApiSuccess(c, gin.H{"message": "channel model sync started"})
 }
 
 // enrichModels 批量填充附加信息：端点、渠道、分组、计费类型，避免 N+1 查询

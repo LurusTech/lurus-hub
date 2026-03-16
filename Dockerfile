@@ -18,6 +18,9 @@ ENV GOEXPERIMENT=greenteagc
 
 WORKDIR /build
 
+# Copy lurus-proto for local replace directive in go.mod
+COPY lurus-proto/ /lurus-proto/
+
 ADD go.mod go.sum ./
 RUN go mod download
 

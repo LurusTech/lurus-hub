@@ -30,6 +30,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Check out lurus-proto
+        uses: actions/checkout@v4
+        with:
+          repository: hanmahong5-arch/lurus-proto
+          path: lurus-proto
+          fetch-depth: 1
+
       - name: Resolve tag & write VERSION
         run: |
           git fetch --tags --force --depth=1

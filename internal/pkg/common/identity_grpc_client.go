@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
-	identityv1 "github.com/hanmahong5-arch/lurus-proto/gen/go/identity/v1"
+	identityv1 "github.com/hanmahong5-arch/lurus-platform/proto/gen/go/identity/v1"
 )
 
 // identityGRPCAddr is the gRPC address for lurus-identity (host:port).

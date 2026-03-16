@@ -17,13 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import CardPro from '../../common/ui/CardPro';
 import ModelsTable from './ModelsTable';
 import ModelsActions from './ModelsActions';
 import ModelsFilters from './ModelsFilters';
 import ModelsTabs from './ModelsTabs';
 import ModelSyncDashboard from './ModelSyncDashboard';
+import ModelDetailDrawer from './ModelDetailDrawer';
 import EditModelModal from './modals/EditModelModal';
 import EditVendorModal from './modals/EditVendorModal';
 import { useModelsData } from '../../../hooks/models/useModelsData';
@@ -33,6 +34,10 @@ import { createCardProPagination } from '../../../helpers/utils';
 const ModelsPage = () => {
   const modelsData = useModelsData();
   const isMobile = useIsMobile();
+
+  // Drawer state
+  const [drawerVisible, setDrawerVisible] = useState(false);
+  const [drawerModel, setDrawerModel] = useState(null);
 
   const {
     // Edit state
@@ -72,8 +77,49 @@ const ModelsPage = () => {
     t,
   } = modelsData;
 
+  // Override handleRow: click opens detail drawer, checkbox handles selection
+  const handleRowWithDrawer = useCallback((record, index) => {
+    const rowStyle =
+      record.status !== 1
+        ? {
+            style: {
+              background: 'var(--semi-color-disabled-border)',
+              cursor: 'pointer',
+            },
+          }
+        : { style: { cursor: 'pointer' } };
+
+    return {
+      ...rowStyle,
+      onClick: (event) => {
+        // Don't trigger when clicking buttons or checkboxes
+        if (
+          event.target.closest(
+            'button, .semi-button, .semi-checkbox, .semi-checkbox-inner',
+          )
+        ) {
+          return;
+        }
+        setDrawerModel(record);
+        setDrawerVisible(true);
+      },
+    };
+  }, []);
+
   return (
     <>
+      <ModelDetailDrawer
+        visible={drawerVisible}
+        model={drawerModel}
+        onClose={() => setDrawerVisible(false)}
+        pricingMap={modelsData.pricingMap}
+        vendorMap={modelsData.vendorMap}
+        manageModel={modelsData.manageModel}
+        setEditingModel={setEditingModel}
+        setShowEdit={setShowEdit}
+        refresh={refresh}
+      />
+
       <EditModelModal
         refresh={refresh}
         editingModel={editingModel}
@@ -149,7 +195,7 @@ const ModelsPage = () => {
         })}
         t={modelsData.t}
       >
-        <ModelsTable {...modelsData} />
+        <ModelsTable {...modelsData} handleRow={handleRowWithDrawer} />
       </CardPro>
     </>
   );

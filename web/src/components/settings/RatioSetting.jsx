@@ -18,7 +18,15 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useEffect, useState } from 'react';
-import { Card, Spin, Tabs } from '@douyinfe/semi-ui';
+import {
+  Card,
+  Spin,
+  Tabs,
+  Collapsible,
+  Typography,
+  Banner,
+} from '@douyinfe/semi-ui';
+import { IconHelpCircle } from '@douyinfe/semi-icons';
 import { useTranslation } from 'react-i18next';
 
 import GroupRatioSettings from '../../pages/Setting/Ratio/GroupRatioSettings';
@@ -58,9 +66,7 @@ const RatioSetting = () => {
     if (success) {
       let newInputs = {};
       data.forEach((item) => {
-        if (
-          item.value.startsWith('{') || item.value.startsWith('[')
-        ) {
+        if (item.value.startsWith('{') || item.value.startsWith('[')) {
           try {
             item.value = JSON.stringify(JSON.parse(item.value), null, 2);
           } catch (e) {
@@ -95,8 +101,53 @@ const RatioSetting = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const [showBillingGuide, setShowBillingGuide] = useState(() => {
+    return localStorage.getItem('billing_guide_collapsed') !== 'true';
+  });
+
+  const toggleBillingGuide = () => {
+    const next = !showBillingGuide;
+    setShowBillingGuide(next);
+    if (!next) localStorage.setItem('billing_guide_collapsed', 'true');
+    else localStorage.removeItem('billing_guide_collapsed');
+  };
+
   return (
     <Spin spinning={loading} size='large'>
+      <div
+        className='flex items-center gap-2 cursor-pointer select-none mb-2 mt-2 px-1 text-[var(--semi-color-text-2)]'
+        onClick={toggleBillingGuide}
+      >
+        <IconHelpCircle size='small' />
+        <Typography.Text type='tertiary' size='small' strong>
+          {t('billing_guide_title')}
+        </Typography.Text>
+        <Typography.Text type='tertiary' size='small'>
+          {showBillingGuide ? '▲' : '▼'}
+        </Typography.Text>
+      </div>
+      <Collapsible isOpen={showBillingGuide}>
+        <Banner
+          type='info'
+          bordered
+          fullMode={false}
+          closeIcon={null}
+          className='mb-3'
+          description={
+            <div className='text-sm leading-relaxed'>
+              <div className='font-medium mb-1'>
+                {t('billing_guide_formula')}
+              </div>
+              <ul className='list-disc pl-4 space-y-0.5'>
+                <li>{t('billing_guide_model_ratio')}</li>
+                <li>{t('billing_guide_completion_ratio')}</li>
+                <li>{t('billing_guide_group_ratio')}</li>
+                <li>{t('billing_guide_quota')}</li>
+              </ul>
+            </div>
+          }
+        />
+      </Collapsible>
       {/* 模型倍率设置以及可视化编辑器 */}
       <Card style={{ marginTop: '10px' }}>
         <Tabs type='card'>

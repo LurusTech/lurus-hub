@@ -40,6 +40,8 @@ import {
 } from '@douyinfe/semi-icons';
 import { Link } from 'react-router-dom';
 import NoticeModal from '../../components/layout/NoticeModal';
+import AdminQuickActions from '../../components/home/AdminQuickActions';
+import { isAdmin } from '../../helpers';
 import {
   Moonshot,
   OpenAI,
@@ -157,15 +159,32 @@ const Home = () => {
         onClose={() => setNoticeVisible(false)}
         isMobile={isMobile}
       />
+      {isAdmin() && (
+        <div className='px-4 pt-4'>
+          <AdminQuickActions />
+        </div>
+      )}
       {!homePageContent ? (
         <div className='w-full overflow-x-hidden'>
           {/* Banner - Sketchy/Excalidraw style */}
           <div className='w-full border-b border-semi-color-border min-h-[500px] md:min-h-[600px] lg:min-h-[700px] relative overflow-x-hidden sketchy-banner'>
             {/* Decorative doodles */}
-            <div className='sketchy-doodle-star' style={{ top: '15%', left: '8%' }} />
-            <div className='sketchy-doodle-circle' style={{ top: '25%', right: '12%' }} />
-            <div className='sketchy-doodle-arrow' style={{ bottom: '20%', left: '5%', transform: 'rotate(-15deg)' }} />
-            <div className='sketchy-doodle-star' style={{ bottom: '30%', right: '8%' }} />
+            <div
+              className='sketchy-doodle-star'
+              style={{ top: '15%', left: '8%' }}
+            />
+            <div
+              className='sketchy-doodle-circle'
+              style={{ top: '25%', right: '12%' }}
+            />
+            <div
+              className='sketchy-doodle-arrow'
+              style={{ bottom: '20%', left: '5%', transform: 'rotate(-15deg)' }}
+            />
+            <div
+              className='sketchy-doodle-star'
+              style={{ bottom: '30%', right: '8%' }}
+            />
             <div className='flex items-center justify-center h-full px-4 py-20 md:py-24 lg:py-32 mt-10 relative z-10'>
               {/* 居中内容区 */}
               <div className='flex flex-col items-center justify-center text-center max-w-4xl mx-auto'>
@@ -176,7 +195,9 @@ const Home = () => {
                     <>
                       {t('统一的')}
                       <br />
-                      <span className='sketchy-highlight-text'>{t('大模型接口网关')}</span>
+                      <span className='sketchy-highlight-text'>
+                        {t('大模型接口网关')}
+                      </span>
                     </>
                   </h1>
                   <p className='text-base md:text-lg lg:text-xl mt-4 md:mt-6 max-w-xl text-semi-color-text-1'>
@@ -259,77 +280,80 @@ const Home = () => {
                 {/* Provider icons - sticky note style */}
                 <div className='mt-12 md:mt-16 lg:mt-20 w-full'>
                   <div className='flex items-center mb-6 md:mb-8 justify-center'>
-                    <Text type='tertiary' className='text-lg md:text-xl lg:text-2xl'>
+                    <Text
+                      type='tertiary'
+                      className='text-lg md:text-xl lg:text-2xl'
+                    >
                       {t('支持众多的大模型供应商')}
                     </Text>
                   </div>
                   <div className='sketchy-icons-wrapper max-w-5xl mx-auto'>
                     <div className='flex flex-wrap items-center justify-center gap-3 sm:gap-4 md:gap-6 lg:gap-8 px-4 relative z-10'>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Moonshot size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <OpenAI size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <XAI size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Zhipu.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Volcengine.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Cohere.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Claude.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Gemini.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Suno size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Minimax.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Wenxin.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Spark.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Qingyan.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <DeepSeek.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Qwen.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Midjourney size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Grok size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <AzureAI.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Hunyuan.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Xinference.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Typography.Text className='!text-lg sm:!text-xl md:!text-2xl lg:!text-3xl font-bold'>
-                        30+
-                      </Typography.Text>
-                    </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Moonshot size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <OpenAI size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <XAI size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Zhipu.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Volcengine.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Cohere.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Claude.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Gemini.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Suno size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Minimax.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Wenxin.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Spark.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Qingyan.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <DeepSeek.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Qwen.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Midjourney size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Grok size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <AzureAI.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Hunyuan.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Xinference.Color size={40} />
+                      </div>
+                      <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
+                        <Typography.Text className='!text-lg sm:!text-xl md:!text-2xl lg:!text-3xl font-bold'>
+                          30+
+                        </Typography.Text>
+                      </div>
                     </div>
                   </div>
                 </div>

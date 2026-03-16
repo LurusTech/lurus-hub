@@ -8,9 +8,6 @@ import {
   LayoutGrid,
   KeyRound,
   ShieldCheck,
-  DollarSign,
-  Cpu,
-  Sparkles,
   Gauge,
   Activity,
 } from 'lucide-react';
@@ -22,7 +19,11 @@ const GROUPS = [
       { key: 'general', labelKey: 'setting.nav.general', icon: Settings },
       { key: 'branding', labelKey: 'setting.nav.branding', icon: Paintbrush },
       { key: 'content', labelKey: 'setting.nav.content', icon: FileText },
-      { key: 'ui-modules', labelKey: 'setting.nav.ui-modules', icon: LayoutGrid },
+      {
+        key: 'ui-modules',
+        labelKey: 'setting.nav.ui-modules',
+        icon: LayoutGrid,
+      },
     ],
   },
   {
@@ -33,17 +34,13 @@ const GROUPS = [
     ],
   },
   {
-    labelKey: 'setting.group.model',
-    items: [
-      { key: 'pricing', labelKey: 'setting.nav.pricing', icon: DollarSign },
-      { key: 'model-config', labelKey: 'setting.nav.model-config', icon: Cpu },
-      { key: 'ai-features', labelKey: 'setting.nav.ai-features', icon: Sparkles },
-    ],
-  },
-  {
     labelKey: 'setting.group.ops',
     items: [
-      { key: 'quota-limits', labelKey: 'setting.nav.quota-limits', icon: Gauge },
+      {
+        key: 'quota-limits',
+        labelKey: 'setting.nav.quota-limits',
+        icon: Gauge,
+      },
       { key: 'monitoring', labelKey: 'setting.nav.monitoring', icon: Activity },
     ],
   },
@@ -57,11 +54,11 @@ const SettingsSidebar = ({ activeKey, onChange }) => {
   return (
     <>
       {/* Desktop sidebar */}
-      <nav className="hidden md:block w-[220px] shrink-0 sticky top-4 self-start">
-        <div className="flex flex-col gap-1">
+      <nav className='hidden md:block w-[220px] shrink-0 sticky top-4 self-start'>
+        <div className='flex flex-col gap-1'>
           {GROUPS.map((group) => (
-            <div key={group.labelKey} className="mb-2">
-              <div className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-[var(--semi-color-text-2)]">
+            <div key={group.labelKey} className='mb-2'>
+              <div className='px-3 py-1 text-xs font-semibold uppercase tracking-wider text-[var(--semi-color-text-2)]'>
                 {t(group.labelKey)}
               </div>
               {group.items.map((item) => {
@@ -89,7 +86,7 @@ const SettingsSidebar = ({ activeKey, onChange }) => {
       </nav>
 
       {/* Mobile select */}
-      <div className="block md:hidden mb-4 w-full">
+      <div className='block md:hidden mb-4 w-full'>
         <Select
           value={activeKey}
           onChange={onChange}

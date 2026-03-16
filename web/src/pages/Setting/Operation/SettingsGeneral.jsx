@@ -29,6 +29,7 @@ import {
   Select,
   InputGroup,
   Input,
+  Typography,
 } from '@douyinfe/semi-ui';
 import {
   compareObjects,
@@ -38,6 +39,19 @@ import {
   showWarning,
 } from '../../../helpers';
 import { useTranslation } from 'react-i18next';
+
+const { Title, Text } = Typography;
+
+const SectionHeader = ({ title, description }) => (
+  <div className='mb-3 mt-1'>
+    <Title heading={6} className='!mb-0.5'>
+      {title}
+    </Title>
+    <Text type='tertiary' size='small'>
+      {description}
+    </Text>
+  </div>
+);
 
 export default function GeneralSettings(props) {
   const { t } = useTranslation();
@@ -168,40 +182,28 @@ export default function GeneralSettings(props) {
           style={{ marginBottom: 15 }}
         >
           <Form.Section text={t('通用设置')}>
+            {/* Group 1: Core Settings */}
+            <SectionHeader
+              title={t('settings_group_core')}
+              description={t('settings_group_core_desc')}
+            />
             <Row gutter={16}>
-              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
-                <Form.Input
-                  field={'TopUpLink'}
-                  label={t('充值链接')}
-                  initValue={''}
-                  placeholder={t('例如发卡网站的购买链接')}
-                  onChange={handleFieldChange('TopUpLink')}
-                  showClear
-                />
-              </Col>
-              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
-                <Form.Input
-                  field={'general_setting.docs_link'}
-                  label={t('文档地址')}
-                  initValue={''}
-                  placeholder={t('例如 https://docs.lurus.cn')}
-                  onChange={handleFieldChange('general_setting.docs_link')}
-                  showClear
-                />
-              </Col>
-              {/* 单位美元额度已合入汇率组合控件（TOKENS 模式下编辑），不再单独展示 */}
               <Col xs={24} sm={12} md={8} lg={8} xl={8}>
                 <Form.Input
                   field={'RetryTimes'}
                   label={t('失败重试次数')}
                   initValue={''}
                   placeholder={t('失败重试次数')}
+                  helpText={t('help_retry_times')}
                   onChange={handleFieldChange('RetryTimes')}
                   showClear
                 />
               </Col>
               <Col xs={24} sm={12} md={8} lg={8} xl={8}>
-                <Form.Slot label={t('站点额度展示类型及汇率')}>
+                <Form.Slot
+                  label={t('站点额度展示类型及汇率')}
+                  helpText={t('help_quota_display_type')}
+                >
                   <InputGroup style={{ width: '100%' }}>
                     <Input
                       prefix={'1 USD = '}
@@ -244,11 +246,18 @@ export default function GeneralSettings(props) {
                 />
               </Col>
             </Row>
+
+            {/* Group 2: User Experience */}
+            <SectionHeader
+              title={t('settings_group_ux')}
+              description={t('settings_group_ux_desc')}
+            />
             <Row gutter={16}>
               <Col xs={24} sm={12} md={8} lg={8} xl={8}>
                 <Form.Switch
                   field={'DisplayTokenStatEnabled'}
                   label={t('额度查询接口返回令牌额度而非用户额度')}
+                  extraText={t('help_display_token_stat')}
                   size='default'
                   checkedText='｜'
                   uncheckedText='〇'
@@ -259,35 +268,84 @@ export default function GeneralSettings(props) {
                 <Form.Switch
                   field={'DefaultCollapseSidebar'}
                   label={t('默认折叠侧边栏')}
+                  extraText={t('help_collapse_sidebar')}
                   size='default'
                   checkedText='｜'
                   uncheckedText='〇'
                   onChange={handleFieldChange('DefaultCollapseSidebar')}
                 />
               </Col>
+            </Row>
+
+            {/* Group 3: Operations (only relevant for external mode) */}
+            <SectionHeader
+              title={t('settings_group_ops')}
+              description={t('settings_group_ops_desc')}
+            />
+            {inputs.SelfUseModeEnabled && (
+              <Banner
+                type='info'
+                closeIcon={null}
+                className='mb-3 rounded-lg'
+                description={t('settings_ops_selfuse_hint')}
+              />
+            )}
+            <Row gutter={16}>
               <Col xs={24} sm={12} md={8} lg={8} xl={8}>
-                <Form.Switch
-                  field={'DemoSiteEnabled'}
-                  label={t('演示站点模式')}
-                  size='default'
-                  checkedText='｜'
-                  uncheckedText='〇'
-                  onChange={handleFieldChange('DemoSiteEnabled')}
+                <Form.Input
+                  field={'TopUpLink'}
+                  label={t('充值链接')}
+                  initValue={''}
+                  placeholder={t('例如发卡网站的购买链接')}
+                  helpText={t('help_topup_link')}
+                  onChange={handleFieldChange('TopUpLink')}
+                  showClear
                 />
               </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.Input
+                  field={'general_setting.docs_link'}
+                  label={t('文档地址')}
+                  initValue={''}
+                  placeholder={t('例如 https://docs.lurus.cn')}
+                  helpText={t('help_docs_link')}
+                  onChange={handleFieldChange('general_setting.docs_link')}
+                  showClear
+                />
+              </Col>
+            </Row>
+
+            {/* Group 4: Site Mode */}
+            <SectionHeader
+              title={t('settings_group_mode')}
+              description={t('settings_group_mode_desc')}
+            />
+            <Row gutter={16}>
               <Col xs={24} sm={12} md={8} lg={8} xl={8}>
                 <Form.Switch
                   field={'SelfUseModeEnabled'}
                   label={t('自用模式')}
-                  extraText={t('开启后不限制：必须设置模型倍率')}
+                  extraText={t('help_self_use_mode')}
                   size='default'
                   checkedText='｜'
                   uncheckedText='〇'
                   onChange={handleFieldChange('SelfUseModeEnabled')}
                 />
               </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.Switch
+                  field={'DemoSiteEnabled'}
+                  label={t('演示站点模式')}
+                  extraText={t('help_demo_site')}
+                  size='default'
+                  checkedText='｜'
+                  uncheckedText='〇'
+                  onChange={handleFieldChange('DemoSiteEnabled')}
+                />
+              </Col>
             </Row>
-            <Row>
+
+            <Row className='mt-4'>
               <Button size='default' onClick={onSubmit}>
                 {t('保存通用设置')}
               </Button>

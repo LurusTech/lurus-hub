@@ -30,22 +30,26 @@ import ContentSettingPage from '../../components/settings/ContentSettingPage';
 import UIModulesSettingPage from '../../components/settings/UIModulesSettingPage';
 import AuthSettingPage from '../../components/settings/AuthSettingPage';
 import SecuritySettingPage from '../../components/settings/SecuritySettingPage';
-import RatioSetting from '../../components/settings/RatioSetting';
-import ModelConfigSettingPage from '../../components/settings/ModelConfigSettingPage';
-import AIFeaturesSettingPage from '../../components/settings/AIFeaturesSettingPage';
 import QuotaLimitsSettingPage from '../../components/settings/QuotaLimitsSettingPage';
 import MonitoringSettingPage from '../../components/settings/MonitoringSettingPage';
+
+// Model-related tab keys that redirect to the new model hub
+const MODEL_HUB_REDIRECT = {
+  pricing: '/console/models?tab=pricing',
+  'model-config': '/console/models?tab=config',
+  'ai-features': '/console/models?tab=features',
+};
 
 // Old tab key → new tab key redirect mapping
 const TAB_REDIRECT = {
   operation: 'general',
   dashboard: 'monitoring',
-  chats: 'ai-features',
-  drawing: 'ai-features',
-  ratio: 'pricing',
+  chats: null,
+  drawing: null,
+  ratio: null,
   ratelimit: 'quota-limits',
-  models: 'model-config',
-  'model-deployment': 'model-config',
+  models: null,
+  'model-deployment': null,
   system: 'auth',
   other: 'branding',
 };
@@ -66,12 +70,6 @@ const renderContent = (activeKey) => {
       return <AuthSettingPage />;
     case 'security':
       return <SecuritySettingPage />;
-    case 'pricing':
-      return <RatioSetting />;
-    case 'model-config':
-      return <ModelConfigSettingPage />;
-    case 'ai-features':
-      return <AIFeaturesSettingPage />;
     case 'quota-limits':
       return <QuotaLimitsSettingPage />;
     case 'monitoring':
@@ -95,6 +93,12 @@ const Setting = () => {
     const searchParams = new URLSearchParams(window.location.search);
     const tab = searchParams.get('tab');
     if (tab) {
+      // Redirect model-related tabs to the new model hub
+      const modelHubPath = MODEL_HUB_REDIRECT[tab];
+      if (modelHubPath) {
+        navigate(modelHubPath, { replace: true });
+        return;
+      }
       // Redirect old tab keys to new ones
       const redirected = TAB_REDIRECT[tab];
       if (redirected) {
@@ -113,14 +117,12 @@ const Setting = () => {
   }
 
   return (
-    <div className="px-2">
+    <div className='px-2'>
       <Layout>
         <Layout.Content>
-          <div className="flex flex-col md:flex-row gap-4 mt-2">
+          <div className='flex flex-col md:flex-row gap-4 mt-2'>
             <SettingsSidebar activeKey={activeKey} onChange={onChangeTab} />
-            <div className="flex-1 min-w-0">
-              {renderContent(activeKey)}
-            </div>
+            <div className='flex-1 min-w-0'>{renderContent(activeKey)}</div>
           </div>
         </Layout.Content>
       </Layout>

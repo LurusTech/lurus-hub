@@ -23,6 +23,7 @@ import { UserContext } from '../../context/User';
 import { StatusContext } from '../../context/Status';
 
 import DashboardHeader from './DashboardHeader';
+import OnboardingChecklist from './OnboardingChecklist';
 import StatsCards from './StatsCards';
 import ChartsPanel from './ChartsPanel';
 import ApiInfoPanel from './ApiInfoPanel';
@@ -187,6 +188,10 @@ const Dashboard = () => {
         timeOptions={dashboardData.timeOptions}
         handleInputChange={dashboardData.handleInputChange}
         t={dashboardData.t}
+      />
+
+      <OnboardingChecklist
+        serverAddress={statusState?.status?.server_address}
       />
 
       <UsageAlertBanner gauge={gauge} />

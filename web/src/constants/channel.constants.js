@@ -186,4 +186,57 @@ export const CHANNEL_OPTIONS = [
   },
 ];
 
+export const CHANNEL_PRESETS = {
+  1: {
+    name: 'OpenAI',
+    base_url: '',
+    tip: 'preset_tip_openai',
+  },
+  14: {
+    name: 'Anthropic Claude',
+    base_url: 'https://api.anthropic.com',
+    tip: 'preset_tip_claude',
+  },
+  43: {
+    name: 'DeepSeek',
+    base_url: 'https://api.deepseek.com',
+    tip: 'preset_tip_deepseek',
+  },
+  24: {
+    name: 'Google Gemini',
+    base_url: 'https://generativelanguage.googleapis.com',
+    tip: 'preset_tip_gemini',
+  },
+  42: {
+    name: 'Mistral AI',
+    base_url: 'https://api.mistral.ai',
+    tip: 'preset_tip_mistral',
+  },
+  4: {
+    name: 'Ollama',
+    base_url: 'http://localhost:11434',
+    tip: 'preset_tip_ollama',
+  },
+  17: {
+    name: '阿里通义千问',
+    base_url: 'https://dashscope.aliyuncs.com',
+    tip: 'preset_tip_qwen',
+  },
+  26: {
+    name: '智谱 GLM',
+    base_url: 'https://open.bigmodel.cn',
+    tip: 'preset_tip_zhipu',
+  },
+  48: {
+    name: 'xAI',
+    base_url: 'https://api.x.ai',
+    tip: 'preset_tip_xai',
+  },
+  40: {
+    name: 'SiliconCloud',
+    base_url: 'https://api.siliconflow.cn',
+    tip: 'preset_tip_siliconcloud',
+  },
+};
+
 export const MODEL_TABLE_PAGE_SIZE = 10;

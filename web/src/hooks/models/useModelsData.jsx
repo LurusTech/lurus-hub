@@ -97,6 +97,8 @@ export const useModelsData = () => {
   const [editingVendor, setEditingVendor] = useState({ id: undefined });
   const [syncing, setSyncing] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [pricingMap, setPricingMap] = useState({});
+  const [syncingChannels, setSyncingChannels] = useState(false);
 
   const vendorMap = useMemo(() => {
     const map = {};
@@ -247,6 +249,42 @@ export const useModelsData = () => {
       return false;
     } finally {
       setSyncing(false);
+    }
+  };
+
+  // Load pricing info for all models
+  const loadPricingInfo = async () => {
+    try {
+      const res = await API.get('/api/models/pricing_info');
+      if (res.data.success) {
+        const map = {};
+        const items = res.data.data || [];
+        items.forEach((item) => {
+          map[item.model_name] = item;
+        });
+        setPricingMap(map);
+      }
+    } catch (_) {
+      // pricing info is supplementary, don't block on failure
+    }
+  };
+
+  // Sync all channel models (one-click)
+  const syncAllChannels = async () => {
+    setSyncingChannels(true);
+    try {
+      const res = await API.post('/api/models/sync_channels');
+      if (res.data.success) {
+        showSuccess(t('渠道模型同步完成'));
+        await refresh();
+        await loadPricingInfo();
+      } else {
+        showError(res.data.message || t('同步失败'));
+      }
+    } catch (_) {
+      showError(t('渠道同步失败'));
+    } finally {
+      setSyncingChannels(false);
     }
   };
 
@@ -423,6 +461,7 @@ export const useModelsData = () => {
   useEffect(() => {
     (async () => {
       await loadVendors();
+      await loadPricingInfo();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -493,5 +532,11 @@ export const useModelsData = () => {
     syncUpstream,
     previewUpstreamDiff,
     applyUpstreamOverwrite,
+
+    // Pricing & channel sync
+    pricingMap,
+    syncingChannels,
+    loadPricingInfo,
+    syncAllChannels,
   };
 };

@@ -168,7 +168,84 @@ func fetchAndMergeModels(channel *repo.Channel) ([]string, error) {
 		common.SysLog(fmt.Sprintf("model auto-sync: channel %d failed to update abilities: %s", channel.Id, err.Error()))
 	}
 
+	// Auto-create model metadata entries for new models (Phase 1)
+	ensureModelMetadataEntries(newModels, channel.Type)
+
 	return newModels, nil
+}
+
+// channelTypeToVendorName maps channel types to vendor display names.
+// Used when auto-creating model metadata entries during channel sync.
+var channelTypeToVendorName = map[int]string{
+	constant.ChannelTypeOpenAI:      "OpenAI",
+	constant.ChannelTypeAnthropic:   "Anthropic",
+	constant.ChannelTypeGemini:      "Google",
+	constant.ChannelTypeAli:         "Alibaba",
+	constant.ChannelTypeZhipu_v4:    "Zhipu",
+	constant.ChannelTypeVolcEngine:  "Volcengine",
+	constant.ChannelTypeMoonshot:    "Moonshot",
+	constant.ChannelTypeDeepSeek:    "DeepSeek",
+	constant.ChannelTypeBaidu:       "Baidu",
+	constant.ChannelTypeBaiduV2:     "Baidu",
+	constant.ChannelTypeMiniMax:     "MiniMax",
+	constant.ChannelTypeXai:         "xAI",
+	constant.ChannelTypeMistral:     "Mistral",
+	constant.ChannelTypeCohere:      "Cohere",
+	constant.ChannelTypeLingYiWanWu: "01.AI",
+	constant.ChannelTypePerplexity:  "Perplexity",
+	constant.ChannelTypeSiliconFlow: "SiliconFlow",
+	constant.ChannelTypeAzure:       "Azure",
+	constant.ChannelTypeAws:         "AWS",
+	constant.ChannelTypeVertexAi:    "Google",
+	constant.ChannelTypeTencent:     "Tencent",
+}
+
+// ensureModelMetadataEntries auto-creates model metadata for newly discovered models.
+func ensureModelMetadataEntries(newModels []string, channelType int) {
+	if len(newModels) == 0 {
+		return
+	}
+
+	vendorName := channelTypeToVendorName[channelType]
+	if vendorName == "" {
+		vendorName = "Other"
+	}
+
+	vendorID, err := repo.GetOrCreateVendorByName(vendorName)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("model auto-sync: failed to get/create vendor %q: %s", vendorName, err.Error()))
+		return
+	}
+
+	created := 0
+	for _, modelName := range newModels {
+		exists, err := repo.IsModelNameDuplicated(0, modelName)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("model auto-sync: failed to check model %q: %s", modelName, err.Error()))
+			continue
+		}
+		if exists {
+			continue
+		}
+
+		m := &repo.Model{
+			ModelName:    modelName,
+			VendorID:     vendorID,
+			Status:       1,
+			NameRule:     repo.NameRuleExact,
+			SyncOfficial: 1,
+		}
+		if err := repo.ModelInsert(m); err != nil {
+			common.SysLog(fmt.Sprintf("model auto-sync: failed to create model metadata for %q: %s", modelName, err.Error()))
+			continue
+		}
+		created++
+	}
+
+	if created > 0 {
+		common.SysLog(fmt.Sprintf("model auto-sync: auto-created %d model metadata entries (vendor=%s)", created, vendorName))
+		repo.RefreshPricing()
+	}
 }
 
 func buildModelsURL(channelType int, baseURL string) string {

@@ -174,6 +174,47 @@ const renderBoundChannels = (channels) => {
   });
 };
 
+// Render pricing source indicator
+const renderPricingSource = (record, pricingMap, t) => {
+  const info = pricingMap?.[record.model_name];
+  if (!info) {
+    return (
+      <Tag size='small' shape='circle' color='grey'>
+        -
+      </Tag>
+    );
+  }
+  switch (info.source) {
+    case 'explicit':
+      return (
+        <Tooltip content={t('显式配置倍率')} showArrow>
+          <Tag size='small' shape='circle' color='green'>
+            {info.ratio?.toFixed(3)}
+          </Tag>
+        </Tooltip>
+      );
+    case 'family_fallback':
+      return (
+        <Tooltip
+          content={`${t('自动定价')}: ${info.family} × ${info.markup}`}
+          showArrow
+        >
+          <Tag size='small' shape='circle' color='blue'>
+            ≈ {info.ratio?.toFixed(3)}
+          </Tag>
+        </Tooltip>
+      );
+    default:
+      return (
+        <Tooltip content={t('未配置倍率，调用将失败')} showArrow>
+          <Tag size='small' shape='circle' color='red'>
+            {t('未定价')}
+          </Tag>
+        </Tooltip>
+      );
+  }
+};
+
 // Render operations column
 const renderOperations = (
   text,
@@ -280,6 +321,7 @@ export const getModelsColumns = ({
   setShowEdit,
   refresh,
   vendorMap,
+  pricingMap,
 }) => {
   return [
     {
@@ -321,6 +363,13 @@ export const getModelsColumns = ({
       title: t('供应商'),
       dataIndex: 'vendor_id',
       render: (vendorId, record) => renderVendorTag(vendorId, vendorMap, t),
+    },
+    {
+      title: t('定价'),
+      dataIndex: 'pricing',
+      width: 100,
+      align: 'center',
+      render: (_, record) => renderPricingSource(record, pricingMap, t),
     },
     {
       title: t('标签'),

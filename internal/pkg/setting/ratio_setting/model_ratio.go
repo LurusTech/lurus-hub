@@ -473,6 +473,46 @@ func GetModelRatio(name string) (float64, bool, string) {
 	return 37.5, operation_setting.SelfUseModeEnabled, name
 }
 
+// PricingSource holds the pricing source details for a model.
+type PricingSource struct {
+	Source    string  `json:"source"`               // "explicit", "family_fallback", "none"
+	Ratio     float64 `json:"ratio"`
+	Family    string  `json:"family,omitempty"`
+	BaseRatio float64 `json:"base_ratio,omitempty"`
+	Markup    float64 `json:"markup,omitempty"`
+}
+
+// GetModelPricingSource returns the pricing source and effective ratio for a model.
+func GetModelPricingSource(name string) PricingSource {
+	modelRatioMapMutex.RLock()
+	defer modelRatioMapMutex.RUnlock()
+
+	name = FormatMatchingModelName(name)
+
+	// 1. Explicit match in ratio map
+	if ratio, ok := modelRatioMap[name]; ok {
+		return PricingSource{Source: "explicit", Ratio: ratio}
+	}
+
+	// 2. Family-based fallback
+	if baseRatio, matched := ModelFamilyFallback(name); matched {
+		markup := operation_setting.ModelFallbackMarkup
+		if markup <= 0 {
+			markup = 1.0
+		}
+		return PricingSource{
+			Source:    "family_fallback",
+			Ratio:     baseRatio * markup,
+			Family:    GetModelFamilyName(name),
+			BaseRatio: baseRatio,
+			Markup:    markup,
+		}
+	}
+
+	// 3. No match
+	return PricingSource{Source: "none"}
+}
+
 func DefaultModelRatio2JSONString() string {
 	jsonBytes, err := common.Marshal(defaultModelRatio)
 	if err != nil {

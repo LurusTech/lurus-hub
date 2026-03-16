@@ -74,6 +74,25 @@ var modelFamilyRules = []familyRule{
 	{"doubao-", "", 0.057},
 }
 
+// GetModelFamilyName returns the matched family name for a model (e.g. "gemini-flash-lite"),
+// or empty string if no family matched.
+func GetModelFamilyName(name string) string {
+	lower := strings.ToLower(name)
+	for _, rule := range modelFamilyRules {
+		if !strings.HasPrefix(lower, rule.prefix) {
+			continue
+		}
+		if rule.tier == "" {
+			return strings.TrimSuffix(rule.prefix, "-")
+		}
+		rest := lower[len(rule.prefix):]
+		if strings.Contains(rest, rule.tier) {
+			return strings.TrimSuffix(rule.prefix, "-") + "-" + rule.tier
+		}
+	}
+	return ""
+}
+
 // ModelFamilyFallback returns a base ratio for models not in the explicit ratio map.
 // It matches by provider prefix + tier keyword in the model name.
 // Returns (baseRatio, true) if matched, (0, false) if no family recognized.

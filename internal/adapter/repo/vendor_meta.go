@@ -53,6 +53,26 @@ func GetAllVendors(offset int, limit int) ([]*Vendor, error) {
 	return vendors, err
 }
 
+// GetOrCreateVendorByName finds a vendor by name, creating it if it doesn't exist.
+func GetOrCreateVendorByName(name string) (int, error) {
+	var existing Vendor
+	if err := DB.Where("name = ?", name).First(&existing).Error; err == nil {
+		return existing.Id, nil
+	}
+	v := &Vendor{
+		Name:   name,
+		Status: 1,
+	}
+	if err := VendorInsert(v); err != nil {
+		// Race condition: another goroutine may have created it
+		if err2 := DB.Where("name = ?", name).First(&existing).Error; err2 == nil {
+			return existing.Id, nil
+		}
+		return 0, err
+	}
+	return v.Id, nil
+}
+
 // SearchVendors 按关键字搜索供应商
 func SearchVendors(keyword string, offset int, limit int) ([]*Vendor, int64, error) {
 	db := DB.Model(&Vendor{})

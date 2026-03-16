@@ -23,6 +23,7 @@ import ModelsTable from './ModelsTable';
 import ModelsActions from './ModelsActions';
 import ModelsFilters from './ModelsFilters';
 import ModelsTabs from './ModelsTabs';
+import ModelSyncDashboard from './ModelSyncDashboard';
 import EditModelModal from './modals/EditModelModal';
 import EditVendorModal from './modals/EditVendorModal';
 import { useModelsData } from '../../../hooks/models/useModelsData';
@@ -92,6 +93,16 @@ const ModelsPage = () => {
           loadVendors();
           refresh();
         }}
+      />
+
+      <ModelSyncDashboard
+        modelCount={modelsData.modelCount}
+        pricingMap={modelsData.pricingMap}
+        syncAllChannels={modelsData.syncAllChannels}
+        syncingChannels={modelsData.syncingChannels}
+        syncUpstream={modelsData.syncUpstream}
+        syncing={modelsData.syncing}
+        t={t}
       />
 
       <CardPro

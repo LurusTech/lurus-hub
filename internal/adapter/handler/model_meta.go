@@ -6,9 +6,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -158,6 +159,45 @@ func DeleteModelMeta(c *gin.Context) {
 	}
 	repo.RefreshPricing()
 	common.ApiSuccess(c, nil)
+}
+
+// GetModelsPricingInfo returns pricing source info for all models in the models table.
+func GetModelsPricingInfo(c *gin.Context) {
+	var models []repo.Model
+	if err := repo.DB.Find(&models).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	type pricingInfo struct {
+		ModelName string  `json:"model_name"`
+		Source    string  `json:"source"`
+		Ratio     float64 `json:"ratio"`
+		Family    string  `json:"family,omitempty"`
+		BaseRatio float64 `json:"base_ratio,omitempty"`
+		Markup    float64 `json:"markup,omitempty"`
+	}
+
+	result := make([]pricingInfo, 0, len(models))
+	for _, m := range models {
+		ps := ratio_setting.GetModelPricingSource(m.ModelName)
+		result = append(result, pricingInfo{
+			ModelName: m.ModelName,
+			Source:    ps.Source,
+			Ratio:     ps.Ratio,
+			Family:    ps.Family,
+			BaseRatio: ps.BaseRatio,
+			Markup:    ps.Markup,
+		})
+	}
+
+	common.ApiSuccess(c, result)
+}
+
+// SyncAllChannelsNow triggers an immediate model sync for all enabled channels.
+func SyncAllChannelsNow(c *gin.Context) {
+	syncAllChannelModels(c.Request.Context())
+	common.ApiSuccess(c, gin.H{"message": "channel model sync completed"})
 }
 
 // enrichModels 批量填充附加信息：端点、渠道、分组、计费类型，避免 N+1 查询

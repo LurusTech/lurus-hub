@@ -80,7 +80,6 @@ func seedTestUser(t *testing.T, db *gorm.DB, quota int) int {
 		Email:       "test@test.local",
 		Quota:       quota,
 		Group:       "default",
-		AffCode:     common.GetRandomString(8),
 	}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("failed to seed user: %v", err)

@@ -14,64 +14,21 @@ import (
 
 var usernameRegexp = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
-// InternalLogin authenticates a user by username and password.
+// InternalLogin is no longer supported — auth is delegated to Zitadel.
 // POST /internal/auth/login
 func InternalLogin(c *gin.Context) {
-	var req struct {
-		Username string `json:"username" binding:"required"`
-		Password string `json:"password" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request: " + err.Error(),
-		})
-		return
-	}
-
-	user := &repo.User{
-		Username: strings.TrimSpace(req.Username),
-		Password: req.Password,
-	}
-
-	err := user.ValidateAndFill()
-	if err != nil {
-		if user.Status == common.UserStatusDisabled {
-			c.JSON(http.StatusForbidden, gin.H{
-				"success":    false,
-				"message":    "User is disabled",
-				"error_code": "USER_DISABLED",
-			})
-			return
-		}
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success":    false,
-			"message":    "Invalid credentials",
-			"error_code": "AUTH_FAILED",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"user_id":      user.Id,
-			"username":     user.Username,
-			"display_name": user.DisplayName,
-			"email":        user.Email,
-			"role":         user.Role,
-			"status":       user.Status,
-		},
+	c.JSON(http.StatusGone, gin.H{
+		"success":    false,
+		"message":    "Password-based login is no longer supported. Use Zitadel OIDC.",
+		"error_code": "DEPRECATED",
 	})
 }
 
-// InternalCreateUser creates a new user.
+// InternalCreateUser creates a new user via the internal API.
 // POST /internal/user
 func InternalCreateUser(c *gin.Context) {
 	var req struct {
 		Username    string `json:"username" binding:"required"`
-		Password    string `json:"password" binding:"required"`
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
 		Group       string `json:"group"`
@@ -86,7 +43,6 @@ func InternalCreateUser(c *gin.Context) {
 		return
 	}
 
-	// Validate username format
 	username := strings.TrimSpace(req.Username)
 	if len(username) < 3 || len(username) > 20 {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -105,17 +61,6 @@ func InternalCreateUser(c *gin.Context) {
 		return
 	}
 
-	// Validate password length
-	if len(req.Password) < 8 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success":    false,
-			"message":    "Password must be at least 8 characters",
-			"error_code": "VALIDATION_FAILED",
-		})
-		return
-	}
-
-	// Validate email if provided
 	if req.Email != "" && !strings.Contains(req.Email, "@") {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success":    false,
@@ -125,10 +70,9 @@ func InternalCreateUser(c *gin.Context) {
 		return
 	}
 
-	// Check idempotency
+	// Idempotency check
 	idempotencyKey := c.GetHeader("X-Idempotency-Key")
 	if idempotencyKey != "" {
-		// Check if user already created with this key
 		existing := &repo.User{Username: username}
 		if err := repo.DB.Where("username = ?", username).First(existing).Error; err == nil && existing.Id > 0 {
 			c.JSON(http.StatusOK, gin.H{
@@ -147,7 +91,6 @@ func InternalCreateUser(c *gin.Context) {
 		}
 	}
 
-	// Check for duplicate username
 	var existingCount int64
 	repo.DB.Model(&repo.User{}).Where("username = ?", username).Count(&existingCount)
 	if existingCount > 0 {
@@ -159,7 +102,6 @@ func InternalCreateUser(c *gin.Context) {
 		return
 	}
 
-	// Check for duplicate email
 	if req.Email != "" {
 		var emailCount int64
 		repo.DB.Model(&repo.User{}).Where("email = ?", req.Email).Count(&emailCount)
@@ -171,16 +113,6 @@ func InternalCreateUser(c *gin.Context) {
 			})
 			return
 		}
-	}
-
-	// Hash password
-	hashedPw, err := common.Password2Hash(req.Password)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Failed to hash password",
-		})
-		return
 	}
 
 	group := req.Group
@@ -195,14 +127,12 @@ func InternalCreateUser(c *gin.Context) {
 
 	user := &repo.User{
 		Username:    username,
-		Password:    hashedPw,
 		Email:       req.Email,
 		DisplayName: displayName,
 		Group:       group,
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Quota:       req.Quota,
-		AffCode:     common.GetRandomString(8),
 	}
 
 	if err := repo.DB.Create(user).Error; err != nil {
@@ -238,7 +168,6 @@ func InternalDeleteUser(c *gin.Context) {
 		return
 	}
 
-	// Protect root/admin users
 	user, err := repo.GetUserById(userId, false)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -258,8 +187,7 @@ func InternalDeleteUser(c *gin.Context) {
 		return
 	}
 
-	err = repo.DeleteUserById(userId)
-	if err != nil {
+	if err = repo.DeleteUserById(userId); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Failed to delete user: " + err.Error(),
@@ -288,9 +216,7 @@ func InternalGetUserTokens(c *gin.Context) {
 		return
 	}
 
-	// Check user exists
-	_, err = repo.GetUserById(userId, false)
-	if err != nil {
+	if _, err = repo.GetUserById(userId, false); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"success":    false,
 			"message":    "User not found",
@@ -320,7 +246,6 @@ func InternalGetUserTokens(c *gin.Context) {
 
 	total, _ := repo.CountUserTokens(userId)
 
-	// Clean keys from response
 	for _, t := range tokens {
 		t.Clean()
 	}
@@ -354,7 +279,6 @@ func InternalCreateToken(c *gin.Context) {
 		return
 	}
 
-	// Check user exists and is enabled
 	user, err := repo.GetUserById(req.UserId, false)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -374,7 +298,6 @@ func InternalCreateToken(c *gin.Context) {
 		return
 	}
 
-	// Check idempotency
 	idempotencyKey := c.GetHeader("X-Idempotency-Key")
 	if idempotencyKey != "" {
 		var existing repo.Token
@@ -402,8 +325,7 @@ func InternalCreateToken(c *gin.Context) {
 		Group:          user.Group,
 	}
 
-	err = token.Insert()
-	if err != nil {
+	if err = token.Insert(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Failed to create token: " + err.Error(),

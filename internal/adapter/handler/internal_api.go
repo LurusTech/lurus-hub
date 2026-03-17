@@ -37,15 +37,13 @@ func InternalGetUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"id":             user.Id,
-			"username":       user.Username,
-			"display_name":   user.DisplayName,
-			"email":          user.Email,
-			"phone":          user.Phone,
-			"phone_verified": user.PhoneVerified,
-			"role":           user.Role,
-			"status":         user.Status,
-			"group":          user.Group,
+			"id":           user.Id,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"email":        user.Email,
+			"role":         user.Role,
+			"status":       user.Status,
+			"group":        user.Group,
 		},
 	})
 }
@@ -75,54 +73,25 @@ func InternalGetUserByEmail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"id":             user.Id,
-			"username":       user.Username,
-			"display_name":   user.DisplayName,
-			"email":          user.Email,
-			"phone":          user.Phone,
-			"phone_verified": user.PhoneVerified,
-			"role":           user.Role,
-			"status":         user.Status,
-			"group":          user.Group,
+			"id":           user.Id,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"email":        user.Email,
+			"role":         user.Role,
+			"status":       user.Status,
+			"group":        user.Group,
 		},
 	})
 }
 
-// InternalGetUserByPhone gets user by phone
+// InternalGetUserByPhone returns 410 Gone — phone-based lookup is no longer supported.
+// Phone auth is delegated to Zitadel.
 // GET /internal/user/by-phone/:phone
 func InternalGetUserByPhone(c *gin.Context) {
-	phone := c.Param("phone")
-	if phone == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Phone is required",
-		})
-		return
-	}
-
-	user, err := repo.GetUserByPhone(phone)
-	if err != nil || user == nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success":    false,
-			"message":    "User not found",
-			"error_code": "USER_NOT_FOUND",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"id":             user.Id,
-			"username":       user.Username,
-			"display_name":   user.DisplayName,
-			"email":          user.Email,
-			"phone":          user.Phone,
-			"phone_verified": user.PhoneVerified,
-			"role":           user.Role,
-			"status":         user.Status,
-			"group":          user.Group,
-		},
+	c.JSON(http.StatusGone, gin.H{
+		"success":    false,
+		"message":    "Phone-based user lookup is no longer supported",
+		"error_code": "DEPRECATED",
 	})
 }
 
@@ -141,7 +110,6 @@ func InternalUpdateUser(c *gin.Context) {
 	var req struct {
 		DisplayName *string `json:"display_name"`
 		Email       *string `json:"email"`
-		Phone       *string `json:"phone"`
 		Status      *int    `json:"status"`
 		Group       *string `json:"group"`
 	}
@@ -161,10 +129,6 @@ func InternalUpdateUser(c *gin.Context) {
 	}
 	if req.Email != nil {
 		updates["email"] = *req.Email
-	}
-	if req.Phone != nil {
-		updates["phone"] = *req.Phone
-		updates["phone_verified"] = true // Internal API sets phone as verified
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
@@ -212,15 +176,13 @@ func InternalUpdateUser(c *gin.Context) {
 		"success": true,
 		"message": "User updated successfully",
 		"data": gin.H{
-			"id":             updatedUser.Id,
-			"username":       updatedUser.Username,
-			"display_name":   updatedUser.DisplayName,
-			"email":          updatedUser.Email,
-			"phone":          updatedUser.Phone,
-			"phone_verified": updatedUser.PhoneVerified,
-			"role":           updatedUser.Role,
-			"status":         updatedUser.Status,
-			"group":          updatedUser.Group,
+			"id":           updatedUser.Id,
+			"username":     updatedUser.Username,
+			"display_name": updatedUser.DisplayName,
+			"email":        updatedUser.Email,
+			"role":         updatedUser.Role,
+			"status":       updatedUser.Status,
+			"group":        updatedUser.Group,
 		},
 	})
 }

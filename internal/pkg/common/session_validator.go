@@ -12,13 +12,19 @@ import (
 	"time"
 )
 
-// IdentitySessionSecret is the shared HS256 secret for validating lurus-identity session tokens.
-// Must match the SESSION_SECRET env var in lurus-identity.
+// IdentitySessionSecret is the shared HS256 secret for validating lurus-platform session tokens.
+// Must match the SESSION_SECRET env var in lurus-platform.
 var IdentitySessionSecret = os.Getenv("IDENTITY_SESSION_SECRET")
 
-const sessionIssuer = "lurus-identity"
+// validSessionIssuers lists accepted issuer values for platform session tokens.
+// "lurus-platform" is the current issuer; "lurus-identity" is kept for backward compatibility
+// with tokens issued before the rename.
+var validSessionIssuers = map[string]bool{
+	"lurus-platform": true,
+	"lurus-identity": true,
+}
 
-// ValidateIdentitySessionToken parses and verifies a lurus-identity HS256 session token.
+// ValidateIdentitySessionToken parses and verifies a lurus-platform HS256 session token.
 // Returns the lurus account ID embedded in the sub claim, or an error.
 func ValidateIdentitySessionToken(tokenStr string) (int64, error) {
 	if IdentitySessionSecret == "" {
@@ -57,7 +63,7 @@ func ValidateIdentitySessionToken(tokenStr string) (int64, error) {
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return 0, fmt.Errorf("session: parse payload: %w", err)
 	}
-	if claims.Iss != sessionIssuer {
+	if !validSessionIssuers[claims.Iss] {
 		return 0, fmt.Errorf("session: unexpected issuer %q", claims.Iss)
 	}
 	if time.Now().Unix() > claims.Exp {

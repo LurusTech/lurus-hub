@@ -1,14 +1,11 @@
 package repo
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"gorm.io/gorm"
 )
 
@@ -199,7 +196,7 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 	// Get default user quota from tenant config
 	defaultQuota := GetTenantConfigInt(tenantID, "quota.new_user_quota", 10000)
 
-	// Create new lurus user
+	// Create new lurus user (auth delegated to Zitadel; no password stored)
 	user := &User{
 		Username:    username,
 		Email:       claims.Email,
@@ -209,13 +206,7 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 		Quota:       defaultQuota,
 		UsedQuota:   0,
 		Group:       "default",
-		AffCode:     generateAffCode(),
-		// TenantID will be set automatically by GORM plugin in context
 	}
-
-	// Note: Password is not set for Zitadel users (they authenticate via Zitadel)
-	// If password is required, generate a random strong password
-	user.Password = GenerateRandomPassword()
 
 	// Use WithTenantID to inject tenant context for GORM beforeCreate hook
 	tenantDB := WithTenantID(DB, tenantID)
@@ -261,19 +252,3 @@ func ensureUniqueUsername(baseUsername string, tenantID string) string {
 	}
 }
 
-// GenerateRandomPassword generates a cryptographically secure random password for Zitadel users.
-// Since they authenticate via Zitadel, this password won't be used for login.
-func GenerateRandomPassword() string {
-	const passwordBytes = 32
-	b := make([]byte, passwordBytes)
-	if _, err := rand.Read(b); err != nil {
-		// Fallback: still produce a unique, non-guessable value
-		return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
-	}
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
-// generateAffCode generates a unique affiliate code, consistent with user.go registration flow.
-func generateAffCode() string {
-	return common.GetRandomString(4)
-}

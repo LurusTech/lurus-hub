@@ -19,47 +19,29 @@ import (
 // Subtypes aliased from the canonical definition in domain/entity/user.go
 type DailyQuotaInfo = entity.DailyQuotaInfo
 
-// Canonical definition: domain/entity/user.go
-// User if you add sensitive fields, don't forget to clean them in setupLogin function.
-// Otherwise, the sensitive information will be saved on local storage in plain text!
+// User is the core user entity. Auth is delegated to Zitadel; billing is delegated to lurus-platform.
 type User struct {
-	Id               int            `json:"id"`
-	TenantId         string         `json:"tenant_id" gorm:"type:varchar(36);index;default:'default'"` // Tenant isolation
-	Username         string         `json:"username" gorm:"unique;index" validate:"max=20"`
-	Password         string         `json:"password" gorm:"not null;" validate:"min=8,max=20"`
-	OriginalPassword string         `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
-	DisplayName      string         `json:"display_name" gorm:"index" validate:"max=20"`
-	Role             int            `json:"role" gorm:"type:int;default:1"`   // admin, common
-	Status           int            `json:"status" gorm:"type:int;default:1"` // enabled, disabled
-	Email            string         `json:"email" gorm:"index" validate:"max=50"`
-	GitHubId         string         `json:"github_id" gorm:"column:github_id;index"`
-	DiscordId        string         `json:"discord_id" gorm:"column:discord_id;index"`
-	OidcId           string         `json:"oidc_id" gorm:"column:oidc_id;index"`
-	WeChatId         string         `json:"wechat_id" gorm:"column:wechat_id;index"`
-	TelegramId       string         `json:"telegram_id" gorm:"column:telegram_id;index"`
-	VerificationCode string         `json:"verification_code" gorm:"-:all"`                                    // this field is only for Email verification, don't save it to database!
-	AccessToken      *string        `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
-	Quota            int            `json:"quota" gorm:"type:int;default:0"`
-	UsedQuota        int            `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
-	RequestCount     int            `json:"request_count" gorm:"type:int;default:0;"`               // request number
-	Group            string         `json:"group" gorm:"type:varchar(64);default:'default'"`
-	// Subscription-based daily quota management (added for unified quota management)
-	DailyQuota       int            `json:"daily_quota" gorm:"type:int;default:0;column:daily_quota"`           // Daily quota limit (0 = unlimited)
-	DailyUsed        int            `json:"daily_used" gorm:"type:int;default:0;column:daily_used"`             // Today's used quota
-	LastDailyReset   int64          `json:"last_daily_reset" gorm:"type:bigint;default:0;column:last_daily_reset"` // Unix timestamp of last daily reset
-	BaseGroup        string         `json:"base_group" gorm:"type:varchar(64);column:base_group"`               // Original subscription group
-	FallbackGroup    string         `json:"fallback_group" gorm:"type:varchar(64);column:fallback_group"`       // Fallback group when daily quota exhausted
-	AffCode          string         `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
-	AffCount         int            `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
-	AffQuota         int            `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
-	AffHistoryQuota  int            `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
-	InviterId        int            `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
-	DeletedAt        gorm.DeletedAt `gorm:"index"`
-	LinuxDOId        string         `json:"linux_do_id" gorm:"column:linux_do_id;index"`
-	Phone            string         `json:"phone" gorm:"column:phone;index"`
-	PhoneVerified    bool           `json:"phone_verified" gorm:"column:phone_verified;default:false"`
-	Setting          string         `json:"setting" gorm:"type:text;column:setting"`
-	Remark           string         `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
+	Id             int            `json:"id"`
+	TenantId       string         `json:"tenant_id" gorm:"type:varchar(36);index;default:'default'"` // Tenant isolation
+	Username       string         `json:"username" gorm:"unique;index" validate:"max=20"`
+	DisplayName    string         `json:"display_name" gorm:"index" validate:"max=20"`
+	Role           int            `json:"role" gorm:"type:int;default:1"`   // admin, common
+	Status         int            `json:"status" gorm:"type:int;default:1"` // enabled, disabled
+	Email          string         `json:"email" gorm:"index" validate:"max=50"`
+	AccessToken    *string        `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // system management token
+	Quota          int            `json:"quota" gorm:"type:int;default:0"`
+	UsedQuota      int            `json:"used_quota" gorm:"type:int;default:0;column:used_quota"`
+	RequestCount   int            `json:"request_count" gorm:"type:int;default:0;"`
+	Group          string         `json:"group" gorm:"type:varchar(64);default:'default'"`
+	// Subscription-based daily quota management
+	DailyQuota     int            `json:"daily_quota" gorm:"type:int;default:0;column:daily_quota"`
+	DailyUsed      int            `json:"daily_used" gorm:"type:int;default:0;column:daily_used"`
+	LastDailyReset int64          `json:"last_daily_reset" gorm:"type:bigint;default:0;column:last_daily_reset"`
+	BaseGroup      string         `json:"base_group" gorm:"type:varchar(64);column:base_group"`
+	FallbackGroup  string         `json:"fallback_group" gorm:"type:varchar(64);column:fallback_group"`
+	DeletedAt      gorm.DeletedAt `gorm:"index"`
+	Setting        string         `json:"setting" gorm:"type:text;column:setting"`
+	Remark         string         `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -111,18 +93,16 @@ func (user *User) SetSetting(setting dto.UserSetting) {
 	user.Setting = string(settingBytes)
 }
 
-// 根据用户角色生成默认的边栏配置
+// generateDefaultSidebarConfigForRole generates default sidebar config based on user role
 func generateDefaultSidebarConfigForRole(userRole int) string {
 	defaultConfig := map[string]interface{}{}
 
-	// 聊天区域 - 所有用户都可以访问
 	defaultConfig["chat"] = map[string]interface{}{
 		"enabled":    true,
 		"playground": true,
 		"chat":       true,
 	}
 
-	// 控制台区域 - 所有用户都可以访问
 	defaultConfig["console"] = map[string]interface{}{
 		"enabled":    true,
 		"detail":     true,
@@ -132,26 +112,22 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 		"task":       true,
 	}
 
-	// 个人中心区域 - 所有用户都可以访问
 	defaultConfig["personal"] = map[string]interface{}{
 		"enabled":  true,
 		"topup":    true,
 		"personal": true,
 	}
 
-	// 管理员区域 - 根据角色决定
 	if userRole == common.RoleAdminUser {
-		// 管理员可以访问管理员区域，但不能访问系统设置
 		defaultConfig["admin"] = map[string]interface{}{
 			"enabled":    true,
 			"channel":    true,
 			"models":     true,
 			"redemption": true,
 			"user":       true,
-			"setting":    false, // 管理员不能访问系统设置
+			"setting":    false,
 		}
 	} else if userRole == common.RoleRootUser {
-		// 超级管理员可以访问所有功能
 		defaultConfig["admin"] = map[string]interface{}{
 			"enabled":    true,
 			"channel":    true,
@@ -161,40 +137,14 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 			"setting":    true,
 		}
 	}
-	// 普通用户不包含admin区域
 
-	// 转换为JSON字符串
 	configBytes, err := json.Marshal(defaultConfig)
 	if err != nil {
-		common.SysLog("生成默认边栏配置失败: " + err.Error())
+		common.SysLog(fmt.Sprintf("failed to generate default sidebar config: %v", err))
 		return ""
 	}
 
 	return string(configBytes)
-}
-
-// CheckUserExistOrDeleted check if user exist or deleted, if not exist, return false, nil, if deleted or exist, return true, nil
-func CheckUserExistOrDeleted(username string, email string) (bool, error) {
-	var user User
-
-	// err := DB.Unscoped().First(&user, "username = ? or email = ?", username, email).Error
-	// check email if empty
-	var err error
-	if email == "" {
-		err = DB.Unscoped().First(&user, "username = ?", username).Error
-	} else {
-		err = DB.Unscoped().First(&user, "username = ? or email = ?", username, email).Error
-	}
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// not exist, return false, nil
-			return false, nil
-		}
-		// other error, return false, err
-		return false, err
-	}
-	// exist, return true, nil
-	return true, nil
 }
 
 func GetMaxUserId() int {
@@ -204,7 +154,6 @@ func GetMaxUserId() int {
 }
 
 func GetAllUsers(pageInfo *common.PageInfo) (users []*User, total int64, err error) {
-	// Start transaction
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, 0, tx.Error
@@ -215,21 +164,18 @@ func GetAllUsers(pageInfo *common.PageInfo) (users []*User, total int64, err err
 		}
 	}()
 
-	// Get total count within transaction
 	err = tx.Unscoped().Model(&User{}).Count(&total).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
-	// Get paginated users within same transaction
-	err = tx.Unscoped().Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Omit("password").Find(&users).Error
+	err = tx.Unscoped().Order("id desc").Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&users).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
-	// Commit transaction
 	if err = tx.Commit().Error; err != nil {
 		return nil, 0, err
 	}
@@ -242,7 +188,6 @@ func SearchUsers(keyword string, group string, startIdx int, num int) ([]*User, 
 	var total int64
 	var err error
 
-	// 开始事务
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, 0, tx.Error
@@ -253,16 +198,12 @@ func SearchUsers(keyword string, group string, startIdx int, num int) ([]*User, 
 		}
 	}()
 
-	// 构建基础查询
 	query := tx.Unscoped().Model(&User{})
 
-	// 构建搜索条件
 	likeCondition := "username LIKE ? OR email LIKE ? OR display_name LIKE ?"
 
-	// 尝试将关键字转换为整数ID
 	keywordInt, err := strconv.Atoi(keyword)
 	if err == nil {
-		// 如果是数字，同时搜索ID和其他字段
 		likeCondition = "id = ? OR " + likeCondition
 		if group != "" {
 			query = query.Where("("+likeCondition+") AND "+commonGroupCol+" = ?",
@@ -272,7 +213,6 @@ func SearchUsers(keyword string, group string, startIdx int, num int) ([]*User, 
 				keywordInt, "%"+keyword+"%", "%"+keyword+"%", "%"+keyword+"%")
 		}
 	} else {
-		// 非数字关键字，只搜索字符串字段
 		if group != "" {
 			query = query.Where("("+likeCondition+") AND "+commonGroupCol+" = ?",
 				"%"+keyword+"%", "%"+keyword+"%", "%"+keyword+"%", group)
@@ -282,21 +222,18 @@ func SearchUsers(keyword string, group string, startIdx int, num int) ([]*User, 
 		}
 	}
 
-	// 获取总数
 	err = query.Count(&total).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
-	// 获取分页数据
-	err = query.Omit("password").Order("id desc").Limit(num).Offset(startIdx).Find(&users).Error
+	err = query.Order("id desc").Limit(num).Offset(startIdx).Find(&users).Error
 	if err != nil {
 		tx.Rollback()
 		return nil, 0, err
 	}
 
-	// 提交事务
 	if err = tx.Commit().Error; err != nil {
 		return nil, 0, err
 	}
@@ -304,27 +241,15 @@ func SearchUsers(keyword string, group string, startIdx int, num int) ([]*User, 
 	return users, total, nil
 }
 
-func GetUserById(id int, selectAll bool) (*User, error) {
+// GetUserById fetches a user by ID. The optional bool argument is accepted but ignored
+// (kept for backward compatibility while callers are updated).
+func GetUserById(id int, _ ...bool) (*User, error) {
 	if id == 0 {
 		return nil, errors.New("id 为空！")
 	}
 	user := User{Id: id}
-	var err error = nil
-	if selectAll {
-		err = DB.First(&user, "id = ?", id).Error
-	} else {
-		err = DB.Omit("password").First(&user, "id = ?", id).Error
-	}
+	err := DB.First(&user, "id = ?", id).Error
 	return &user, err
-}
-
-func GetUserIdByAffCode(affCode string) (int, error) {
-	if affCode == "" {
-		return 0, errors.New("affCode 为空！")
-	}
-	var user User
-	err := DB.Select("id").First(&user, "aff_code = ?", affCode).Error
-	return user.Id, err
 }
 
 func DeleteUserById(id int) (err error) {
@@ -343,70 +268,11 @@ func HardDeleteUserById(id int) error {
 	return err
 }
 
-func inviteUser(inviterId int) (err error) {
-	user, err := GetUserById(inviterId, true)
-	if err != nil {
-		return err
-	}
-	user.AffCount++
-	user.AffQuota += common.QuotaForInviter
-	user.AffHistoryQuota += common.QuotaForInviter
-	return DB.Save(user).Error
-}
-
-func (user *User) TransferAffQuotaToQuota(quota int) error {
-	// 检查quota是否小于最小额度
-	if float64(quota) < common.QuotaPerUnit {
-		return fmt.Errorf("转移额度最小为%s！", logger.LogQuota(int(common.QuotaPerUnit)))
-	}
-
-	// 开始数据库事务
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-	defer tx.Rollback() // 确保在函数退出时事务能回滚
-
-	// 加锁查询用户以确保数据一致性
-	err := tx.Set("gorm:query_option", "FOR UPDATE").First(&user, user.Id).Error
-	if err != nil {
-		return err
-	}
-
-	// 再次检查用户的AffQuota是否足够
-	if user.AffQuota < quota {
-		return errors.New("邀请额度不足！")
-	}
-
-	// 更新用户额度
-	user.AffQuota -= quota
-	user.Quota += quota
-
-	// 保存用户状态
-	if err := tx.Save(user).Error; err != nil {
-		return err
-	}
-
-	// 提交事务
-	return tx.Commit().Error
-}
-
-func (user *User) Insert(inviterId int) error {
-	var err error
-	if user.Password != "" {
-		user.Password, err = common.Password2Hash(user.Password)
-		if err != nil {
-			return err
-		}
-	}
+func (user *User) Insert() error {
 	user.Quota = common.QuotaForNewUser
-	//user.SetAccessToken(common.GetUUID())
-	user.AffCode = common.GetRandomString(4)
 
-	// 初始化用户设置，包括默认的边栏配置
 	if user.Setting == "" {
 		defaultSetting := dto.UserSetting{}
-		// 这里暂时不设置SidebarModules，因为需要在用户创建后根据角色设置
 		user.SetSetting(defaultSetting)
 	}
 
@@ -415,65 +281,38 @@ func (user *User) Insert(inviterId int) error {
 		return result.Error
 	}
 
-	// 用户创建成功后，根据角色初始化边栏配置
-	// 需要重新获取用户以确保有正确的ID和Role
+	// Initialize sidebar config based on role after user creation
 	var createdUser User
 	if err := DB.Where("username = ?", user.Username).First(&createdUser).Error; err == nil {
-		// 生成基于角色的默认边栏配置
 		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
 		if defaultSidebarConfig != "" {
 			currentSetting := createdUser.GetSetting()
 			currentSetting.SidebarModules = defaultSidebarConfig
 			createdUser.SetSetting(currentSetting)
-			createdUser.Update(false)
-			common.SysLog(fmt.Sprintf("为新用户 %s (角色: %d) 初始化边栏配置", createdUser.Username, createdUser.Role))
+			createdUser.Update()
+			common.SysLog(fmt.Sprintf("initialized sidebar config for new user %s (role: %d)", createdUser.Username, createdUser.Role))
 		}
 	}
 
 	if common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser)))
 	}
-	if inviterId != 0 {
-		if common.QuotaForInvitee > 0 {
-			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
-			RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("使用邀请码赠送 %s", logger.LogQuota(common.QuotaForInvitee)))
-		}
-		if common.QuotaForInviter > 0 {
-			//_ = IncreaseUserQuota(inviterId, common.QuotaForInviter)
-			RecordLog(inviterId, LogTypeSystem, fmt.Sprintf("邀请用户赠送 %s", logger.LogQuota(common.QuotaForInviter)))
-			_ = inviteUser(inviterId)
-		}
-	}
+
 	return nil
 }
 
-func (user *User) Update(updatePassword bool) error {
-	var err error
-	if updatePassword {
-		user.Password, err = common.Password2Hash(user.Password)
-		if err != nil {
-			return err
-		}
-	}
+// Update saves the user and updates the cache. The optional bool argument is accepted but
+// ignored (kept for backward compatibility while callers are updated).
+func (user *User) Update(_ ...bool) error {
 	newUser := *user
 	DB.First(&user, user.Id)
-	if err = DB.Model(user).Updates(newUser).Error; err != nil {
+	if err := DB.Model(user).Updates(newUser).Error; err != nil {
 		return err
 	}
-
-	// Update cache
 	return updateUserCache(*user)
 }
 
-func (user *User) Edit(updatePassword bool) error {
-	var err error
-	if updatePassword {
-		user.Password, err = common.Password2Hash(user.Password)
-		if err != nil {
-			return err
-		}
-	}
-
+func (user *User) Edit() error {
 	newUser := *user
 	updates := map[string]interface{}{
 		"username":     newUser.Username,
@@ -482,16 +321,11 @@ func (user *User) Edit(updatePassword bool) error {
 		"quota":        newUser.Quota,
 		"remark":       newUser.Remark,
 	}
-	if updatePassword {
-		updates["password"] = newUser.Password
-	}
 
 	DB.First(&user, user.Id)
-	if err = DB.Model(user).Updates(updates).Error; err != nil {
+	if err := DB.Model(user).Updates(updates).Error; err != nil {
 		return err
 	}
-
-	// Update cache
 	return updateUserCache(*user)
 }
 
@@ -502,8 +336,6 @@ func (user *User) Delete() error {
 	if err := DB.Delete(user).Error; err != nil {
 		return err
 	}
-
-	// 清除缓存
 	return invalidateUserCache(user.Id)
 }
 
@@ -511,27 +343,7 @@ func (user *User) HardDelete() error {
 	if user.Id == 0 {
 		return errors.New("id 为空！")
 	}
-	err := DB.Unscoped().Delete(user).Error
-	return err
-}
-
-// ValidateAndFill check password & user status
-func (user *User) ValidateAndFill() (err error) {
-	// When querying with struct, GORM will only query with non-zero fields,
-	// that means if your field's value is 0, '', false or other zero values,
-	// it won't be used to build query conditions
-	password := user.Password
-	username := strings.TrimSpace(user.Username)
-	if username == "" || password == "" {
-		return errors.New("用户名或密码为空")
-	}
-	// find buy username or email
-	DB.Where("username = ? OR email = ?", username, username).First(user)
-	okay := common.ValidatePasswordAndHash(password, user.Password)
-	if !okay || user.Status != common.UserStatusEnabled {
-		return errors.New("用户名或密码错误，或用户已被封禁")
-	}
-	return nil
+	return DB.Unscoped().Delete(user).Error
 }
 
 func (user *User) FillUserById() error {
@@ -550,83 +362,8 @@ func (user *User) FillUserByEmail() error {
 	return nil
 }
 
-func (user *User) FillUserByGitHubId() error {
-	if user.GitHubId == "" {
-		return errors.New("GitHub id 为空！")
-	}
-	DB.Where(User{GitHubId: user.GitHubId}).First(user)
-	return nil
-}
-
-func (user *User) FillUserByDiscordId() error {
-	if user.DiscordId == "" {
-		return errors.New("discord id 为空！")
-	}
-	DB.Where(User{DiscordId: user.DiscordId}).First(user)
-	return nil
-}
-
-func (user *User) FillUserByOidcId() error {
-	if user.OidcId == "" {
-		return errors.New("oidc id 为空！")
-	}
-	DB.Where(User{OidcId: user.OidcId}).First(user)
-	return nil
-}
-
-func (user *User) FillUserByWeChatId() error {
-	if user.WeChatId == "" {
-		return errors.New("WeChat id 为空！")
-	}
-	DB.Where(User{WeChatId: user.WeChatId}).First(user)
-	return nil
-}
-
-func (user *User) FillUserByTelegramId() error {
-	if user.TelegramId == "" {
-		return errors.New("Telegram id 为空！")
-	}
-	err := DB.Where(User{TelegramId: user.TelegramId}).First(user).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("该 Telegram 账户未绑定")
-	}
-	return nil
-}
-
 func IsEmailAlreadyTaken(email string) bool {
 	return DB.Unscoped().Where("email = ?", email).Find(&User{}).RowsAffected == 1
-}
-
-func IsWeChatIdAlreadyTaken(wechatId string) bool {
-	return DB.Unscoped().Where("wechat_id = ?", wechatId).Find(&User{}).RowsAffected == 1
-}
-
-func IsGitHubIdAlreadyTaken(githubId string) bool {
-	return DB.Unscoped().Where("github_id = ?", githubId).Find(&User{}).RowsAffected == 1
-}
-
-func IsDiscordIdAlreadyTaken(discordId string) bool {
-	return DB.Unscoped().Where("discord_id = ?", discordId).Find(&User{}).RowsAffected == 1
-}
-
-func IsOidcIdAlreadyTaken(oidcId string) bool {
-	return DB.Where("oidc_id = ?", oidcId).Find(&User{}).RowsAffected == 1
-}
-
-func IsTelegramIdAlreadyTaken(telegramId string) bool {
-	return DB.Unscoped().Where("telegram_id = ?", telegramId).Find(&User{}).RowsAffected == 1
-}
-
-func ResetUserPasswordByEmail(email string, password string) error {
-	if email == "" || password == "" {
-		return errors.New("邮箱地址或密码为空！")
-	}
-	hashedPassword, err := common.Password2Hash(password)
-	if err != nil {
-		return err
-	}
-	err = DB.Model(&User{}).Where("email = ?", email).Update("password", hashedPassword).Error
-	return err
 }
 
 func IsAdmin(userId int) bool {
@@ -641,36 +378,6 @@ func IsAdmin(userId int) bool {
 	}
 	return user.Role >= common.RoleAdminUser
 }
-
-//// IsUserEnabled checks user status from Redis first, falls back to DB if needed
-//func IsUserEnabled(id int, fromDB bool) (status bool, err error) {
-//	defer func() {
-//		// Update Redis cache asynchronously on successful DB read
-//		if shouldUpdateRedis(fromDB, err) {
-//			gopool.Go(func() {
-//				if err := updateUserStatusCache(id, status); err != nil {
-//					common.SysError("failed to update user status cache: " + err.Error())
-//				}
-//			})
-//		}
-//	}()
-//	if !fromDB && common.RedisEnabled {
-//		// Try Redis first
-//		status, err := getUserStatusCache(id)
-//		if err == nil {
-//			return status == common.UserStatusEnabled, nil
-//		}
-//		// Don't return error - fall through to DB
-//	}
-//	fromDB = true
-//	var user User
-//	err = DB.Where("id = ?", id).Select("status").Find(&user).Error
-//	if err != nil {
-//		return false, err
-//	}
-//
-//	return user.Status == common.UserStatusEnabled, nil
-//}
 
 func ValidateAccessToken(token string) (user *User) {
 	if token == "" {
@@ -687,7 +394,6 @@ func ValidateAccessToken(token string) (user *User) {
 // GetUserQuota gets quota from Redis first, falls back to DB if needed
 func GetUserQuota(id int, fromDB bool) (quota int, err error) {
 	defer func() {
-		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) {
 			gopool.Go(func() {
 				if err := updateUserQuotaCache(id, quota); err != nil {
@@ -701,14 +407,12 @@ func GetUserQuota(id int, fromDB bool) (quota int, err error) {
 		if err == nil {
 			return quota, nil
 		}
-		// Don't return error - fall through to DB
 	}
 	fromDB = true
 	err = DB.Model(&User{}).Where("id = ?", id).Select("quota").Find(&quota).Error
 	if err != nil {
 		return 0, err
 	}
-
 	return quota, nil
 }
 
@@ -725,7 +429,6 @@ func GetUserEmail(id int) (email string, err error) {
 // GetUserGroup gets group from Redis first, falls back to DB if needed
 func GetUserGroup(id int, fromDB bool) (group string, err error) {
 	defer func() {
-		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) {
 			gopool.Go(func() {
 				if err := updateUserGroupCache(id, group); err != nil {
@@ -739,14 +442,12 @@ func GetUserGroup(id int, fromDB bool) (group string, err error) {
 		if err == nil {
 			return group, nil
 		}
-		// Don't return error - fall through to DB
 	}
 	fromDB = true
 	err = DB.Model(&User{}).Where("id = ?", id).Select(commonGroupCol).Find(&group).Error
 	if err != nil {
 		return "", err
 	}
-
 	return group, nil
 }
 
@@ -754,7 +455,6 @@ func GetUserGroup(id int, fromDB bool) (group string, err error) {
 func GetUserSetting(id int, fromDB bool) (settingMap dto.UserSetting, err error) {
 	var setting string
 	defer func() {
-		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) {
 			gopool.Go(func() {
 				if err := updateUserSettingCache(id, setting); err != nil {
@@ -768,7 +468,6 @@ func GetUserSetting(id int, fromDB bool) (settingMap dto.UserSetting, err error)
 		if err == nil {
 			return setting, nil
 		}
-		// Don't return error - fall through to DB
 	}
 	fromDB = true
 	err = DB.Model(&User{}).Where("id = ?", id).Select("setting").Find(&setting).Error
@@ -842,11 +541,6 @@ func DeltaUpdateUserQuota(id int, delta int) (err error) {
 	}
 }
 
-//func GetRootUserEmail() (email string) {
-//	DB.Model(&User{}).Where("role = ?", common.RoleRootUser).Select("email").Find(&email)
-//	return email
-//}
-
 func GetRootUser() (user *User) {
 	DB.Where("role = ?", common.RoleRootUser).First(&user)
 	return user
@@ -872,11 +566,6 @@ func updateUserUsedQuotaAndRequestCount(id int, quota int, count int) {
 		common.SysLog("failed to update user used quota and request count: " + err.Error())
 		return
 	}
-
-	//// 更新缓存
-	//if err := invalidateUserCache(id); err != nil {
-	//	common.SysError("failed to invalidate user cache: " + err.Error())
-	//}
 }
 
 func updateUserUsedQuota(id int, quota int) {
@@ -900,7 +589,6 @@ func updateUserRequestCount(id int, count int) {
 // GetUsernameById gets username from Redis first, falls back to DB if needed
 func GetUsernameById(id int, fromDB bool) (username string, err error) {
 	defer func() {
-		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) {
 			gopool.Go(func() {
 				if err := updateUserNameCache(id, username); err != nil {
@@ -914,29 +602,13 @@ func GetUsernameById(id int, fromDB bool) (username string, err error) {
 		if err == nil {
 			return username, nil
 		}
-		// Don't return error - fall through to DB
 	}
 	fromDB = true
 	err = DB.Model(&User{}).Where("id = ?", id).Select("username").Find(&username).Error
 	if err != nil {
 		return "", err
 	}
-
 	return username, nil
-}
-
-func IsLinuxDOIdAlreadyTaken(linuxDOId string) bool {
-	var user User
-	err := DB.Unscoped().Where("linux_do_id = ?", linuxDOId).First(&user).Error
-	return !errors.Is(err, gorm.ErrRecordNotFound)
-}
-
-func (user *User) FillUserByLinuxDOId() error {
-	if user.LinuxDOId == "" {
-		return errors.New("linux do id is empty")
-	}
-	err := DB.Where("linux_do_id = ?", user.LinuxDOId).First(user).Error
-	return err
 }
 
 func RootUserExists() bool {
@@ -969,7 +641,6 @@ func GetUserDailyQuotaInfo(userId int) (*DailyQuotaInfo, error) {
 		CurrentGroup:   user.Group,
 	}
 
-	// Calculate remaining
 	if user.DailyQuota > 0 {
 		info.DailyRemaining = user.DailyQuota - user.DailyUsed
 		if info.DailyRemaining < 0 {
@@ -979,10 +650,7 @@ func GetUserDailyQuotaInfo(userId int) (*DailyQuotaInfo, error) {
 		info.DailyRemaining = -1 // -1 means unlimited
 	}
 
-	// Check if using fallback
 	info.IsUsingFallback = user.FallbackGroup != "" && user.Group == user.FallbackGroup
-
-	// Check if needs reset
 	info.NeedsReset = NeedsDailyReset(user.LastDailyReset)
 
 	return info, nil
@@ -997,27 +665,22 @@ func IncreaseDailyUsed(userId int, amount int) error {
 		return errors.New("amount cannot be negative")
 	}
 
-	// Update cache asynchronously
 	gopool.Go(func() {
 		if err := cacheIncrUserDailyUsed(userId, int64(amount)); err != nil {
 			common.SysLog("failed to increase user daily used cache: " + err.Error())
 		}
 	})
 
-	// Update database
 	return DB.Model(&User{}).Where("id = ?", userId).
 		Update("daily_used", gorm.Expr("daily_used + ?", amount)).Error
 }
 
 // ResetDailyQuota resets daily used quota for a user.
 // Idempotent: only resets if last_daily_reset is before today's UTC midnight.
-// Safe to call multiple times in the same day (e.g., if cron runs twice).
 func ResetDailyQuota(userId int) error {
 	now := common.GetTimestamp()
-	todayStart := (now / 86400) * 86400 // UTC midnight of today
+	todayStart := (now / 86400) * 86400
 
-	// Conditional update: only resets if not yet reset today.
-	// RowsAffected == 0 means already reset today - not an error.
 	result := DB.Model(&User{}).
 		Where("id = ? AND last_daily_reset < ?", userId, todayStart).
 		Updates(map[string]interface{}{
@@ -1029,11 +692,9 @@ func ResetDailyQuota(userId int) error {
 	}
 
 	if result.RowsAffected == 0 {
-		// Already reset today - idempotent, not an error
 		return nil
 	}
 
-	// Update cache asynchronously
 	gopool.Go(func() {
 		if err := updateUserDailyUsedCache(userId, 0); err != nil {
 			common.SysLog("failed to update user daily used cache: " + err.Error())
@@ -1055,7 +716,7 @@ func SwitchToFallbackGroup(userId int) error {
 	}
 
 	if user.FallbackGroup == "" || user.Group == user.FallbackGroup {
-		return nil // No fallback configured or already using fallback
+		return nil
 	}
 
 	err = DB.Model(&User{}).Where("id = ?", userId).Update("group", user.FallbackGroup).Error
@@ -1063,7 +724,6 @@ func SwitchToFallbackGroup(userId int) error {
 		return err
 	}
 
-	// Update cache asynchronously
 	gopool.Go(func() {
 		if err := updateUserGroupCache(userId, user.FallbackGroup); err != nil {
 			common.SysLog("failed to update user group cache: " + err.Error())
@@ -1082,7 +742,7 @@ func RestoreToBaseGroup(userId int) error {
 	}
 
 	if user.BaseGroup == "" || user.Group == user.BaseGroup {
-		return nil // No base group configured or already using base group
+		return nil
 	}
 
 	err = DB.Model(&User{}).Where("id = ?", userId).Update("group", user.BaseGroup).Error
@@ -1090,7 +750,6 @@ func RestoreToBaseGroup(userId int) error {
 		return err
 	}
 
-	// Update cache asynchronously
 	gopool.Go(func() {
 		if err := updateUserGroupCache(userId, user.BaseGroup); err != nil {
 			common.SysLog("failed to update user group cache: " + err.Error())
@@ -1100,12 +759,11 @@ func RestoreToBaseGroup(userId int) error {
 	return nil
 }
 
-
 // GetUsersNeedingDailyReset returns users who need daily quota reset
 func GetUsersNeedingDailyReset(limit int) ([]*User, error) {
 	var users []*User
 	now := common.GetTimestamp()
-	todayStart := (now / 86400) * 86400 // Start of today in UTC
+	todayStart := (now / 86400) * 86400
 
 	err := DB.Select("id, daily_quota, daily_used, last_daily_reset, base_group, fallback_group, \"group\"").
 		Where("daily_quota > 0 AND (last_daily_reset < ? OR last_daily_reset = 0)", todayStart).
@@ -1117,17 +775,10 @@ func GetUsersNeedingDailyReset(limit int) ([]*User, error) {
 
 // ProcessDailyQuotaReset resets daily quota and restores base group for a user
 func ProcessDailyQuotaReset(userId int) error {
-	// Reset daily used
 	if err := ResetDailyQuota(userId); err != nil {
 		return err
 	}
-
-	// Restore to base group
-	if err := RestoreToBaseGroup(userId); err != nil {
-		return err
-	}
-
-	return nil
+	return RestoreToBaseGroup(userId)
 }
 
 // IsSubscriber checks if user has subscriber role or higher
@@ -1148,62 +799,4 @@ func UpdateUserRole(id int, role int) error {
 		return errors.New("invalid role")
 	}
 	return DB.Model(&User{}).Where("id = ?", id).Update("role", role).Error
-}
-
-// ===== Phone Related Functions =====
-
-// GetUserByPhone retrieves a user by phone number
-func GetUserByPhone(phone string) (*User, error) {
-	if phone == "" {
-		return nil, errors.New("phone is empty")
-	}
-	var user User
-	err := DB.Where("phone = ?", phone).First(&user).Error
-	if err != nil {
-		return nil, err
-	}
-	return &user, nil
-}
-
-// IsPhoneAlreadyTaken checks if a phone number is already registered
-func IsPhoneAlreadyTaken(phone string) bool {
-	return DB.Unscoped().Where("phone = ?", phone).Find(&User{}).RowsAffected == 1
-}
-
-// UpdateUserPhone updates user's phone number
-func UpdateUserPhone(id int, phone string) error {
-	return DB.Model(&User{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"phone":          phone,
-		"phone_verified": true,
-	}).Error
-}
-
-// CreateUserByPhone creates a new user with phone number
-func CreateUserByPhone(phone string) (*User, error) {
-	// Generate a unique username based on phone
-	username := "user_" + phone[len(phone)-4:] + "_" + common.GetRandomString(4)
-
-	user := &User{
-		Username:      username,
-		Phone:         phone,
-		PhoneVerified: true,
-		Status:        common.UserStatusEnabled,
-		Role:          common.RoleCommonUser,
-		Password:      "", // No password for phone-only registration
-	}
-
-	err := user.Insert(0)
-	if err != nil {
-		return nil, err
-	}
-
-	return user, nil
-}
-
-// FillUserByPhone fills user by phone number
-func (user *User) FillUserByPhone() error {
-	if user.Phone == "" {
-		return errors.New("phone is empty")
-	}
-	return DB.Where("phone = ?", user.Phone).First(user).Error
 }

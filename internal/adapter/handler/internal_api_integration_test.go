@@ -57,111 +57,19 @@ func disableUser(t *testing.T, userId int) {
 // Auth Tests
 // ============================================================
 
-func TestInteg_Login_Success(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	// Login with seeded normal user credentials
-	w := internalRequest(router, "POST", "/internal/auth/login", map[string]interface{}{
-		"username": "testuser",
-		"password": "userpassword",
-	}, authHeaders())
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d, body: %s", w.Code, w.Body.String())
-	}
-
-	resp := parseResponse(t, w)
-	assertSuccess(t, resp)
-
-	data, ok := resp["data"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected data in response")
-	}
-	if data["username"] != "testuser" {
-		t.Errorf("expected username 'testuser', got %v", data["username"])
-	}
-	if data["user_id"] == nil {
-		t.Error("expected user_id in response data")
-	}
-}
-
-func TestInteg_Login_WrongPassword(t *testing.T) {
+// TestInteg_Login_Deprecated verifies that /internal/auth/login returns 410 Gone
+// since password-based auth is deprecated in favor of Zitadel OIDC.
+func TestInteg_Login_Deprecated(t *testing.T) {
 	router, cleanup := SetupIntegrationRouter(t)
 	t.Cleanup(cleanup)
 
 	w := internalRequest(router, "POST", "/internal/auth/login", map[string]interface{}{
 		"username": "testuser",
-		"password": "wrongpassword",
+		"password": "anypassword",
 	}, authHeaders())
 
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d, body: %s", w.Code, w.Body.String())
-	}
-
-	resp := parseResponse(t, w)
-	assertErrorCode(t, resp, ErrCodeAuthFailed)
-}
-
-func TestInteg_Login_DisabledUser(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	// Create and then disable a user
-	pw, _ := common.Password2Hash("disabledpass1")
-	repo.DB.Create(&repo.User{
-		Id:       100,
-		Username: "disabledlogin",
-		Password: pw,
-		Status:   common.UserStatusDisabled,
-		Role:     common.RoleCommonUser,
-	})
-
-	w := internalRequest(router, "POST", "/internal/auth/login", map[string]interface{}{
-		"username": "disabledlogin",
-		"password": "disabledpass1",
-	}, authHeaders())
-
-	// Disabled user should get either 401 (ValidateAndFill may reject) or 403
-	if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
-		t.Fatalf("expected 401 or 403, got %d, body: %s", w.Code, w.Body.String())
-	}
-
-	resp := parseResponse(t, w)
-	ec, _ := resp["error_code"].(string)
-	if ec != ErrCodeAuthFailed && ec != ErrCodeUserDisabled {
-		t.Errorf("expected AUTH_FAILED or USER_DISABLED, got %v", ec)
-	}
-}
-
-func TestInteg_Login_NonexistentUser(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	w := internalRequest(router, "POST", "/internal/auth/login", map[string]interface{}{
-		"username": "nosuchuser999",
-		"password": "somepassword",
-	}, authHeaders())
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d, body: %s", w.Code, w.Body.String())
-	}
-
-	resp := parseResponse(t, w)
-	assertErrorCode(t, resp, ErrCodeAuthFailed)
-}
-
-func TestInteg_Login_EmptyFields(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	w := internalRequest(router, "POST", "/internal/auth/login", map[string]interface{}{
-		"username": "",
-		"password": "somepassword",
-	}, authHeaders())
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusGone {
+		t.Fatalf("expected 410 Gone (deprecated), got %d, body: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -296,19 +204,6 @@ func TestInteg_CreateUser_InvalidUsername(t *testing.T) {
 	assertErrorCode(t, resp, ErrCodeValidationFailed)
 }
 
-func TestInteg_CreateUser_PasswordTooShort(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	w := internalRequest(router, "POST", "/internal/user", map[string]interface{}{
-		"username": "shortpw",
-		"password": "short",
-	}, authHeaders())
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d, body: %s", w.Code, w.Body.String())
-	}
-}
 
 func TestInteg_GetUser_Success(t *testing.T) {
 	router, cleanup := SetupIntegrationRouter(t)
@@ -1666,36 +1561,6 @@ func TestInteg_Topup_MissingReason(t *testing.T) {
 // Login Edge Cases
 // ============================================================
 
-func TestInteg_Login_TrimmedUsername(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	// Username with whitespace should be trimmed
-	w := internalRequest(router, "POST", "/internal/auth/login", map[string]interface{}{
-		"username": "  testuser  ",
-		"password": "userpassword",
-	}, authHeaders())
-
-	// Should either succeed (trimmed) or fail gracefully
-	if w.Code != http.StatusOK && w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 200 or 401, got %d, body: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestInteg_Login_CaseSensitivePassword(t *testing.T) {
-	router, cleanup := SetupIntegrationRouter(t)
-	t.Cleanup(cleanup)
-
-	// Wrong case password should fail
-	w := internalRequest(router, "POST", "/internal/auth/login", map[string]interface{}{
-		"username": "testuser",
-		"password": "UserPassword", // Wrong case
-	}, authHeaders())
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for wrong-case password, got %d", w.Code)
-	}
-}
 
 // ============================================================
 // Update User Edge Cases

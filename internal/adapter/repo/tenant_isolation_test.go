@@ -17,11 +17,9 @@ func TestUser_TenantId_DefaultValue(t *testing.T) {
 
 	user := &User{
 		Username:    "tenant_test_user",
-		Password:    "testpassword123",
 		DisplayName: "Tenant Test User",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		AffCode:     common.GetRandomString(8),
 	}
 	if err := DB.Create(user).Error; err != nil {
 		t.Fatalf("Create user failed: %v", err)
@@ -44,12 +42,10 @@ func TestUser_TenantId_CustomValue(t *testing.T) {
 	customTenant := "tenant_abc123"
 	user := &User{
 		Username:    "custom_tenant_user",
-		Password:    "testpassword123",
 		DisplayName: "Custom Tenant User",
 		TenantId:    customTenant,
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		AffCode:     common.GetRandomString(8),
 	}
 	if err := DB.Create(user).Error; err != nil {
 		t.Fatalf("Create user failed: %v", err)
@@ -246,13 +242,11 @@ func TestRedeem_TenantMismatch(t *testing.T) {
 	// Create user with tenant_redeem_a
 	userA := &User{
 		Username:    "redeem_user_a",
-		Password:    "testpassword",
 		DisplayName: "Redeem User A",
 		TenantId:    "tenant_redeem_a",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Quota:       100000,
-		AffCode:     common.GetRandomString(8),
 	}
 	if err := DB.Create(userA).Error; err != nil {
 		t.Fatalf("Create user failed: %v", err)
@@ -290,13 +284,11 @@ func TestRedeem_TenantMatch(t *testing.T) {
 	// Create user with tenant_redeem_match
 	user := &User{
 		Username:    "redeem_user_match",
-		Password:    "testpassword",
 		DisplayName: "Redeem User Match",
 		TenantId:    "tenant_redeem_match",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Quota:       100000,
-		AffCode:     common.GetRandomString(8),
 	}
 	if err := DB.Create(user).Error; err != nil {
 		t.Fatalf("Create user failed: %v", err)
@@ -350,21 +342,17 @@ func TestCrossTenant_UserIsolation(t *testing.T) {
 	// Create users in different tenants
 	userA := &User{
 		Username:    "tenant_a_user",
-		Password:    "testpassword",
 		DisplayName: "Tenant A User",
 		TenantId:    "tenant_a",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		AffCode:     common.GetRandomString(8),
 	}
 	userB := &User{
 		Username:    "tenant_b_user",
-		Password:    "testpassword",
 		DisplayName: "Tenant B User",
 		TenantId:    "tenant_b",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		AffCode:     common.GetRandomString(8),
 	}
 	DB.Create(userA)
 	DB.Create(userB)

@@ -81,7 +81,6 @@ func SetupTestDB(t *testing.T) func() {
 		&Token{},
 		&Log{},
 		&InternalApiKey{},
-		&InvitationCode{},
 		&Setup{},
 		&Tenant{},
 		&UserIdentityMapping{},
@@ -149,54 +148,38 @@ func SetupTestDB(t *testing.T) func() {
 }
 
 // SeedTestUsers creates three users: root (role 100), normal (role 1), and
-// disabled (role 1, status disabled). All passwords are hashed via
-// common.Password2Hash. Returns pointers to the created User records.
+// disabled (role 1, status disabled). Returns pointers to the created User records.
 func SeedTestUsers(t *testing.T) (root, normal, disabled *User) {
 	t.Helper()
 
-	hash := func(plain string) string {
-		t.Helper()
-		h, err := common.Password2Hash(plain)
-		if err != nil {
-			t.Fatalf("Password2Hash(%q) failed: %v", plain, err)
-		}
-		return h
-	}
-
 	root = &User{
 		Username:    "testroot",
-		Password:    hash("rootpassword"),
 		DisplayName: "Test Root",
 		Role:        common.RoleRootUser,
 		Status:      common.UserStatusEnabled,
 		Email:       "root@test.local",
 		Quota:       100_000_000,
 		Group:       "default",
-		AffCode:     common.GetRandomString(8),
 	}
 
 	normal = &User{
 		Username:    "testnormal",
-		Password:    hash("normalpassword"),
 		DisplayName: "Test Normal",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Email:       "normal@test.local",
 		Quota:       1_000_000,
 		Group:       "default",
-		AffCode:     common.GetRandomString(8),
 	}
 
 	disabled = &User{
 		Username:    "testdisabled",
-		Password:    hash("disabledpassword"),
 		DisplayName: "Test Disabled",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusDisabled,
 		Email:       "disabled@test.local",
 		Quota:       0,
 		Group:       "default",
-		AffCode:     common.GetRandomString(8),
 	}
 
 	for _, u := range []*User{root, normal, disabled} {

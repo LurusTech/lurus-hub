@@ -111,47 +111,38 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 	db.Create(tenant)
 
 	// Seed root user
-	rootPassword, _ := common.Password2Hash("rootpassword")
 	rootUser := &repo.User{
 		Username:    "v2testroot",
-		Password:    rootPassword,
 		DisplayName: "V2 Test Root",
 		Role:        common.RoleRootUser,
 		Status:      common.UserStatusEnabled,
 		Email:       "v2root@test.local",
 		TenantId:    testTenantID,
 		Quota:       100_000_000,
-		AffCode:     common.GetRandomString(8),
 	}
 	db.Create(rootUser)
 
 	// Seed admin user (tenant admin, not platform root)
-	adminPassword, _ := common.Password2Hash("adminpassword")
 	adminUser := &repo.User{
 		Username:    "v2testadmin",
-		Password:    adminPassword,
 		DisplayName: "V2 Test Admin",
 		Role:        common.RoleAdminUser,
 		Status:      common.UserStatusEnabled,
 		Email:       "v2admin@test.local",
 		TenantId:    testTenantID,
 		Quota:       50_000_000,
-		AffCode:     common.GetRandomString(8),
 	}
 	db.Create(adminUser)
 
 	// Seed normal user
-	normalPassword, _ := common.Password2Hash("userpassword")
 	normalUser := &repo.User{
 		Username:    "v2testuser",
-		Password:    normalPassword,
 		DisplayName: "V2 Test User",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Email:       "v2user@test.local",
 		TenantId:    testTenantID,
 		Quota:       1_000_000,
-		AffCode:     common.GetRandomString(8),
 	}
 	db.Create(normalUser)
 

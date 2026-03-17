@@ -1,43 +1,10 @@
 package repo
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 )
-
-func TestUser_Insert_HashesPassword(t *testing.T) {
-	cleanup := SetupTestDB(t)
-	defer cleanup()
-
-	oldQuota := common.QuotaForNewUser
-	common.QuotaForNewUser = 0
-	defer func() { common.QuotaForNewUser = oldQuota }()
-
-	user := &User{
-		Username: "hashtest",
-		Password: "plaintext123",
-		Status:   common.UserStatusEnabled,
-		Role:     common.RoleCommonUser,
-	}
-	if err := user.Insert(0); err != nil {
-		t.Fatalf("Insert() failed: %v", err)
-	}
-
-	// Fetch from DB to get stored password
-	var stored User
-	if err := DB.First(&stored, "id = ?", user.Id).Error; err != nil {
-		t.Fatalf("failed to query user: %v", err)
-	}
-
-	if !strings.HasPrefix(stored.Password, "$2a$") && !strings.HasPrefix(stored.Password, "$2b$") {
-		t.Errorf("stored password does not look like bcrypt hash: %q", stored.Password)
-	}
-	if stored.Password == "plaintext123" {
-		t.Error("password was stored in plaintext")
-	}
-}
 
 func TestUser_Insert_DuplicateUsername(t *testing.T) {
 	cleanup := SetupTestDB(t)
@@ -47,13 +14,13 @@ func TestUser_Insert_DuplicateUsername(t *testing.T) {
 	common.QuotaForNewUser = 0
 	defer func() { common.QuotaForNewUser = oldQuota }()
 
-	u1 := &User{Username: "dupuser", Password: "password123", Status: common.UserStatusEnabled, Role: common.RoleCommonUser}
-	if err := u1.Insert(0); err != nil {
+	u1 := &User{Username: "dupuser", Status: common.UserStatusEnabled, Role: common.RoleCommonUser}
+	if err := u1.Insert(); err != nil {
 		t.Fatalf("first Insert() failed: %v", err)
 	}
 
-	u2 := &User{Username: "dupuser", Password: "password456", Status: common.UserStatusEnabled, Role: common.RoleCommonUser}
-	if err := u2.Insert(0); err == nil {
+	u2 := &User{Username: "dupuser", Status: common.UserStatusEnabled, Role: common.RoleCommonUser}
+	if err := u2.Insert(); err == nil {
 		t.Error("expected error for duplicate username, got nil")
 	}
 }
@@ -98,46 +65,6 @@ func TestUser_GetByEmail_Found(t *testing.T) {
 	}
 }
 
-func TestUser_ValidateAndFill_CorrectPassword(t *testing.T) {
-	cleanup := SetupTestDB(t)
-	defer cleanup()
-
-	SeedTestUsers(t)
-
-	// SeedTestUsers hashes passwords via common.Password2Hash before DB.Create
-	user := &User{Username: "testnormal", Password: "normalpassword"}
-	if err := user.ValidateAndFill(); err != nil {
-		t.Fatalf("ValidateAndFill() with correct password failed: %v", err)
-	}
-	if user.Id == 0 {
-		t.Error("user ID should be populated after ValidateAndFill")
-	}
-}
-
-func TestUser_ValidateAndFill_WrongPassword(t *testing.T) {
-	cleanup := SetupTestDB(t)
-	defer cleanup()
-
-	SeedTestUsers(t)
-
-	user := &User{Username: "testnormal", Password: "wrongpassword"}
-	if err := user.ValidateAndFill(); err == nil {
-		t.Error("expected error for wrong password, got nil")
-	}
-}
-
-func TestUser_ValidateAndFill_DisabledUser(t *testing.T) {
-	cleanup := SetupTestDB(t)
-	defer cleanup()
-
-	SeedTestUsers(t)
-
-	user := &User{Username: "testdisabled", Password: "disabledpassword"}
-	if err := user.ValidateAndFill(); err == nil {
-		t.Error("expected error for disabled user, got nil")
-	}
-}
-
 func TestUser_IncreaseQuota_Atomic(t *testing.T) {
 	cleanup := SetupTestDB(t)
 	defer cleanup()
@@ -162,7 +89,6 @@ func TestUser_DecreaseQuota_Atomic(t *testing.T) {
 
 	_, normal, _ := SeedTestUsers(t)
 
-	// Increase first to have enough to decrease
 	if err := IncreaseUserQuota(normal.Id, 10000, true); err != nil {
 		t.Fatalf("IncreaseUserQuota() failed: %v", err)
 	}
@@ -187,20 +113,17 @@ func TestUser_DecreaseQuota_BelowZero(t *testing.T) {
 	common.QuotaForNewUser = 0
 	defer func() { common.QuotaForNewUser = oldQuota }()
 
-	// Create user with 0 quota
 	user := &User{
 		Username: "zeroquota",
-		Password: "password123",
 		Status:   common.UserStatusEnabled,
 		Role:     common.RoleCommonUser,
 		Quota:    0,
 		Group:    "default",
 	}
-	hash, _ := common.Password2Hash(user.Password)
-	user.Password = hash
-	DB.Create(user)
+	if err := DB.Create(user).Error; err != nil {
+		t.Fatalf("Create user failed: %v", err)
+	}
 
-	// Decrease below zero - in SQLite this results in negative value
 	err := DecreaseUserQuota(user.Id, 1000)
 	if err != nil {
 		t.Logf("DecreaseUserQuota() returned error: %v (may be expected)", err)
@@ -224,12 +147,10 @@ func TestUser_DeleteById_SoftDelete(t *testing.T) {
 		t.Fatalf("DeleteUserById() failed: %v", err)
 	}
 
-	// Normal query should not find it
 	if _, err := GetUserById(normal.Id, true); err == nil {
 		t.Error("expected error querying soft-deleted user, got nil")
 	}
 
-	// Unscoped query should still find it
 	var found User
 	if err := DB.Unscoped().First(&found, "id = ?", normal.Id).Error; err != nil {
 		t.Errorf("Unscoped query should find soft-deleted user, got error: %v", err)
@@ -243,10 +164,8 @@ func TestChineseCharacters_Username(t *testing.T) {
 	cleanup := SetupTestDB(t)
 	defer cleanup()
 
-	// Model layer does not reject non-ascii usernames (controller does)
 	user := &User{
 		Username:    "cnuser1",
-		Password:    "$2a$10$fakehashedpasswordvalue1234567890",
 		DisplayName: "English Name",
 		Status:      common.UserStatusEnabled,
 		Role:        common.RoleCommonUser,
@@ -270,7 +189,6 @@ func TestChineseCharacters_DisplayName(t *testing.T) {
 	chineseDisplay := "\u4e2d\u6587\u663e\u793a\u540d"
 	user := &User{
 		Username:    "cnuser2",
-		Password:    "$2a$10$fakehashedpasswordvalue1234567890",
 		DisplayName: chineseDisplay,
 		Status:      common.UserStatusEnabled,
 		Role:        common.RoleCommonUser,
@@ -291,11 +209,9 @@ func TestUTF8_MaxLength_CJK(t *testing.T) {
 	cleanup := SetupTestDB(t)
 	defer cleanup()
 
-	// 20 CJK characters (max=20 validate tag on DisplayName)
 	cjkName := "\u6d4b\u8bd5\u7528\u6237\u663e\u793a\u540d\u79f0\u8d85\u957f\u5b57\u7b26\u4e32\u6d4b\u8bd5\u8d85\u957f\u5b57\u7b26"
 	user := &User{
 		Username:    "cjkuser",
-		Password:    "$2a$10$fakehashedpasswordvalue1234567890",
 		DisplayName: cjkName,
 		Status:      common.UserStatusEnabled,
 		Role:        common.RoleCommonUser,

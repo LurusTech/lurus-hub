@@ -12,8 +12,8 @@ import (
 )
 
 // GetIdentityOverview returns the authenticated user's aggregated identity overview
-// from lurus-identity (VIP level, Lubell balance, subscription status).
-// Degrades gracefully when lurus-identity is unavailable.
+// from lurus-platform (VIP level, Lubell balance, subscription status).
+// Degrades gracefully when lurus-platform is unavailable.
 // GET /api/v2/user/identity-overview?product_id=<pid>
 func GetIdentityOverview(c *gin.Context) {
 	tenantCtx, err := middleware.GetTenantContext(c)

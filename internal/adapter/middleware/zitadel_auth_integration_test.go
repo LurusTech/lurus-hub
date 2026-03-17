@@ -105,14 +105,12 @@ func setupIntegrationTest(t *testing.T) *integrationTestContext {
 	// Create test user
 	user := &repo.User{
 		Username:    "integration_user",
-		Password:    "testpassword",
 		DisplayName: "Integration User",
 		Email:       "integration@test.local",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		TenantId:    tenant.Id,
 		Quota:       1000000,
-		AffCode:     common.GetRandomString(8),
 	}
 	db.Create(user)
 

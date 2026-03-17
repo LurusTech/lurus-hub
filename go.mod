@@ -166,4 +166,4 @@ require (
 	modernc.org/sqlite v1.40.1 // indirect
 )
 
-replace github.com/hanmahong5-arch/lurus-platform => ../lurus-platform
+replace github.com/hanmahong5-arch/lurus-platform => ../2l-svc-platform

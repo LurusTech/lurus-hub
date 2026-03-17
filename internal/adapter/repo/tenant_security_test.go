@@ -22,23 +22,19 @@ func TestTenantDB_IsolationEnforced(t *testing.T) {
 
 	user1 := &User{
 		Username:    "user_in_tenant1",
-		Password:    "testpassword",
 		DisplayName: "User 1",
 		TenantId:    tenant1,
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Quota:       100000,
-		AffCode:     common.GetRandomString(8),
 	}
 	user2 := &User{
 		Username:    "user_in_tenant2",
-		Password:    "testpassword",
 		DisplayName: "User 2",
 		TenantId:    tenant2,
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Quota:       200000,
-		AffCode:     common.GetRandomString(8),
 	}
 
 	if err := DB.Create(user1).Error; err != nil {
@@ -120,21 +116,17 @@ func TestSystemDB_NoIsolation(t *testing.T) {
 
 	user1 := &User{
 		Username:    "sysdb_user1",
-		Password:    "testpassword",
 		DisplayName: "Sys User 1",
 		TenantId:    tenant1,
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		AffCode:     common.GetRandomString(8),
 	}
 	user2 := &User{
 		Username:    "sysdb_user2",
-		Password:    "testpassword",
 		DisplayName: "Sys User 2",
 		TenantId:    tenant2,
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		AffCode:     common.GetRandomString(8),
 	}
 
 	DB.Create(user1)

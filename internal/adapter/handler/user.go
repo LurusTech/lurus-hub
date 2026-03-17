@@ -7,383 +7,16 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/app"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/app"
 	"github.com/QuantumNous/lurus-api/internal/pkg/search"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-
-	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )
-
-type LoginRequest struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-func Login(c *gin.Context) {
-	// When identity auth redirect is enabled, direct clients to lurus-identity.
-	if common.IdentityAuthRedirect {
-		c.JSON(http.StatusOK, gin.H{
-			"success":  false,
-			"message":  "请使用统一身份认证服务登录",
-			"redirect": common.IdentityPublicURL + "/api/v1/auth/login",
-		})
-		return
-	}
-	if !common.PasswordLoginEnabled {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了密码登录",
-			"success": false,
-		})
-		return
-	}
-	var loginRequest LoginRequest
-	err := json.NewDecoder(c.Request.Body).Decode(&loginRequest)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "无效的参数",
-			"success": false,
-		})
-		return
-	}
-	username := loginRequest.Username
-	password := loginRequest.Password
-	if username == "" || password == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "无效的参数",
-			"success": false,
-		})
-		return
-	}
-	user := repo.User{
-		Username: username,
-		Password: password,
-	}
-	err = user.ValidateAndFill()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"message": err.Error(),
-			"success": false,
-		})
-		return
-	}
-
-	// 检查是否启用2FA
-	if repo.IsTwoFAEnabled(user.Id) {
-		// 设置pending session，等待2FA验证
-		session := sessions.Default(c)
-		session.Set("pending_username", user.Username)
-		session.Set("pending_user_id", user.Id)
-		err := session.Save()
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"message": "无法保存会话信息，请重试",
-				"success": false,
-			})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"message": "请输入两步验证码",
-			"success": true,
-			"data": map[string]interface{}{
-				"require_2fa": true,
-			},
-		})
-		return
-	}
-
-	setupLogin(&user, c)
-}
-
-// setup session & cookies and then return user info
-func setupLogin(user *repo.User, c *gin.Context) {
-	session := sessions.Default(c)
-	session.Set("id", user.Id)
-	session.Set("username", user.Username)
-	session.Set("role", user.Role)
-	session.Set("status", user.Status)
-	session.Set("group", user.Group)
-	err := session.Save()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "无法保存会话信息，请重试",
-			"success": false,
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message": "",
-		"success": true,
-		"data": map[string]any{
-			"id":           user.Id,
-			"username":     user.Username,
-			"display_name": user.DisplayName,
-			"role":         user.Role,
-			"status":       user.Status,
-			"group":        user.Group,
-		},
-	})
-}
-
-func Logout(c *gin.Context) {
-	session := sessions.Default(c)
-	session.Clear()
-	err := session.Save()
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"message": err.Error(),
-			"success": false,
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"message": "",
-		"success": true,
-	})
-}
-
-func Register(c *gin.Context) {
-	// When identity auth redirect is enabled, direct clients to lurus-identity.
-	if common.IdentityAuthRedirect {
-		c.JSON(http.StatusOK, gin.H{
-			"success":  false,
-			"message":  "请使用统一身份认证服务注册",
-			"redirect": common.IdentityPublicURL + "/api/v1/auth/register",
-		})
-		return
-	}
-	if !common.RegisterEnabled {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了新用户注册",
-			"success": false,
-		})
-		return
-	}
-
-	// Check registration mode
-	switch common.RegistrationMode {
-	case common.RegistrationModeClosed:
-		c.JSON(http.StatusOK, gin.H{
-			"message": "注册已关闭",
-			"success": false,
-		})
-		return
-	case common.RegistrationModeOAuthOnly:
-		c.JSON(http.StatusOK, gin.H{
-			"message": "请使用第三方账户登录注册",
-			"success": false,
-		})
-		return
-	}
-
-	if !common.PasswordRegisterEnabled {
-		c.JSON(http.StatusOK, gin.H{
-			"message": "管理员关闭了通过密码进行注册，请使用第三方账户验证的形式进行注册",
-			"success": false,
-		})
-		return
-	}
-
-	// Parse request with extended fields
-	var req struct {
-		repo.User
-		InviteCode string `json:"invite_code"` // Invitation code for invite-only registration
-		PhoneCode  string `json:"phone_code"`  // Phone verification code for phone-verified registration
-	}
-	err := json.NewDecoder(c.Request.Body).Decode(&req)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
-		return
-	}
-
-	user := req.User
-	if err := common.Validate.Struct(&user); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "输入不合法 " + err.Error(),
-		})
-		return
-	}
-
-	// Check registration mode-specific requirements
-	switch common.RegistrationMode {
-	case common.RegistrationModeInviteOnly:
-		if req.InviteCode == "" {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "需要邀请码才能注册",
-			})
-			return
-		}
-		if !repo.ValidateInvitationCode(req.InviteCode) {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "邀请码无效或已被使用",
-			})
-			return
-		}
-	case common.RegistrationModePhoneVerified:
-		if user.Phone == "" || req.PhoneCode == "" {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "需要验证手机号才能注册",
-			})
-			return
-		}
-		purpose := common.GetPhonePurpose("register")
-		if !common.VerifyPhoneCode(user.Phone, req.PhoneCode, purpose) {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "手机验证码错误或已过期",
-			})
-			return
-		}
-	}
-
-	// Check if invite code is required (independent of registration mode)
-	if common.InviteCodeRequired && common.RegistrationMode != common.RegistrationModeInviteOnly {
-		if req.InviteCode == "" {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "需要邀请码才能注册",
-			})
-			return
-		}
-		if !repo.ValidateInvitationCode(req.InviteCode) {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "邀请码无效或已被使用",
-			})
-			return
-		}
-	}
-
-	if common.EmailVerificationEnabled {
-		if user.Email == "" || user.VerificationCode == "" {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "管理员开启了邮箱验证，请输入邮箱地址和验证码",
-			})
-			return
-		}
-		if !common.VerifyCodeWithKey(user.Email, user.VerificationCode, common.EmailVerificationPurpose) {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "验证码错误或已过期",
-			})
-			return
-		}
-	}
-	exist, err := repo.CheckUserExistOrDeleted(user.Username, user.Email)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "数据库错误，请稍后重试",
-		})
-		common.SysLog(fmt.Sprintf("CheckUserExistOrDeleted error: %v", err))
-		return
-	}
-	if exist {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "用户名已存在，或已注销",
-		})
-		return
-	}
-	affCode := user.AffCode // this code is the inviter's code, not the user's own code
-	inviterId, _ := repo.GetUserIdByAffCode(affCode)
-
-	// Get tenant ID from context (defaults to "default" for v1 API)
-	tenantId := app.GetTenantIdFromContext(common.GetContextKeyString(c, "tenant_id"))
-
-	cleanUser := repo.User{
-		Username:    user.Username,
-		Password:    user.Password,
-		DisplayName: user.Username,
-		InviterId:   inviterId,
-		TenantId:    tenantId,
-		Role:        common.RoleCommonUser, // 明确设置角色为普通用户
-	}
-	if common.EmailVerificationEnabled {
-		cleanUser.Email = user.Email
-	}
-	if err := cleanUser.Insert(inviterId); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-
-	// 获取插入后的用户ID
-	var insertedUser repo.User
-	if err := repo.DB.Where("username = ?", cleanUser.Username).First(&insertedUser).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "用户注册失败或用户ID获取失败",
-		})
-		return
-	}
-
-	// Use invitation code if provided (mark as used)
-	if req.InviteCode != "" {
-		if err := repo.UseInvitationCode(req.InviteCode, insertedUser.Id); err != nil {
-			// Log error but don't fail registration - code was validated earlier
-			common.SysLog(fmt.Sprintf("Failed to mark invitation code as used: %v", err))
-		}
-	}
-
-	// 生成默认令牌
-	if constant.GenerateDefaultToken {
-		key, err := common.GenerateKey()
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "生成默认令牌失败",
-			})
-			common.SysLog("failed to generate token key: " + err.Error())
-			return
-		}
-		// 生成默认令牌
-		token := repo.Token{
-			UserId:             insertedUser.Id, // 使用插入后的用户ID
-			TenantId:           tenantId,
-			Name:               cleanUser.Username + "的初始令牌",
-			Key:                key,
-			CreatedTime:        common.GetTimestamp(),
-			AccessedTime:       common.GetTimestamp(),
-			ExpiredTime:        -1,     // 永不过期
-			RemainQuota:        500000, // 示例额度
-			UnlimitedQuota:     true,
-			ModelLimitsEnabled: false,
-		}
-		if setting.DefaultUseAutoGroup {
-			token.Group = "auto"
-		}
-		if err := token.Insert(); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "创建默认令牌失败",
-			})
-			return
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
-	return
-}
 
 func GetAllUsers(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
@@ -406,7 +39,6 @@ func SearchUsers(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 
 	// Parse status parameter
-	// 解析状态参数
 	status := 0
 	if statusStr := c.Query("status"); statusStr != "" {
 		if s, err := strconv.Atoi(statusStr); err == nil {
@@ -415,10 +47,7 @@ func SearchUsers(c *gin.Context) {
 	}
 
 	// Try Meilisearch first if enabled
-	// 如果启用了 Meilisearch，优先使用
 	if search.IsEnabled() {
-		// Calculate page number (pageInfo uses 0-based index, Meilisearch uses 1-based page)
-		// 计算页码（pageInfo 使用 0 基索引，Meilisearch 使用 1 基页码）
 		page := (pageInfo.GetStartIdx() / pageInfo.GetPageSize()) + 1
 		if page < 1 {
 			page = 1
@@ -426,13 +55,9 @@ func SearchUsers(c *gin.Context) {
 
 		results, total, err := search.SearchUsers(keyword, group, status, page, pageInfo.GetPageSize())
 		if err == nil {
-			// Convert map results to repo.User for consistency
-			// 将 map 结果转换为 repo.User 以保持一致性
 			users := make([]*repo.User, 0, len(results))
 			for _, result := range results {
 				user := &repo.User{}
-				// Convert map to user struct
-				// 将 map 转换为用户结构
 				if id, ok := result["id"].(float64); ok {
 					user.Id = int(id)
 				}
@@ -469,13 +94,9 @@ func SearchUsers(c *gin.Context) {
 			return
 		}
 
-		// Log error and fallback to database
-		// 记录错误并降级到数据库
 		common.SysLog(fmt.Sprintf("Meilisearch search failed, falling back to database: %v", err))
 	}
 
-	// Fallback to database search
-	// 降级到数据库搜索
 	users, total, err := repo.SearchUsers(keyword, group, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
@@ -522,7 +143,6 @@ func GenerateAccessToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	// get rand int 28-32
 	randI := common.GetRandomInt(4)
 	key, err := common.GenerateRandomKey(29 + randI)
 	if err != nil {
@@ -543,7 +163,7 @@ func GenerateAccessToken(c *gin.Context) {
 		return
 	}
 
-	if err := user.Update(false); err != nil {
+	if err := user.Update(); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -556,61 +176,6 @@ func GenerateAccessToken(c *gin.Context) {
 	return
 }
 
-type TransferAffQuotaRequest struct {
-	Quota int `json:"quota" binding:"required"`
-}
-
-func TransferAffQuota(c *gin.Context) {
-	id := c.GetInt("id")
-	user, err := repo.GetUserById(id, true)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	tran := TransferAffQuotaRequest{}
-	if err := c.ShouldBindJSON(&tran); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	err = user.TransferAffQuotaToQuota(tran.Quota)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "划转失败 " + err.Error(),
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "划转成功",
-	})
-}
-
-func GetAffCode(c *gin.Context) {
-	id := c.GetInt("id")
-	user, err := repo.GetUserById(id, true)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if user.AffCode == "" {
-		user.AffCode = common.GetRandomString(4)
-		if err := user.Update(false); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    user.AffCode,
-	})
-	return
-}
-
 func GetSelf(c *gin.Context) {
 	id := c.GetInt("id")
 	userRole := c.GetInt("role")
@@ -619,41 +184,26 @@ func GetSelf(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	// Hide admin remarks: set to empty to trigger omitempty tag, ensuring the remark field is not included in JSON returned to regular users
+	// Hide admin remarks from regular users
 	user.Remark = ""
 
-	// 计算用户权限信息
 	permissions := calculateUserPermissions(userRole)
-
-	// 获取用户设置并提取sidebar_modules
 	userSetting := user.GetSetting()
 
-	// 构建响应数据，包含用户信息和权限
 	responseData := map[string]interface{}{
-		"id":                user.Id,
-		"username":          user.Username,
-		"display_name":      user.DisplayName,
-		"role":              user.Role,
-		"status":            user.Status,
-		"email":             user.Email,
-		"github_id":         user.GitHubId,
-		"discord_id":        user.DiscordId,
-		"oidc_id":           user.OidcId,
-		"wechat_id":         user.WeChatId,
-		"telegram_id":       user.TelegramId,
-		"group":             user.Group,
-		"quota":             user.Quota,
-		"used_quota":        user.UsedQuota,
-		"request_count":     user.RequestCount,
-		"aff_code":          user.AffCode,
-		"aff_count":         user.AffCount,
-		"aff_quota":         user.AffQuota,
-		"aff_history_quota": user.AffHistoryQuota,
-		"inviter_id":        user.InviterId,
-		"linux_do_id":       user.LinuxDOId,
-		"setting":           user.Setting,
-		"sidebar_modules":   userSetting.SidebarModules, // 正确提取sidebar_modules字段
-		"permissions":       permissions,                // 新增权限字段
+		"id":              user.Id,
+		"username":        user.Username,
+		"display_name":    user.DisplayName,
+		"role":            user.Role,
+		"status":          user.Status,
+		"email":           user.Email,
+		"group":           user.Group,
+		"quota":           user.Quota,
+		"used_quota":      user.UsedQuota,
+		"request_count":   user.RequestCount,
+		"setting":         user.Setting,
+		"sidebar_modules": userSetting.SidebarModules,
+		"permissions":     permissions,
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -664,46 +214,40 @@ func GetSelf(c *gin.Context) {
 	return
 }
 
-// 计算用户权限的辅助函数
+// calculateUserPermissions computes permission flags based on user role.
 func calculateUserPermissions(userRole int) map[string]interface{} {
 	permissions := map[string]interface{}{}
 
-	// 根据用户角色计算权限
 	if userRole == common.RoleRootUser {
-		// 超级管理员不需要边栏设置功能
 		permissions["sidebar_settings"] = false
 		permissions["sidebar_modules"] = map[string]interface{}{}
 	} else if userRole == common.RoleAdminUser {
-		// 管理员可以设置边栏，但不包含系统设置功能
 		permissions["sidebar_settings"] = true
 		permissions["sidebar_modules"] = map[string]interface{}{
 			"admin": map[string]interface{}{
-				"setting": false, // 管理员不能访问系统设置
+				"setting": false,
 			},
 		}
 	} else {
-		// 普通用户只能设置个人功能，不包含管理员区域
 		permissions["sidebar_settings"] = true
 		permissions["sidebar_modules"] = map[string]interface{}{
-			"admin": false, // 普通用户不能访问管理员区域
+			"admin": false,
 		}
 	}
 
 	return permissions
 }
 
-// 根据用户角色生成默认的边栏配置
+// generateDefaultSidebarConfig generates a role-based default sidebar configuration.
 func generateDefaultSidebarConfig(userRole int) string {
 	defaultConfig := map[string]interface{}{}
 
-	// 聊天区域 - 所有用户都可以访问
 	defaultConfig["chat"] = map[string]interface{}{
 		"enabled":    true,
 		"playground": true,
 		"chat":       true,
 	}
 
-	// 控制台区域 - 所有用户都可以访问
 	defaultConfig["console"] = map[string]interface{}{
 		"enabled":    true,
 		"detail":     true,
@@ -713,26 +257,22 @@ func generateDefaultSidebarConfig(userRole int) string {
 		"task":       true,
 	}
 
-	// 个人中心区域 - 所有用户都可以访问
 	defaultConfig["personal"] = map[string]interface{}{
 		"enabled":  true,
 		"topup":    true,
 		"personal": true,
 	}
 
-	// 管理员区域 - 根据角色决定
 	if userRole == common.RoleAdminUser {
-		// 管理员可以访问管理员区域，但不能访问系统设置
 		defaultConfig["admin"] = map[string]interface{}{
 			"enabled":    true,
 			"channel":    true,
 			"models":     true,
 			"redemption": true,
 			"user":       true,
-			"setting":    false, // 管理员不能访问系统设置
+			"setting":    false,
 		}
 	} else if userRole == common.RoleRootUser {
-		// 超级管理员可以访问所有功能
 		defaultConfig["admin"] = map[string]interface{}{
 			"enabled":    true,
 			"channel":    true,
@@ -742,12 +282,10 @@ func generateDefaultSidebarConfig(userRole int) string {
 			"setting":    true,
 		}
 	}
-	// 普通用户不包含admin区域
 
-	// 转换为JSON字符串
 	configBytes, err := json.Marshal(defaultConfig)
 	if err != nil {
-		common.SysLog("生成默认边栏配置失败: " + err.Error())
+		common.SysLog("generate default sidebar config failed: " + err.Error())
 		return ""
 	}
 
@@ -791,9 +329,6 @@ func UpdateUser(c *gin.Context) {
 		})
 		return
 	}
-	if updatedUser.Password == "" {
-		updatedUser.Password = "$I_LOVE_U" // make Validator happy :)
-	}
 	if err := common.Validate.Struct(&updatedUser); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -821,11 +356,7 @@ func UpdateUser(c *gin.Context) {
 		})
 		return
 	}
-	if updatedUser.Password == "$I_LOVE_U" {
-		updatedUser.Password = "" // rollback to what it should be
-	}
-	updatePassword := updatedUser.Password != ""
-	if err := updatedUser.Edit(updatePassword); err != nil {
+	if err := updatedUser.Edit(); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -850,7 +381,7 @@ func UpdateSelf(c *gin.Context) {
 		return
 	}
 
-	// 检查是否是sidebar_modules更新请求
+	// Handle sidebar_modules update
 	if sidebarModules, exists := requestData["sidebar_modules"]; exists {
 		userId := c.GetInt("id")
 		user, err := repo.GetUserById(userId, false)
@@ -859,17 +390,13 @@ func UpdateSelf(c *gin.Context) {
 			return
 		}
 
-		// 获取当前用户设置
 		currentSetting := user.GetSetting()
-
-		// 更新sidebar_modules字段
 		if sidebarModulesStr, ok := sidebarModules.(string); ok {
 			currentSetting.SidebarModules = sidebarModulesStr
 		}
 
-		// 保存更新后的设置
 		user.SetSetting(currentSetting)
-		if err := user.Update(false); err != nil {
+		if err := user.Update(); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "更新设置失败: " + err.Error(),
@@ -884,7 +411,7 @@ func UpdateSelf(c *gin.Context) {
 		return
 	}
 
-	// 原有的用户信息更新逻辑
+	// Update display name / username
 	var user repo.User
 	requestDataBytes, err := json.Marshal(requestData)
 	if err != nil {
@@ -894,8 +421,7 @@ func UpdateSelf(c *gin.Context) {
 		})
 		return
 	}
-	err = json.Unmarshal(requestDataBytes, &user)
-	if err != nil {
+	if err = json.Unmarshal(requestDataBytes, &user); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "无效的参数",
@@ -903,9 +429,6 @@ func UpdateSelf(c *gin.Context) {
 		return
 	}
 
-	if user.Password == "" {
-		user.Password = "$I_LOVE_U" // make Validator happy :)
-	}
 	if err := common.Validate.Struct(&user); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -917,19 +440,9 @@ func UpdateSelf(c *gin.Context) {
 	cleanUser := repo.User{
 		Id:          c.GetInt("id"),
 		Username:    user.Username,
-		Password:    user.Password,
 		DisplayName: user.DisplayName,
 	}
-	if user.Password == "$I_LOVE_U" {
-		user.Password = "" // rollback to what it should be
-		cleanUser.Password = ""
-	}
-	updatePassword, err := checkUpdatePassword(user.OriginalPassword, user.Password, cleanUser.Id)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if err := cleanUser.Update(updatePassword); err != nil {
+	if err := cleanUser.Update(); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -939,362 +452,6 @@ func UpdateSelf(c *gin.Context) {
 		"message": "",
 	})
 	return
-}
-
-func checkUpdatePassword(originalPassword string, newPassword string, userId int) (updatePassword bool, err error) {
-	var currentUser *repo.User
-	currentUser, err = repo.GetUserById(userId, true)
-	if err != nil {
-		return
-	}
-
-	// 密码不为空,需要验证原密码
-	// 支持第一次账号绑定时原密码为空的情况
-	if !common.ValidatePasswordAndHash(originalPassword, currentUser.Password) && currentUser.Password != "" {
-		err = fmt.Errorf("原密码错误")
-		return
-	}
-	if newPassword == "" {
-		return
-	}
-	updatePassword = true
-	return
-}
-
-func DeleteUser(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	originUser, err := repo.GetUserById(id, false)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	myRole := c.GetInt("role")
-	if myRole <= originUser.Role {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无权删除同权限等级或更高权限等级的用户",
-		})
-		return
-	}
-	err = repo.HardDeleteUserById(id)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "",
-		})
-		return
-	}
-}
-
-func DeleteSelf(c *gin.Context) {
-	id := c.GetInt("id")
-	user, _ := repo.GetUserById(id, false)
-
-	if user.Role == common.RoleRootUser {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "不能删除超级管理员账户",
-		})
-		return
-	}
-
-	err := repo.DeleteUserById(id)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
-	return
-}
-
-func CreateUser(c *gin.Context) {
-	var user repo.User
-	err := json.NewDecoder(c.Request.Body).Decode(&user)
-	user.Username = strings.TrimSpace(user.Username)
-	if err != nil || user.Username == "" || user.Password == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
-		return
-	}
-	if err := common.Validate.Struct(&user); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "输入不合法 " + err.Error(),
-		})
-		return
-	}
-	if user.DisplayName == "" {
-		user.DisplayName = user.Username
-	}
-	myRole := c.GetInt("role")
-	if user.Role >= myRole {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无法创建权限大于等于自己的用户",
-		})
-		return
-	}
-	// Get tenant ID from context (defaults to "default" for v1 API)
-	tenantId := app.GetTenantIdFromContext(common.GetContextKeyString(c, "tenant_id"))
-
-	// Even for admin users, we cannot fully trust them!
-	cleanUser := repo.User{
-		Username:    user.Username,
-		Password:    user.Password,
-		DisplayName: user.DisplayName,
-		TenantId:    tenantId,
-		Role:        user.Role, // 保持管理员设置的角色
-	}
-	if err := cleanUser.Insert(0); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
-	return
-}
-
-type ManageRequest struct {
-	Id     int    `json:"id"`
-	Action string `json:"action"`
-}
-
-// ManageUser Only admin user can do this
-func ManageUser(c *gin.Context) {
-	var req ManageRequest
-	err := json.NewDecoder(c.Request.Body).Decode(&req)
-
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无效的参数",
-		})
-		return
-	}
-	user := repo.User{
-		Id: req.Id,
-	}
-	// Fill attributes
-	repo.DB.Unscoped().Where(&user).First(&user)
-	if user.Id == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "用户不存在",
-		})
-		return
-	}
-	myRole := c.GetInt("role")
-	if err := app.CheckPermission(myRole, user.Role); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "无权更新同权限等级或更高权限等级的用户信息",
-		})
-		return
-	}
-	switch req.Action {
-	case "disable":
-		user.Status = common.UserStatusDisabled
-		if user.Role == common.RoleRootUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无法禁用超级管理员用户",
-			})
-			return
-		}
-	case "enable":
-		user.Status = common.UserStatusEnabled
-	case "delete":
-		if user.Role == common.RoleRootUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无法删除超级管理员用户",
-			})
-			return
-		}
-		if err := user.Delete(); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
-	case "promote":
-		if myRole != common.RoleRootUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "普通管理员用户无法提升其他用户为管理员",
-			})
-			return
-		}
-		if user.Role >= common.RoleAdminUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "该用户已经是管理员",
-			})
-			return
-		}
-		user.Role = common.RoleAdminUser
-	case "demote":
-		if user.Role == common.RoleRootUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "无法降级超级管理员用户",
-			})
-			return
-		}
-		if user.Role == common.RoleCommonUser {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "该用户已经是普通用户",
-			})
-			return
-		}
-		user.Role = common.RoleCommonUser
-	}
-
-	if err := user.Update(false); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	clearUser := repo.User{
-		Role:   user.Role,
-		Status: user.Status,
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    clearUser,
-	})
-	return
-}
-
-func EmailBind(c *gin.Context) {
-	email := c.Query("email")
-	code := c.Query("code")
-	if !common.VerifyCodeWithKey(email, code, common.EmailVerificationPurpose) {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "验证码错误或已过期",
-		})
-		return
-	}
-	session := sessions.Default(c)
-	id := session.Get("id")
-	user := repo.User{
-		Id: id.(int),
-	}
-	err := user.FillUserById()
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	user.Email = email
-	// no need to check if this email already taken, because we have used verification code to check it
-	err = user.Update(false)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-	})
-	return
-}
-
-type topUpRequest struct {
-	Key string `json:"key"`
-}
-
-var topUpLocks sync.Map
-var topUpCreateLock sync.Mutex
-
-type topUpTryLock struct {
-	ch chan struct{}
-}
-
-func newTopUpTryLock() *topUpTryLock {
-	return &topUpTryLock{ch: make(chan struct{}, 1)}
-}
-
-func (l *topUpTryLock) TryLock() bool {
-	select {
-	case l.ch <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-func (l *topUpTryLock) Unlock() {
-	select {
-	case <-l.ch:
-	default:
-	}
-}
-
-func getTopUpLock(userID int) *topUpTryLock {
-	if v, ok := topUpLocks.Load(userID); ok {
-		return v.(*topUpTryLock)
-	}
-	topUpCreateLock.Lock()
-	defer topUpCreateLock.Unlock()
-	if v, ok := topUpLocks.Load(userID); ok {
-		return v.(*topUpTryLock)
-	}
-	l := newTopUpTryLock()
-	topUpLocks.Store(userID, l)
-	return l
-}
-
-func TopUp(c *gin.Context) {
-	// When identity auth redirect is enabled, direct clients to lurus-identity wallet.
-	if common.IdentityAuthRedirect {
-		c.JSON(http.StatusOK, gin.H{
-			"success":  false,
-			"message":  "请使用统一身份认证服务进行充值",
-			"redirect": common.IdentityPublicURL + "/wallet",
-		})
-		return
-	}
-	id := c.GetInt("id")
-	lock := getTopUpLock(id)
-	if !lock.TryLock() {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "充值处理中，请稍后重试",
-		})
-		return
-	}
-	defer lock.Unlock()
-	req := topUpRequest{}
-	err := c.ShouldBindJSON(&req)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	quota, err := repo.Redeem(req.Key, id)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    quota,
-	})
 }
 
 type UpdateUserSettingRequest struct {
@@ -1321,7 +478,6 @@ func UpdateUserSetting(c *gin.Context) {
 		return
 	}
 
-	// 验证预警类型
 	if req.QuotaWarningType != dto.NotifyTypeEmail && req.QuotaWarningType != dto.NotifyTypeWebhook && req.QuotaWarningType != dto.NotifyTypeBark && req.QuotaWarningType != dto.NotifyTypeGotify {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -1330,7 +486,6 @@ func UpdateUserSetting(c *gin.Context) {
 		return
 	}
 
-	// 验证预警阈值
 	if req.QuotaWarningThreshold <= 0 {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -1339,7 +494,6 @@ func UpdateUserSetting(c *gin.Context) {
 		return
 	}
 
-	// 如果是webhook类型,验证webhook地址
 	if req.QuotaWarningType == dto.NotifyTypeWebhook {
 		if req.WebhookUrl == "" {
 			c.JSON(http.StatusOK, gin.H{
@@ -1348,7 +502,6 @@ func UpdateUserSetting(c *gin.Context) {
 			})
 			return
 		}
-		// 验证URL格式
 		if _, err := url.ParseRequestURI(req.WebhookUrl); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -1358,9 +511,7 @@ func UpdateUserSetting(c *gin.Context) {
 		}
 	}
 
-	// 如果是邮件类型，验证邮箱地址
 	if req.QuotaWarningType == dto.NotifyTypeEmail && req.NotificationEmail != "" {
-		// 验证邮箱格式
 		if !strings.Contains(req.NotificationEmail, "@") {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -1370,7 +521,6 @@ func UpdateUserSetting(c *gin.Context) {
 		}
 	}
 
-	// 如果是Bark类型，验证Bark URL
 	if req.QuotaWarningType == dto.NotifyTypeBark {
 		if req.BarkUrl == "" {
 			c.JSON(http.StatusOK, gin.H{
@@ -1379,7 +529,6 @@ func UpdateUserSetting(c *gin.Context) {
 			})
 			return
 		}
-		// 验证URL格式
 		if _, err := url.ParseRequestURI(req.BarkUrl); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -1387,7 +536,6 @@ func UpdateUserSetting(c *gin.Context) {
 			})
 			return
 		}
-		// 检查是否是HTTP或HTTPS
 		if !strings.HasPrefix(req.BarkUrl, "https://") && !strings.HasPrefix(req.BarkUrl, "http://") {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -1397,7 +545,6 @@ func UpdateUserSetting(c *gin.Context) {
 		}
 	}
 
-	// 如果是Gotify类型，验证Gotify URL和Token
 	if req.QuotaWarningType == dto.NotifyTypeGotify {
 		if req.GotifyUrl == "" {
 			c.JSON(http.StatusOK, gin.H{
@@ -1413,7 +560,6 @@ func UpdateUserSetting(c *gin.Context) {
 			})
 			return
 		}
-		// 验证URL格式
 		if _, err := url.ParseRequestURI(req.GotifyUrl); err != nil {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -1421,7 +567,6 @@ func UpdateUserSetting(c *gin.Context) {
 			})
 			return
 		}
-		// 检查是否是HTTP或HTTPS
 		if !strings.HasPrefix(req.GotifyUrl, "https://") && !strings.HasPrefix(req.GotifyUrl, "http://") {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -1438,7 +583,6 @@ func UpdateUserSetting(c *gin.Context) {
 		return
 	}
 
-	// 构建设置
 	settings := dto.UserSetting{
 		NotifyType:            req.QuotaWarningType,
 		QuotaWarningThreshold: req.QuotaWarningThreshold,
@@ -1446,7 +590,6 @@ func UpdateUserSetting(c *gin.Context) {
 		RecordIpLog:           req.RecordIpLog,
 	}
 
-	// 如果是webhook类型,添加webhook相关设置
 	if req.QuotaWarningType == dto.NotifyTypeWebhook {
 		settings.WebhookUrl = req.WebhookUrl
 		if req.WebhookSecret != "" {
@@ -1454,21 +597,17 @@ func UpdateUserSetting(c *gin.Context) {
 		}
 	}
 
-	// 如果提供了通知邮箱，添加到设置中
 	if req.QuotaWarningType == dto.NotifyTypeEmail && req.NotificationEmail != "" {
 		settings.NotificationEmail = req.NotificationEmail
 	}
 
-	// 如果是Bark类型，添加Bark URL到设置中
 	if req.QuotaWarningType == dto.NotifyTypeBark {
 		settings.BarkUrl = req.BarkUrl
 	}
 
-	// 如果是Gotify类型，添加Gotify配置到设置中
 	if req.QuotaWarningType == dto.NotifyTypeGotify {
 		settings.GotifyUrl = req.GotifyUrl
 		settings.GotifyToken = req.GotifyToken
-		// Gotify优先级范围0-10，超出范围则使用默认值5
 		if req.GotifyPriority < 0 || req.GotifyPriority > 10 {
 			settings.GotifyPriority = 5
 		} else {
@@ -1476,9 +615,8 @@ func UpdateUserSetting(c *gin.Context) {
 		}
 	}
 
-	// 更新用户设置
 	user.SetSetting(settings)
-	if err := user.Update(false); err != nil {
+	if err := user.Update(); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "更新设置失败: " + err.Error(),
@@ -1492,3 +630,10 @@ func UpdateUserSetting(c *gin.Context) {
 	})
 }
 
+// Logout clears the v1 session cookie.
+func Logout(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"message": "",
+		"success": true,
+	})
+}

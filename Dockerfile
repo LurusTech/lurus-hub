@@ -19,7 +19,7 @@ ENV GOEXPERIMENT=greenteagc
 WORKDIR /build
 
 # Copy lurus-platform for local replace directive in go.mod
-COPY lurus-platform/ /lurus-platform/
+COPY lurus-platform/ /2l-svc-platform/
 
 ADD go.mod go.sum ./
 RUN go mod download

@@ -552,20 +552,23 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 		}
 	}
 
-	// Wallet bridge: mirror quota debit to lurus-identity wallet (async, best-effort).
-	// Only active when the user authenticated via identity session token.
+	// Wallet bridge: mirror quota debit to lurus-platform wallet (async, best-effort).
+	// Active when the user authenticated via identity session token or Zitadel OIDC.
 	totalQuota := quota + preConsumedQuota
 	if relayInfo.IdentityAccountID > 0 && totalQuota > 0 {
 		accountID := relayInfo.IdentityAccountID
 		// Convert internal quota units to LB (1 LB = QuotaPerUnit tokens).
 		amountLB := float64(totalQuota) / common.QuotaPerUnit
 		gopool.Go(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err := common.DebitWallet(ctx, accountID, amountLB, "llm_usage", fmt.Sprintf("LLM relay userId=%d", relayInfo.UserId), "lurus-api")
+			// Debit wallet via gRPC (auto-fallback to HTTP).
+			_, err := common.DebitWalletGRPC(ctx, accountID, amountLB, "llm_usage", fmt.Sprintf("LLM relay userId=%d", relayInfo.UserId), "lurus-api")
 			if err != nil {
 				common.SysLog(fmt.Sprintf("wallet bridge debit failed: accountID=%d, amount=%.4f LB, err=%s", accountID, amountLB, err.Error()))
 			}
+			// Report usage for VIP accumulation (fire-and-forget).
+			common.ReportLLMUsageGRPC(ctx, accountID, amountLB)
 		})
 	}
 

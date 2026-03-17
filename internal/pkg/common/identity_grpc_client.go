@@ -2,7 +2,6 @@ package common
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -15,14 +14,14 @@ import (
 	identityv1 "github.com/hanmahong5-arch/lurus-platform/proto/gen/go/identity/v1"
 )
 
-// identityGRPCAddr is the gRPC address for lurus-identity (host:port).
+// identityGRPCAddr is the gRPC address for lurus-platform core (host:port).
 var identityGRPCAddr = getIdentityGRPCAddr()
 
 func getIdentityGRPCAddr() string {
 	if addr := os.Getenv("IDENTITY_GRPC_ADDR"); addr != "" {
 		return addr
 	}
-	return "identity-service.lurus-identity.svc.cluster.local:18105"
+	return "platform-core.lurus-platform.svc.cluster.local:18105"
 }
 
 var (
@@ -178,6 +177,61 @@ func ReportLLMUsageGRPC(ctx context.Context, accountID int64, amountCNY float64)
 	}
 }
 
+// DebitWalletGRPC deducts credits from an account's wallet via gRPC.
+// Falls back to HTTP if gRPC client is not available.
+func DebitWalletGRPC(ctx context.Context, accountID int64, amount float64, txType, description, productID string) (*DebitWalletResult, error) {
+	client := getGRPCClient()
+	if client == nil {
+		return DebitWallet(ctx, accountID, amount, txType, description, productID)
+	}
+
+	gctx, cancel := grpcTimeout(ctx)
+	defer cancel()
+
+	resp, err := client.WalletDebit(gctx, &identityv1.WalletOperationRequest{
+		AccountId:   accountID,
+		Amount:      amount,
+		Type:        txType,
+		ProductId:   productID,
+		Description: description,
+	})
+	if err != nil {
+		slog.Debug("identity grpc WalletDebit failed, falling back to HTTP", "err", err)
+		return DebitWallet(ctx, accountID, amount, txType, description, productID)
+	}
+
+	return &DebitWalletResult{
+		Success:      resp.Success,
+		BalanceAfter: resp.BalanceAfter,
+	}, nil
+}
+
+// CreditWalletGRPC adds credits to an account's wallet via gRPC.
+// Falls back to HTTP if gRPC client is not available.
+func CreditWalletGRPC(ctx context.Context, accountID int64, amount float64, txType, description, productID string) error {
+	client := getGRPCClient()
+	if client == nil {
+		return CreditWallet(ctx, accountID, amount, txType, description, productID)
+	}
+
+	gctx, cancel := grpcTimeout(ctx)
+	defer cancel()
+
+	_, err := client.WalletCredit(gctx, &identityv1.WalletOperationRequest{
+		AccountId:   accountID,
+		Amount:      amount,
+		Type:        txType,
+		ProductId:   productID,
+		Description: description,
+	})
+	if err != nil {
+		slog.Debug("identity grpc WalletCredit failed, falling back to HTTP", "err", err)
+		return CreditWallet(ctx, accountID, amount, txType, description, productID)
+	}
+
+	return nil
+}
+
 // protoToIdentityMapping converts a proto Account to IdentityMapping.
 func protoToIdentityMapping(a *identityv1.Account) *IdentityMapping {
 	m := &IdentityMapping{
@@ -197,8 +251,12 @@ func protoToIdentityMapping(a *identityv1.Account) *IdentityMapping {
 
 // protoToAccountOverview converts a proto AccountOverview to the local struct.
 func protoToAccountOverview(ov *identityv1.AccountOverview) *AccountOverview {
+	topupURL := ov.TopupUrl
+	if topupURL == "" {
+		topupURL = IdentityPublicURL + "/wallet/topup"
+	}
 	result := &AccountOverview{
-		TopupURL: fmt.Sprintf("https://identity.lurus.cn/wallet/topup"),
+		TopupURL: topupURL,
 	}
 
 	if ov.Account != nil {

@@ -83,31 +83,23 @@ func SetupIntegrationRouter(t *testing.T) (*gin.Engine, func()) {
 	common.LogConsumeEnabled = false
 
 	// Seed root user (id=1, role=100 admin)
-	rootPassword, _ := common.Password2Hash("rootpassword")
 	db.Create(&repo.User{
 		Id:          1,
 		Username:    "root",
-		Password:    rootPassword,
 		DisplayName: "Root",
 		Role:        common.RoleRootUser,
 		Status:      common.UserStatusEnabled,
 		Email:       "root@test.local",
-		Phone:       "10000000000",
-		AffCode:     common.GetRandomString(8),
 	})
 
 	// Seed normal user (id=2)
-	normalPassword, _ := common.Password2Hash("userpassword")
 	db.Create(&repo.User{
 		Id:          2,
 		Username:    "testuser",
-		Password:    normalPassword,
 		DisplayName: "Test User",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Email:       "user@test.local",
-		Phone:       "10000000001",
-		AffCode:     common.GetRandomString(8),
 	})
 
 	// Seed API key with all scopes

@@ -553,6 +553,12 @@ func ZitadelAuth() gin.HandlerFunc {
 			return
 		}
 
+		// Sync account to lurus-platform (upsert) and carry identity_account_id
+		// for wallet bridging. Best-effort: platform unavailability does not block auth.
+		if im, _ := common.UpsertAccountGRPC(c.Request.Context(), claims.Subject, claims.Email, claims.Name, ""); im != nil {
+			c.Set("identity_account_id", im.ID)
+		}
+
 		// Extract roles from claims
 		roles := extractRoles(claims.Roles)
 

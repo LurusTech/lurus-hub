@@ -24,37 +24,13 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/user-agreement", handler.GetUserAgreement)
 		apiRouter.GET("/privacy-policy", handler.GetPrivacyPolicy)
 		apiRouter.GET("/about", handler.GetAbout)
-		//apiRouter.GET("/midjourney", handler.GetMidjourney)
 		apiRouter.GET("/home_page_content", handler.GetHomePageContent)
 		apiRouter.GET("/pricing", middleware.TryUserAuth(), handler.GetPricing)
-		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), handler.SendEmailVerification)
-		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), handler.SendPasswordResetEmail)
-		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), handler.ResetPassword)
-		apiRouter.GET("/oauth/github", middleware.CriticalRateLimit(), handler.GitHubOAuth)
-		apiRouter.GET("/oauth/discord", middleware.CriticalRateLimit(), handler.DiscordOAuth)
-		apiRouter.GET("/oauth/oidc", middleware.CriticalRateLimit(), handler.OidcAuth)
-		apiRouter.GET("/oauth/linuxdo", middleware.CriticalRateLimit(), handler.LinuxdoOAuth)
-		apiRouter.GET("/oauth/state", middleware.CriticalRateLimit(), handler.GenerateOAuthCode)
-		apiRouter.GET("/oauth/wechat", middleware.CriticalRateLimit(), handler.WeChatAuth)
-		apiRouter.GET("/oauth/wechat/bind", middleware.CriticalRateLimit(), handler.WeChatBind)
-		apiRouter.GET("/oauth/email/bind", middleware.CriticalRateLimit(), handler.EmailBind)
-		apiRouter.GET("/oauth/telegram/login", middleware.CriticalRateLimit(), handler.TelegramLogin)
-		apiRouter.GET("/oauth/telegram/bind", middleware.CriticalRateLimit(), handler.TelegramBind)
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), handler.GetRatioConfig)
 
 		// Universal secure verification routes
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), handler.UniversalVerify)
 		apiRouter.GET("/verify/status", middleware.UserAuth(), handler.GetVerificationStatus)
-
-		// SMS verification routes
-		smsRoute := apiRouter.Group("/sms")
-		{
-			smsRoute.GET("/status", handler.GetSMSStatus)
-			smsRoute.POST("/send", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), handler.SendSmsVerification)
-		}
-
-		// Invitation code validation (public)
-		apiRouter.GET("/invitation/validate", handler.ValidateInviteCode)
 
 		// Auth/Session endpoints (for SSO support)
 		authRoute := apiRouter.Group("/auth")
@@ -64,13 +40,6 @@ func SetApiRouter(router *gin.Engine) {
 
 		userRoute := apiRouter.Group("/user")
 		{
-			userRoute.POST("/register", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), handler.Register)
-			userRoute.POST("/login", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), handler.Login)
-			userRoute.POST("/login/2fa", middleware.CriticalRateLimit(), handler.Verify2FALogin)
-			userRoute.POST("/login_sms", middleware.CriticalRateLimit(), handler.LoginWithSms)
-			userRoute.POST("/passkey/login/begin", middleware.CriticalRateLimit(), handler.PasskeyLoginBegin)
-			userRoute.POST("/passkey/login/finish", middleware.CriticalRateLimit(), handler.PasskeyLoginFinish)
-			//userRoute.POST("/tokenlog", middleware.CriticalRateLimit(), handler.TokenLog)
 			userRoute.GET("/logout", handler.Logout)
 			userRoute.GET("/groups", handler.GetUserGroups)
 
@@ -79,32 +48,10 @@ func SetApiRouter(router *gin.Engine) {
 			{
 				selfRoute.GET("/self/groups", handler.GetUserGroups)
 				selfRoute.GET("/self", handler.GetSelf)
-				selfRoute.POST("/bind_phone", middleware.CriticalRateLimit(), handler.BindPhone)
 				selfRoute.GET("/models", handler.GetUserModels)
 				selfRoute.PUT("/self", handler.UpdateSelf)
-				selfRoute.DELETE("/self", handler.DeleteSelf)
 				selfRoute.GET("/token", handler.GenerateAccessToken)
-				selfRoute.GET("/passkey", handler.PasskeyStatus)
-				selfRoute.POST("/passkey/register/begin", handler.PasskeyRegisterBegin)
-				selfRoute.POST("/passkey/register/finish", handler.PasskeyRegisterFinish)
-				selfRoute.POST("/passkey/verify/begin", handler.PasskeyVerifyBegin)
-				selfRoute.POST("/passkey/verify/finish", handler.PasskeyVerifyFinish)
-				selfRoute.DELETE("/passkey", handler.PasskeyDelete)
-				selfRoute.GET("/aff", handler.GetAffCode)
-				selfRoute.POST("/topup", middleware.CriticalRateLimit(), handler.TopUp)
-				selfRoute.POST("/aff_transfer", handler.TransferAffQuota)
 				selfRoute.PUT("/setting", handler.UpdateUserSetting)
-
-				// 2FA routes
-				selfRoute.GET("/2fa/status", handler.Get2FAStatus)
-				selfRoute.POST("/2fa/setup", handler.Setup2FA)
-				selfRoute.POST("/2fa/enable", handler.Enable2FA)
-				selfRoute.POST("/2fa/disable", handler.Disable2FA)
-				selfRoute.POST("/2fa/backup_codes", handler.RegenerateBackupCodes)
-
-				// Check-in routes
-				selfRoute.GET("/checkin", handler.GetCheckinStatus)
-				selfRoute.POST("/checkin", middleware.TurnstileCheck(), handler.DoCheckin)
 
 				// User verification status
 				selfRoute.GET("/verification-status", middleware.GetUserVerificationStatus)
@@ -116,17 +63,8 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.GET("/", handler.GetAllUsers)
 				adminRoute.GET("/search", handler.SearchUsers)
 				adminRoute.GET("/:id", handler.GetUser)
-				adminRoute.POST("/", handler.CreateUser)
-				adminRoute.POST("/manage", handler.ManageUser)
 				adminRoute.PUT("/", handler.UpdateUser)
-				adminRoute.DELETE("/:id", handler.DeleteUser)
-				adminRoute.DELETE("/:id/reset_passkey", handler.AdminResetPasskey)
-
-				// Admin 2FA routes
-				adminRoute.GET("/2fa/stats", handler.Admin2FAStats)
-				adminRoute.DELETE("/:id/2fa", handler.AdminDisable2FA)
-
-				}
+			}
 		}
 		optionRoute := apiRouter.Group("/option")
 		optionRoute.Use(middleware.RootAuth())
@@ -134,29 +72,9 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.GET("/", handler.GetOptions)
 			optionRoute.PUT("/", handler.UpdateOption)
 			optionRoute.POST("/rest_model_ratio", handler.ResetModelRatio)
-			optionRoute.POST("/migrate_console_setting", handler.MigrateConsoleSetting) // 用于迁移检测的旧键，下个版本会删除
+			optionRoute.POST("/migrate_console_setting", handler.MigrateConsoleSetting)
 		}
 
-		// Login configuration management (Root only)
-		loginConfigRoute := apiRouter.Group("/admin/login-config")
-		loginConfigRoute.Use(middleware.RootAuth())
-		{
-			loginConfigRoute.GET("/", handler.AdminGetLoginConfig)
-			loginConfigRoute.PUT("/", handler.AdminUpdateLoginConfig)
-			loginConfigRoute.GET("/modes", handler.AdminGetConfigModes)
-		}
-
-		// Invitation code management (Admin)
-		invitationRoute := apiRouter.Group("/admin/invitation-codes")
-		invitationRoute.Use(middleware.AdminAuth())
-		{
-			invitationRoute.GET("/", handler.AdminListInviteCodes)
-			invitationRoute.GET("/search", handler.AdminSearchInviteCodes)
-			invitationRoute.GET("/stats", handler.AdminGetInviteCodeStats)
-			invitationRoute.POST("/", handler.AdminCreateInviteCodes)
-			invitationRoute.DELETE("/cleanup", handler.AdminCleanupExpiredInviteCodes)
-			invitationRoute.DELETE("/:id", handler.AdminDeleteInviteCode)
-		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
 		ratioSyncRoute.Use(middleware.RootAuth())
 		{
@@ -324,7 +242,7 @@ func SetApiRouter(router *gin.Engine) {
 			deploymentsRoute.DELETE("/:id", handler.DeleteDeployment)
 		}
 
-			// Internal API Key management (admin only)
+		// Internal API Key management (admin only)
 		apiKeyRoute := apiRouter.Group("/api-keys")
 		apiKeyRoute.Use(middleware.AdminAuth())
 		{

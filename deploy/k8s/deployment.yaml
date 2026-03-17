@@ -133,7 +133,7 @@ spec:
             # Model auto-sync frequency (minutes)
             - name: MODEL_SYNC_FREQUENCY
               value: "60"
-            # Identity session token validation (shared secret with lurus-identity)
+            # Identity session token validation (shared secret with lurus-platform)
             - name: IDENTITY_SESSION_SECRET
               valueFrom:
                 secretKeyRef:

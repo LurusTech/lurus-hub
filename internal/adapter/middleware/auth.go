@@ -48,7 +48,7 @@ func authHelper(c *gin.Context, minRole int) {
 			return
 		}
 
-		// Try lurus-identity session token first (HS256, zero network overhead).
+		// Try lurus-platform session token first (HS256, zero network overhead).
 		bearerToken := accessToken
 		if strings.HasPrefix(bearerToken, "Bearer ") || strings.HasPrefix(bearerToken, "bearer ") {
 			bearerToken = strings.TrimSpace(bearerToken[7:])

@@ -18,8 +18,6 @@ type Setup struct {
 
 type SetupRequest struct {
 	Username           string `json:"username"`
-	Password           string `json:"password"`
-	ConfirmPassword    string `json:"confirmPassword"`
 	SelfUseModeEnabled bool   `json:"SelfUseModeEnabled"`
 	DemoSiteEnabled    bool   `json:"DemoSiteEnabled"`
 }
@@ -74,45 +72,18 @@ func PostSetup(c *gin.Context) {
 		return
 	}
 
-	// If root doesn't exist, validate and create admin account
+	// If root doesn't exist, create the initial admin account
 	if !rootExists {
-		// Validate username length: max 12 characters to align with repo.User validation
-		if len(req.Username) > 12 {
+		if len(req.Username) == 0 || len(req.Username) > 12 {
 			c.JSON(200, gin.H{
 				"success": false,
-				"message": "用户名长度不能超过12个字符",
-			})
-			return
-		}
-		// Validate password
-		if req.Password != req.ConfirmPassword {
-			c.JSON(200, gin.H{
-				"success": false,
-				"message": "两次输入的密码不一致",
+				"message": "用户名长度必须在1-12个字符之间",
 			})
 			return
 		}
 
-		if len(req.Password) < 8 {
-			c.JSON(200, gin.H{
-				"success": false,
-				"message": "密码长度至少为8个字符",
-			})
-			return
-		}
-
-		// Create root user
-		hashedPassword, err := common.Password2Hash(req.Password)
-		if err != nil {
-			c.JSON(200, gin.H{
-				"success": false,
-				"message": "系统错误: " + err.Error(),
-			})
-			return
-		}
 		rootUser := repo.User{
 			Username:    req.Username,
-			Password:    hashedPassword,
 			Role:        common.RoleRootUser,
 			Status:      common.UserStatusEnabled,
 			DisplayName: "Root User",

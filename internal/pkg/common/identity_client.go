@@ -10,14 +10,14 @@ import (
 	"time"
 )
 
-// IdentityServiceURL is the base URL for lurus-identity service.
+// IdentityServiceURL is the base URL for the lurus-platform core service.
 var IdentityServiceURL = getIdentityServiceURL()
 
 func getIdentityServiceURL() string {
 	if url := os.Getenv("IDENTITY_SERVICE_URL"); url != "" {
 		return url
 	}
-	return "http://identity-service.lurus-identity.svc.cluster.local:18104"
+	return "http://platform-core.lurus-platform.svc.cluster.local:18104"
 }
 
 // IdentityServiceInternalKey is the bearer token for /internal/v1/* endpoints.
@@ -27,7 +27,7 @@ var IdentityServiceInternalKey = os.Getenv("IDENTITY_SERVICE_INTERNAL_KEY")
 // Set IDENTITY_AUTH_REDIRECT=true to enable.
 var IdentityAuthRedirect = os.Getenv("IDENTITY_AUTH_REDIRECT") == "true"
 
-// IdentityPublicURL is the external-facing URL for lurus-identity (used in redirect responses).
+// IdentityPublicURL is the external-facing URL for lurus-platform (used in redirect responses).
 var IdentityPublicURL = getIdentityPublicURL()
 
 func getIdentityPublicURL() string {
@@ -41,7 +41,7 @@ var identityClient = &http.Client{
 	Timeout: 5 * time.Second,
 }
 
-// IdentityMapping represents the unified user identity mapping returned by lurus-identity.
+// IdentityMapping represents the unified user identity mapping returned by lurus-platform.
 type IdentityMapping struct {
 	ID          int64     `json:"id"`
 	LurusID     string    `json:"lurus_id"`
@@ -90,7 +90,7 @@ func (e Entitlements) GetBool(key string, defaultVal bool) bool {
 	}
 }
 
-// GetAccountByZitadelSub retrieves account info from lurus-identity by Zitadel OIDC sub.
+// GetAccountByZitadelSub retrieves account info from lurus-platform by Zitadel OIDC sub.
 // Returns nil on not-found or network errors (callers degrade gracefully).
 func GetAccountByZitadelSub(ctx context.Context, sub string) (*IdentityMapping, error) {
 	if IdentityServiceURL == "" {
@@ -127,7 +127,7 @@ func GetAccountByZitadelSub(ctx context.Context, sub string) (*IdentityMapping, 
 	return &a, nil
 }
 
-// UpsertAccount creates or updates an account in lurus-identity (called on OIDC login).
+// UpsertAccount creates or updates an account in lurus-platform (called on OIDC login).
 func UpsertAccount(ctx context.Context, zitadelSub, email, displayName, avatarURL string) (*IdentityMapping, error) {
 	if IdentityServiceURL == "" {
 		return nil, nil
@@ -197,7 +197,7 @@ func GetEntitlements(ctx context.Context, accountID int64, productID string) (En
 	return em, nil
 }
 
-// AccountOverview mirrors the aggregated read model from lurus-identity's overview endpoint.
+// AccountOverview mirrors the aggregated read model from lurus-platform's overview endpoint.
 type AccountOverview struct {
 	Account struct {
 		ID          int64  `json:"id"`
@@ -228,7 +228,7 @@ type AccountOverview struct {
 	TopupURL string `json:"topup_url"`
 }
 
-// GetAccountOverview retrieves the aggregated overview for an account from lurus-identity.
+// GetAccountOverview retrieves the aggregated overview for an account from lurus-platform.
 // Returns nil, nil on network errors or when identity service is not configured — callers degrade gracefully.
 func GetAccountOverview(ctx context.Context, accountID int64, productID string) (*AccountOverview, error) {
 	if IdentityServiceURL == "" {
@@ -262,13 +262,13 @@ func GetAccountOverview(ctx context.Context, accountID int64, productID string) 
 	return &ov, nil
 }
 
-// WalletBalance holds the wallet balance information from lurus-identity.
+// WalletBalance holds the wallet balance information from lurus-platform.
 type WalletBalance struct {
 	Balance float64 `json:"balance"`
 	Frozen  float64 `json:"frozen"`
 }
 
-// GetWalletBalance retrieves the wallet balance for an account from lurus-identity.
+// GetWalletBalance retrieves the wallet balance for an account from lurus-platform.
 // Returns nil on errors — callers degrade gracefully.
 func GetWalletBalance(ctx context.Context, accountID int64) (*WalletBalance, error) {
 	if IdentityServiceURL == "" {
@@ -299,7 +299,7 @@ func GetWalletBalance(ctx context.Context, accountID int64) (*WalletBalance, err
 	return &wb, nil
 }
 
-// GetAccountByEmail retrieves account info from lurus-identity by email address.
+// GetAccountByEmail retrieves account info from lurus-platform by email address.
 // Returns nil on not-found or network errors.
 func GetAccountByEmail(ctx context.Context, email string) (*IdentityMapping, error) {
 	if IdentityServiceURL == "" {
@@ -335,7 +335,7 @@ func GetAccountByEmail(ctx context.Context, email string) (*IdentityMapping, err
 	return &a, nil
 }
 
-// GetAccountByZitadelSub_ByAccountID retrieves account info from lurus-identity by account ID.
+// GetAccountByZitadelSub_ByAccountID retrieves account info from lurus-platform by account ID.
 // Used to resolve identity session tokens to zitadel_sub for user mapping lookup.
 func GetAccountByZitadelSub_ByAccountID(ctx context.Context, accountID int64) (*IdentityMapping, error) {
 	if IdentityServiceURL == "" {
@@ -390,7 +390,7 @@ type DebitWalletResult struct {
 	BalanceAfter float64 `json:"balance_after"`
 }
 
-// DebitWallet deducts credits from an account's wallet in lurus-identity.
+// DebitWallet deducts credits from an account's wallet in lurus-platform.
 // Returns the remaining balance after the debit, or an error if insufficient balance.
 func DebitWallet(ctx context.Context, accountID int64, amount float64, txType, description, productID string) (*DebitWalletResult, error) {
 	if IdentityServiceURL == "" {
@@ -435,7 +435,7 @@ func DebitWallet(ctx context.Context, accountID int64, amount float64, txType, d
 	return &result, nil
 }
 
-// CreditWallet adds credits to an account's wallet in lurus-identity.
+// CreditWallet adds credits to an account's wallet in lurus-platform.
 // Used for refunds or corrections.
 func CreditWallet(ctx context.Context, accountID int64, amount float64, txType, description, productID string) error {
 	if IdentityServiceURL == "" {
@@ -467,7 +467,7 @@ func CreditWallet(ctx context.Context, accountID int64, amount float64, txType, 
 	return nil
 }
 
-// ReportLLMUsage sends a usage record to lurus-identity for VIP accumulation.
+// ReportLLMUsage sends a usage record to lurus-platform for VIP accumulation.
 // Fire-and-forget — errors are logged but not propagated.
 func ReportLLMUsage(ctx context.Context, accountID int64, amountCNY float64) {
 	if IdentityServiceURL == "" {

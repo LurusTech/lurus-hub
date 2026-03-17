@@ -74,24 +74,8 @@ var LOG_DB *gorm.DB
 
 func createRootAccountIfNeed() error {
 	var user User
-	//if user.Status != common.UserStatusEnabled {
 	if err := DB.First(&user).Error; err != nil {
-		common.SysLog("no user exists, create a root user for you: username is root, password is 123456")
-		hashedPassword, err := common.Password2Hash("123456")
-		if err != nil {
-			return err
-		}
-		rootUser := User{
-			Username:    "root",
-			Password:    hashedPassword,
-			Role:        common.RoleRootUser,
-			Status:      common.UserStatusEnabled,
-			DisplayName: "Root User",
-			AccessToken: nil,
-			Quota:       100000000,
-			TenantId:    "default",
-		}
-		WithTenantID(DB, "default").Create(&rootUser)
+		common.SysLog("no user exists; use /api/setup to create the initial admin account")
 	}
 	return nil
 }
@@ -257,7 +241,6 @@ func migrateDB() error {
 		&Channel{},
 		&Token{},
 		&User{},
-		&PasskeyCredential{},
 		&Option{},
 		&Redemption{},
 		&Ability{},
@@ -269,11 +252,7 @@ func migrateDB() error {
 		&Vendor{},
 		&PrefillGroup{},
 		&Setup{},
-		&TwoFA{},
-		&TwoFABackupCode{},
-		&Checkin{},
 		&InternalApiKey{},
-		&InvitationCode{},
 		// Multi-tenant models
 		&Tenant{},
 		&UserIdentityMapping{},
@@ -311,7 +290,6 @@ func migrateDBFast() error {
 		{&Channel{}, "Channel"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
-		{&PasskeyCredential{}, "PasskeyCredential"},
 		{&Option{}, "Option"},
 		{&Redemption{}, "Redemption"},
 		{&Ability{}, "Ability"},
@@ -323,11 +301,7 @@ func migrateDBFast() error {
 		{&Vendor{}, "Vendor"},
 		{&PrefillGroup{}, "PrefillGroup"},
 		{&Setup{}, "Setup"},
-		{&TwoFA{}, "TwoFA"},
-		{&TwoFABackupCode{}, "TwoFABackupCode"},
-		{&Checkin{}, "Checkin"},
 		{&InternalApiKey{}, "InternalApiKey"},
-		{&InvitationCode{}, "InvitationCode"},
 		// Release/download management
 		{&entity.Release{}, "Release"},
 		{&entity.ReleaseArtifact{}, "ReleaseArtifact"},

@@ -337,7 +337,8 @@ func InternalGetUserBalance(c *gin.Context) {
 	})
 }
 
-// InternalTopupBalance tops up user's balance
+// InternalTopupBalance tops up user's balance.
+// Idempotent when order_id is provided — duplicate requests return 200 without double-charging.
 // POST /internal/balance/topup
 func InternalTopupBalance(c *gin.Context) {
 	var req struct {
@@ -371,6 +372,29 @@ func InternalTopupBalance(c *gin.Context) {
 		return
 	}
 
+	// Idempotency check: if order_id is provided, verify it hasn't been processed already
+	if req.OrderId != "" {
+		var count int64
+		orderTag := "Order ID: " + req.OrderId
+		repo.LOG_DB.Model(&repo.Log{}).
+			Where("user_id = ? AND type = ? AND content LIKE ?", req.UserId, repo.LogTypeTopup, "%"+orderTag+"%").
+			Count(&count)
+		if count > 0 {
+			currentQuota, _ := repo.GetUserQuota(req.UserId, true)
+			c.JSON(http.StatusOK, gin.H{
+				"success":    true,
+				"message":    "Already processed (idempotent)",
+				"idempotent": true,
+				"data": gin.H{
+					"user_id":     req.UserId,
+					"order_id":    req.OrderId,
+					"new_balance": currentQuota,
+				},
+			})
+			return
+		}
+	}
+
 	// Check user exists
 	user, err := repo.GetUserById(req.UserId, false)
 	if err != nil {
@@ -395,7 +419,7 @@ func InternalTopupBalance(c *gin.Context) {
 		return
 	}
 
-	// Log the operation
+	// Log the operation (order_id is always appended when present, used for idempotency check)
 	keyName := c.GetString("internal_api_key_name")
 	logMsg := "Internal API topped up " + logger.LogQuota(quotaAmount) + " via key: " + keyName + ". Reason: " + req.Reason
 	if req.OrderId != "" {

@@ -28,5 +28,4 @@ export * from './data';
 export * from './token';
 export * from './boolean';
 export * from './dashboard';
-export * from './passkey';
 export * from './apiMode';

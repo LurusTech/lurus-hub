@@ -28,10 +28,6 @@ import Forbidden from './pages/Forbidden';
 import Setting from './pages/Setting';
 import { StatusContext } from './context/Status';
 
-import PasswordResetForm from './components/auth/PasswordResetForm';
-import PasswordResetConfirm from './components/auth/PasswordResetConfirm';
-import LoginForm from './components/auth/LoginForm';
-import RegisterForm from './components/auth/RegisterForm';
 import Channel from './pages/Channel';
 import Token from './pages/Token';
 import Redemption from './pages/Redemption';
@@ -44,7 +40,6 @@ import Pricing from './pages/Pricing';
 import Task from './pages/Task';
 import ModelPage from './pages/Model';
 import Playground from './pages/Playground';
-import OAuth2Callback from './components/auth/OAuth2Callback';
 import ZitadelCallback from './components/auth/ZitadelCallback';
 import PersonalSetting from './components/settings/PersonalSetting';
 import Setup from './pages/Setup';
@@ -154,22 +149,7 @@ function App() {
             </AdminRoute>
           }
         />
-        <Route
-          path='/user/reset'
-          element={
-            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
-              <PasswordResetConfirm />
-            </Suspense>
-          }
-        />
-        <Route
-          path='/login/password'
-          element={
-            <AuthRedirect>
-              <LoginForm />
-            </AuthRedirect>
-          }
-        />
+        {/* Legacy /user/reset and /login/password removed — auth delegated to Zitadel */}
         <Route
           path='/login/:tenantSlug'
           element={
@@ -186,14 +166,7 @@ function App() {
             </AuthRedirect>
           }
         />
-        <Route
-          path='/register/password'
-          element={
-            <AuthRedirect>
-              <RegisterForm />
-            </AuthRedirect>
-          }
-        />
+        {/* Legacy /register/password removed — registration delegated to Zitadel */}
         <Route
           path='/register'
           element={
@@ -202,46 +175,7 @@ function App() {
             </AuthRedirect>
           }
         />
-        <Route
-          path='/reset'
-          element={
-            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
-              <PasswordResetForm />
-            </Suspense>
-          }
-        />
-        <Route
-          path='/oauth/github'
-          element={
-            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
-              <OAuth2Callback type='github'></OAuth2Callback>
-            </Suspense>
-          }
-        />
-        <Route
-          path='/oauth/discord'
-          element={
-            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
-              <OAuth2Callback type='discord'></OAuth2Callback>
-            </Suspense>
-          }
-        />
-        <Route
-          path='/oauth/oidc'
-          element={
-            <Suspense fallback={<Loading></Loading>}>
-              <OAuth2Callback type='oidc'></OAuth2Callback>
-            </Suspense>
-          }
-        />
-        <Route
-          path='/oauth/linuxdo'
-          element={
-            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
-              <OAuth2Callback type='linuxdo'></OAuth2Callback>
-            </Suspense>
-          }
-        />
+        {/* Legacy /reset and /oauth/{github,discord,oidc,linuxdo} removed — auth delegated to Zitadel */}
         <Route
           path='/oauth/zitadel'
           element={

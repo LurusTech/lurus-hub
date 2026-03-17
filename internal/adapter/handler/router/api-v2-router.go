@@ -121,6 +121,10 @@ func SetApiV2Router(router *gin.Engine) {
 			switchGroup.GET("/presets", handler.ListSwitchPresets)
 		}
 
+		// Tool download manifest — platform-aware binary/npm download links.
+		// No authentication required; cached by CDN/proxy for 1 hour.
+		apiV2.GET("/tools/download-manifest", handler.GetToolDownloadManifest)
+
 		// ================================================================
 		// Platform-wide User Routes (Zitadel JWT auth, no tenant context)
 		// 平台用户路由（Zitadel JWT 认证，无需 tenant context）

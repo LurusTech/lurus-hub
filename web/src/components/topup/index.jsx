@@ -17,15 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useEffect, useState, useContext, useRef } from 'react';
+import React, { useEffect, useState, useContext } from 'react';
 import {
   API,
   showError,
   showInfo,
   showSuccess,
   renderQuota,
-  copy,
-  getQuotaPerUnit,
   isV2Mode,
   v2Url,
 } from '../../helpers';
@@ -35,8 +33,6 @@ import { UserContext } from '../../context/User';
 import { StatusContext } from '../../context/Status';
 
 import RechargeCard from './RechargeCard';
-import InvitationCard from './InvitationCard';
-import TransferModal from './modals/TransferModal';
 
 const TopUp = () => {
   const { t } = useTranslation();
@@ -48,13 +44,6 @@ const TopUp = () => {
   const [topUpLink, setTopUpLink] = useState(
     statusState?.status?.top_up_link || '',
   );
-
-  const affFetchedRef = useRef(false);
-
-  // Invitation states
-  const [affLink, setAffLink] = useState('');
-  const [openTransfer, setOpenTransfer] = useState(false);
-  const [transferAmount, setTransferAmount] = useState(0);
 
   const topUp = async () => {
     if (redemptionCode === '') {
@@ -110,55 +99,10 @@ const TopUp = () => {
     }
   };
 
-  const getAffLink = async () => {
-    const res = await API.get('/api/user/aff');
-    const { success, message, data } = res.data;
-    if (success) {
-      const link = `${window.location.origin}/register?aff=${data}`;
-      setAffLink(link);
-    } else {
-      showError(message);
-    }
-  };
-
-  const transfer = async () => {
-    if (transferAmount < getQuotaPerUnit()) {
-      showError(t('划转金额最低为') + ' ' + renderQuota(getQuotaPerUnit()));
-      return;
-    }
-    const res = await API.post('/api/user/aff_transfer', {
-      quota: transferAmount,
-    });
-    const { success, message } = res.data;
-    if (success) {
-      showSuccess(message);
-      setOpenTransfer(false);
-      getUserQuota();
-    } else {
-      showError(message);
-    }
-  };
-
-  const handleAffLinkClick = async () => {
-    await copy(affLink);
-    showSuccess(t('邀请链接已复制到剪切板'));
-  };
-
-  const handleTransferCancel = () => {
-    setOpenTransfer(false);
-  };
-
   useEffect(() => {
     if (!userState?.user?.id) {
       getUserQuota();
     }
-    setTransferAmount(getQuotaPerUnit());
-  }, []);
-
-  useEffect(() => {
-    if (affFetchedRef.current) return;
-    affFetchedRef.current = true;
-    getAffLink();
   }, []);
 
   useEffect(() => {
@@ -169,21 +113,9 @@ const TopUp = () => {
 
   return (
     <div className='w-full max-w-7xl mx-auto relative min-h-screen lg:min-h-0 mt-[60px] px-2'>
-      <TransferModal
-        t={t}
-        openTransfer={openTransfer}
-        transfer={transfer}
-        handleTransferCancel={handleTransferCancel}
-        userState={userState}
-        renderQuota={renderQuota}
-        getQuotaPerUnit={getQuotaPerUnit}
-        transferAmount={transferAmount}
-        setTransferAmount={setTransferAmount}
-      />
-
       <div className='space-y-6'>
         <div className='grid grid-cols-1 lg:grid-cols-12 gap-6'>
-          <div className='lg:col-span-7 space-y-6 w-full'>
+          <div className='lg:col-span-8 lg:col-start-3 space-y-6 w-full'>
             <RechargeCard
               t={t}
               redemptionCode={redemptionCode}
@@ -194,16 +126,6 @@ const TopUp = () => {
               openTopUpLink={openTopUpLink}
               userState={userState}
               renderQuota={renderQuota}
-            />
-          </div>
-          <div className='lg:col-span-5'>
-            <InvitationCard
-              t={t}
-              userState={userState}
-              renderQuota={renderQuota}
-              setOpenTransfer={setOpenTransfer}
-              affLink={affLink}
-              handleAffLinkClick={handleAffLinkClick}
             />
           </div>
         </div>

@@ -137,3 +137,13 @@ Verification: `go test ./internal/adapter/handler/... -run "TestVerifyCreemSigna
 Part1: testutil_test.go 重写，移除 glebarez/sqlite，改用 TEST_POSTGRES_DSN；SetupTestDB 创建独立 test_repo_<nano> 数据库，cleanup 时 DROP；quotaDeductSafe 移除 SQLite 分支直接用 GREATEST。
 Part2: (2a) stream_scanner.go TrimSuffix("\r")→TrimSpace+空串跳过；(2b) processHeaderOverride 跳过 Accept-Encoding；(2c) GeminiUsageMetadata 加 ToolUsePromptTokenCount，提取 buildUsageFromGeminiMetadata 消除两处重复；(2d) MiniMax 添加 MiniMax-Text-01/MiniMax-01/minimax-text-01；(2e) Gemini 添加 gemini-2.0-flash-lite/2.5-flash-preview-04-17/2.5-pro-preview-05-06/2.0-flash-thinking-exp-01-21。
 Verification: `go build ./...` → OK (0 errors). PostgreSQL 集成测试待 TEST_POSTGRES_DSN 注入后验证。
+
+## 2026-03-17: lurus-api 瘦身 — 删除 v1 auth + 前端清理 + P0 幂等修复
+
+**Phase 1-3 (Go backend)**: 删除 30 个文件（checkin/invitation/OAuth/2FA/Passkey/SMS/admin_config），精简 User entity（移除 Password/OAuth IDs/aff 字段），清理 router 路由 ~80 条。认证统一委托 Zitadel OIDC。
+**Phase 4 (Frontend)**: 删除 16 个 React 文件（LoginForm/RegisterForm/2FA/Passkey/OAuth/checkin/affiliate），修改 12 个文件移除 v1 auth 调用。净删 ~6,438 行。
+**P0 fix**: `InternalTopupBalance` 加 order_id 幂等检查（查 LOG_DB 已有记录），防止 platform 支付重试导致重复充值。
+
+Verification: `go test ./... → 20/20 PASS`; `cd web && bun run build → OK`; `CGO_ENABLED=0 GOOS=linux go build ./... → OK`
+Commit: `24477bcd9` pushed to `origin/main`。
+Remaining: AuthSettingPage.jsx 仍有 Passkey 管理员配置（死设置，不影响功能）；P1 async wallet bridge 无重试机制。

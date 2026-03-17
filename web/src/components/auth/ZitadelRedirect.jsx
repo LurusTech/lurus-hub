@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useSearchParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { getTenantSlug } from '../../helpers';
 import Loading from '../common/ui/Loading';
 import { Card, Typography } from '@douyinfe/semi-ui';
@@ -24,8 +24,8 @@ const ZitadelRedirect = ({ register = false }) => {
       url += '&register=true';
     }
 
-    // Show fallback option after 1 second
-    const timer = setTimeout(() => setShowFallback(true), 1000);
+    // Show fallback option after 3 seconds
+    const timer = setTimeout(() => setShowFallback(true), 3000);
 
     window.location.href = url;
 
@@ -38,15 +38,9 @@ const ZitadelRedirect = ({ register = false }) => {
       {showFallback && (
         <div className='mt-8'>
           <Card className='p-6 shadow-lg'>
-            <Typography.Text className='text-gray-600 mb-4 block text-center'>
-              正在跳转到统一登录...
+            <Typography.Text className='text-gray-600 block text-center'>
+              正在跳转到统一登录，请稍候...
             </Typography.Text>
-            <Link
-              to='/login/password'
-              className='text-blue-600 hover:text-blue-800 underline block text-center'
-            >
-              使用密码登录（管理员）
-            </Link>
           </Card>
         </div>
       )}

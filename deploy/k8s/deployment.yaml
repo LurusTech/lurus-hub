@@ -38,6 +38,12 @@ spec:
                   matchLabels:
                     app: lurus-api
                 topologyKey: kubernetes.io/hostname
+      # Resolve auth.lurus.cn to Traefik ClusterIP inside the pod.
+      # Avoids hairpin NAT issue when exchanging OIDC tokens with Zitadel.
+      hostAliases:
+        - ip: "10.43.175.138"  # traefik.kube-system.svc ClusterIP
+          hostnames:
+            - "auth.lurus.cn"
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534

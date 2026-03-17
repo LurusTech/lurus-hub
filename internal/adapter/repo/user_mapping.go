@@ -158,12 +158,16 @@ func GetUserByZitadelID(zitadelUserID string, tenantID string) (*User, *UserIden
 }
 
 // CreateUserFromZitadelClaims creates a new lurus user from Zitadel JWT claims
-// and establishes the identity mapping
+// and establishes the identity mapping.
+//
+// Lookup order:
+//  1. Exact mapping match (zitadel_user_id + tenant_id)
+//  2. Email fallback — matches pre-Zitadel users across all tenants, auto-creates mapping
+//  3. Auto-create new user (if ZITADEL_AUTO_CREATE_USER=true)
 func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*User, *UserIdentityMapping, error) {
-	// Check if mapping already exists
+	// Step 1: Check if mapping already exists
 	existingMapping, _ := GetUserMappingByZitadelID(claims.Sub, tenantID)
 	if existingMapping != nil {
-		// User already exists, retrieve and return
 		user, err := GetUserById(existingMapping.LurusUserID, false)
 		if err != nil {
 			return nil, nil, err
@@ -171,13 +175,40 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 		return user, existingMapping, nil
 	}
 
-	// Get tenant config for default quota
+	// Step 2: Email fallback — link pre-existing users who haven't migrated to Zitadel yet.
+	// Search across all tenants (legacy users may have tenant_id="default").
+	if claims.Email != "" {
+		var existingUser User
+		err := WithoutTenantIsolation(DB).
+			Where("email = ? AND status = 1 AND deleted_at IS NULL", claims.Email).
+			Order("role DESC"). // prefer highest-privilege match (root > admin > user)
+			First(&existingUser).Error
+		if err == nil {
+			mapping, mapErr := CreateUserMapping(
+				existingUser.Id,
+				claims.Sub,
+				tenantID,
+				claims.Email,
+				claims.Name,
+				claims.PreferredUsername,
+			)
+			if mapErr != nil {
+				return nil, nil, fmt.Errorf("email fallback: failed to create mapping: %w", mapErr)
+			}
+			// Backfill display_name if empty
+			if existingUser.DisplayName == "" && claims.Name != "" {
+				WithoutTenantIsolation(DB).Model(&existingUser).Update("display_name", claims.Name)
+			}
+			return &existingUser, mapping, nil
+		}
+	}
+
+	// Step 3: Auto-create new user
 	tenant, err := GetTenantByID(tenantID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Check if tenant can add more users
 	canAdd, err := TenantCanAddUser(tenant)
 	if err != nil {
 		return nil, nil, err
@@ -186,17 +217,14 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 		return nil, nil, errors.New("tenant has reached maximum user limit")
 	}
 
-	// Generate unique username (handle duplicates)
 	username := claims.PreferredUsername
 	if username == "" {
 		username = claims.Email
 	}
 	username = ensureUniqueUsername(username, tenantID)
 
-	// Get default user quota from tenant config
 	defaultQuota := GetTenantConfigInt(tenantID, "quota.new_user_quota", 10000)
 
-	// Create new lurus user (auth delegated to Zitadel; no password stored)
 	user := &User{
 		Username:    username,
 		Email:       claims.Email,
@@ -208,16 +236,12 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 		Group:       "default",
 	}
 
-	// Use WithTenantID to inject tenant context for GORM beforeCreate hook
 	tenantDB := WithTenantID(DB, tenantID)
-
 	err = tenantDB.Create(user).Error
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Create identity mapping (user_identity_mapping table does not have
-	// tenant isolation plugin — it manages tenant_id explicitly)
 	mapping, err := CreateUserMapping(
 		user.Id,
 		claims.Sub,
@@ -227,7 +251,6 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 		claims.PreferredUsername,
 	)
 	if err != nil {
-		// Rollback user creation if mapping fails
 		tenantDB.Delete(user)
 		return nil, nil, err
 	}

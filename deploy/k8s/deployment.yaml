@@ -123,7 +123,7 @@ spec:
             - name: OTEL_TRACING_ENABLED
               value: "true"  # Enable when Jaeger is deployed
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://otel-collector.observability.svc:4318"
+              value: "otel-collector.observability.svc:4318"
             - name: OTEL_EXPORTER_OTLP_INSECURE
               value: "true"
             - name: OTEL_TRACE_SAMPLE_RATE

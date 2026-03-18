@@ -228,7 +228,7 @@ OpenAI, Anthropic (Claude), Google (Gemini), AWS Bedrock, Azure OpenAI, Baidu (W
 | Item | Reason |
 |------|--------|
 | Direct LLM model hosting | Gateway-only; upstream providers host models |
-| Real-money automated trading | Separate service (lurus-gushen) |
+| Real-money automated trading | Separate service (lurus-lucrum) |
 | Email functionality | Separate service (lurus-webmail) |
 | Mobile native app | Web-responsive only |
 | GraphQL API | REST/OpenAI-compatible only |

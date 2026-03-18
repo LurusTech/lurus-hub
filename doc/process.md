@@ -147,3 +147,12 @@ Verification: `go build ./...` → OK (0 errors). PostgreSQL 集成测试待 TES
 Verification: `go test ./... → 20/20 PASS`; `cd web && bun run build → OK`; `CGO_ENABLED=0 GOOS=linux go build ./... → OK`
 Commit: `24477bcd9` pushed to `origin/main`。
 Remaining: AuthSettingPage.jsx 仍有 Passkey 管理员配置（死设置，不影响功能）；P1 async wallet bridge 无重试机制。
+
+## 2026-03-18: Zitadel OIDC 登录修复 (3 项)
+
+1. **Hairpin NAT**: Pod 内 `auth.lurus.cn` 解析到公网 IP 43.226.46.164，回连被拒。修复: deployment 加 `hostAliases` 指向 Traefik ClusterIP `10.43.175.138` + NetworkPolicy 增 kube-system 443/8443 出站规则。
+2. **Email fallback**: `CreateUserFromZitadelClaims` 增加 email 回退匹配（跨租户），老用户首次 OIDC 登录自动建 mapping。
+3. **租户数据迁移**: root/marvin 的 `tenant_id` 从 `default` 迁移至 `356204220778610952`；tokens/channels/logs/redemptions 同步迁移；重复用户 (id=6,7) 已软删除。
+
+Verification: `kubectl exec ... wget auth.lurus.cn/.well-known/openid-configuration → OK`; Pod OIDC token exchange 畅通。
+Commits: `6600e6c52` (ZitadelRedirect), `bd6fe89dc` (email fallback), deploy `5bbb940` (NetworkPolicy).

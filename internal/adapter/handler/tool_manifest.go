@@ -3,7 +3,6 @@ package handler
 import (
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -51,8 +50,10 @@ func buildToolManifest() toolManifestResponse {
 		creatorVer = "v0.3.0"
 	)
 
+	// Version reflects when this manifest data was last updated in source code.
+	// Update this date when tool versions are bumped.
 	return toolManifestResponse{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		GeneratedAt: "2026-03-17T00:00:00Z",
 		Tools: map[string]toolManifestEntry{
 			// ── npm tools ──────────────────────────────────────────────
 			"claude": {

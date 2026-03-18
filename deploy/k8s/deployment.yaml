@@ -121,9 +121,9 @@ spec:
               value: "lurus.cn,api.lurus.cn"
             # OpenTelemetry Tracing Configuration
             - name: OTEL_TRACING_ENABLED
-              value: "false"  # Enable when Jaeger is deployed
+              value: "true"  # Enable when Jaeger is deployed
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "jaeger-collector.observability.svc:4318"
+              value: "http://otel-collector.observability.svc:4318"
             - name: OTEL_EXPORTER_OTLP_INSECURE
               value: "true"
             - name: OTEL_TRACE_SAMPLE_RATE
@@ -191,6 +191,14 @@ spec:
             limits:
               memory: "1Gi"
               cpu: "500m"
+          startupProbe:
+            httpGet:
+              path: /api/status
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+            timeoutSeconds: 3
           livenessProbe:
             httpGet:
               path: /api/status

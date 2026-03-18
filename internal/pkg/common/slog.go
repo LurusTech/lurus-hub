@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Global slog logger instance
@@ -87,6 +89,57 @@ func SlogConfigFromEnv() *SlogConfig {
 	return cfg
 }
 
+// logContextKey is used to store user_id in context.Context for slog extraction.
+type logContextKey string
+
+const logKeyUserID logContextKey = "log_user_id"
+
+// WithUserID returns a context with user_id attached for structured log extraction.
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, logKeyUserID, userID)
+}
+
+// contextHandler wraps any slog.Handler to inject trace context fields (trace_id, span_id,
+// request_id, user_id) from context.Context into every log record.
+// Used for JSON mode where the underlying handler has no context-extraction logic.
+type contextHandler struct {
+	inner slog.Handler
+}
+
+func (h *contextHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.inner.Enabled(ctx, level)
+}
+
+func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error {
+	if ctx != nil {
+		// Inject trace_id and span_id from OTel span context.
+		sc := trace.SpanContextFromContext(ctx)
+		if sc.HasTraceID() {
+			r.AddAttrs(slog.String("trace_id", sc.TraceID().String()))
+		}
+		if sc.HasSpanID() {
+			r.AddAttrs(slog.String("span_id", sc.SpanID().String()))
+		}
+		// Inject request_id.
+		if id := ctx.Value(RequestIdKey); id != nil {
+			r.AddAttrs(slog.String("request_id", fmt.Sprintf("%v", id)))
+		}
+		// Inject user_id.
+		if uid := ctx.Value(logKeyUserID); uid != nil {
+			r.AddAttrs(slog.String("user_id", fmt.Sprintf("%v", uid)))
+		}
+	}
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &contextHandler{inner: h.inner.WithAttrs(attrs)}
+}
+
+func (h *contextHandler) WithGroup(name string) slog.Handler {
+	return &contextHandler{inner: h.inner.WithGroup(name)}
+}
+
 // customHandler wraps slog.Handler to provide custom formatting
 type customHandler struct {
 	slog.Handler
@@ -124,11 +177,16 @@ func (h *customHandler) Handle(ctx context.Context, r slog.Record) error {
 	// Build the log line
 	timeStr := r.Time.Format(h.timeFormat)
 
-	// Get request ID from context if present
+	// Extract context values for structured log correlation.
 	requestID := "SYSTEM"
+	traceID := ""
 	if ctx != nil {
 		if id := ctx.Value(RequestIdKey); id != nil {
 			requestID = fmt.Sprintf("%v", id)
+		}
+		sc := trace.SpanContextFromContext(ctx)
+		if sc.HasTraceID() {
+			traceID = sc.TraceID().String()
 		}
 	}
 
@@ -147,7 +205,11 @@ func (h *customHandler) Handle(ctx context.Context, r slog.Record) error {
 		msg = fmt.Sprintf("%s | %s", msg, strings.Join(attrs, " "))
 	}
 
-	// Write formatted log line
+	// Write formatted log line with optional trace_id.
+	if traceID != "" {
+		_, err := fmt.Fprintf(w, "[%s] %s | %s | trace=%s | %s\n", levelTag, timeStr, requestID, traceID, msg)
+		return err
+	}
 	_, err := fmt.Fprintf(w, "[%s] %s | %s | %s\n", levelTag, timeStr, requestID, msg)
 	return err
 }
@@ -192,7 +254,9 @@ func InitSlog(cfg *SlogConfig) {
 	}
 
 	if cfg.JSONFormat {
-		handler = slog.NewJSONHandler(cfg.Writer, opts)
+		// Wrap JSON handler with contextHandler to inject trace_id, span_id,
+		// request_id, user_id from context into every JSON log entry.
+		handler = &contextHandler{inner: slog.NewJSONHandler(cfg.Writer, opts)}
 	} else {
 		// Use custom handler for text format
 		baseHandler := slog.NewTextHandler(cfg.Writer, opts)

@@ -156,6 +156,39 @@ var (
 		},
 		[]string{"channel_id", "channel_name", "provider", "error_type"},
 	)
+
+	// CircuitBreakerState tracks per-channel breaker state (0=closed, 1=open, 2=half_open)
+	CircuitBreakerState = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "circuit_breaker_state",
+			Help:      "Circuit breaker state per channel (0=closed, 1=open, 2=half_open)",
+		},
+		[]string{"channel_id"},
+	)
+
+	// CircuitBreakerTrips counts how many times each breaker has been tripped open
+	CircuitBreakerTrips = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "circuit_breaker_trips_total",
+			Help:      "Total times a channel circuit breaker tripped to Open",
+		},
+		[]string{"channel_id"},
+	)
+
+	// CircuitBreakerRejections counts requests rejected by open breakers
+	CircuitBreakerRejections = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "circuit_breaker_rejections_total",
+			Help:      "Total requests rejected by open circuit breaker",
+		},
+		[]string{"channel_id"},
+	)
 )
 
 // RecordRelayRequest records a relay request with its outcome
@@ -197,4 +230,19 @@ func SetChannelHealth(channelID, channelName, provider string, healthy bool) {
 		value = 1.0
 	}
 	ChannelHealth.WithLabelValues(channelID, channelName, provider).Set(value)
+}
+
+// RecordCircuitBreakerState sets the breaker state gauge for a channel.
+func RecordCircuitBreakerState(channelID string, state int) {
+	CircuitBreakerState.WithLabelValues(channelID).Set(float64(state))
+}
+
+// RecordCircuitBreakerTrip increments the trip counter.
+func RecordCircuitBreakerTrip(channelID string) {
+	CircuitBreakerTrips.WithLabelValues(channelID).Inc()
+}
+
+// RecordCircuitBreakerRejection increments the rejection counter.
+func RecordCircuitBreakerRejection(channelID string) {
+	CircuitBreakerRejections.WithLabelValues(channelID).Inc()
 }

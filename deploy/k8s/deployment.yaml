@@ -133,9 +133,23 @@ spec:
             # CORS allowed origins (comma-separated)
             - name: ALLOWED_ORIGINS
               value: "https://www.lurus.cn,https://gushen.lurus.cn,https://webmail.lurus.cn"
-            # MinIO releases bucket name
+            # MinIO object storage for release artifacts
+            - name: MINIO_ENDPOINT
+              value: "100.79.24.40:9000"
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: access-key
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: secret-key
             - name: MINIO_RELEASES_BUCKET
               value: "lurus-releases"
+            - name: MINIO_SECURE
+              value: "false"
             # Model auto-sync frequency (minutes)
             - name: MODEL_SYNC_FREQUENCY
               value: "60"

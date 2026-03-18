@@ -155,6 +155,9 @@ func authHelper(c *gin.Context, minRole int) {
 	c.Set("user_group", session.Get("group"))
 	c.Set("use_access_token", useAccessToken)
 
+	// Propagate user_id to context.Context for structured log correlation.
+	c.Request = c.Request.WithContext(common.WithUserID(c.Request.Context(), fmt.Sprintf("%v", id)))
+
 	// Inject tenant context for v1 API tenant isolation
 	userId, _ := id.(int)
 	tenantId := "default"
@@ -295,6 +298,9 @@ func TokenAuth() func(c *gin.Context) {
 		}
 
 		repo.UserBaseWriteContext(userCache, c)
+
+		// Propagate user_id to context.Context for structured log correlation.
+		c.Request = c.Request.WithContext(common.WithUserID(c.Request.Context(), fmt.Sprintf("%d", token.UserId)))
 
 		userGroup := userCache.Group
 		tokenGroup := token.Group

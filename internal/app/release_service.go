@@ -1,34 +1,104 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
+	"path"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/domain/entity"
 	"github.com/QuantumNous/lurus-api/internal/pkg/config"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"golang.org/x/mod/semver"
 )
 
-// ReleaseService handles business logic for releases
+// ReleaseService handles business logic for releases and tool downloads.
 type ReleaseService struct {
-	repo *repo.ReleaseRepository
-	// minioClient *minio.Client // TODO: Add MinIO integration
-	minioEndpoint string
-	minioBucket   string
+	repo        *repo.ReleaseRepository
+	minioClient *minio.Client
+	minioBucket string
+
+	manifestMu    sync.RWMutex
+	manifestCache *toolManifestSnapshot
 }
 
-// NewReleaseService creates a new release service
-func NewReleaseService(releaseRepo *repo.ReleaseRepository) *ReleaseService {
-	return &ReleaseService{
-		repo:          releaseRepo,
-		minioEndpoint: "", // TODO: Load from config
-		minioBucket:   config.Get().Storage.MinIOBucket,
-	}
+// toolManifestSnapshot holds a cached tool manifest with expiry.
+type toolManifestSnapshot struct {
+	response  ToolManifestResponse
+	expiresAt time.Time
 }
+
+const manifestCacheTTL = 5 * time.Minute
+
+// --- Tool manifest types (match existing Switch client contract) ---
+
+// ToolManifestResponse is the top-level manifest API response.
+type ToolManifestResponse struct {
+	GeneratedAt string                       `json:"generated_at"`
+	Tools       map[string]ToolManifestEntry `json:"tools"`
+}
+
+// ToolManifestEntry describes a single tool in the download manifest.
+type ToolManifestEntry struct {
+	Type          string                       `json:"type"`
+	NpmPackage    string                       `json:"npm_package,omitempty"`
+	LatestVersion string                       `json:"latest_version"`
+	Platforms     map[string]ToolManifestAsset `json:"platforms,omitempty"`
+}
+
+// ToolManifestAsset holds the download URL, checksum and size for one platform.
+type ToolManifestAsset struct {
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256,omitempty"`
+	Size   int64  `json:"size,omitempty"`
+}
+
+// storageObject is a simplified view of an object in MinIO.
+type storageObject struct {
+	key  string
+	size int64
+}
+
+// NewReleaseService creates a new release service with optional MinIO integration.
+func NewReleaseService(releaseRepo *repo.ReleaseRepository) *ReleaseService {
+	cfg := config.Get()
+	svc := &ReleaseService{
+		repo:        releaseRepo,
+		minioBucket: cfg.Storage.MinIOBucket,
+	}
+
+	if cfg.Storage.MinIOEndpoint != "" {
+		client, err := minio.New(cfg.Storage.MinIOEndpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.Storage.MinIOAccessKey, cfg.Storage.MinIOSecretKey, ""),
+			Secure: cfg.Storage.MinIOSecure,
+		})
+		if err != nil {
+			slog.Error("failed to initialize MinIO client", "error", err)
+		} else {
+			svc.minioClient = client
+			slog.Info("MinIO client initialized", "endpoint", cfg.Storage.MinIOEndpoint, "bucket", svc.minioBucket)
+		}
+	}
+
+	return svc
+}
+
+// IsStorageConfigured returns true if MinIO is available.
+func (s *ReleaseService) IsStorageConfigured() bool {
+	return s.minioClient != nil
+}
+
+// ------------------------------------------------------------------
+// Release DB operations
+// ------------------------------------------------------------------
 
 // ListReleasesResponse defines the response structure
 type ListReleasesResponse struct {
@@ -89,27 +159,25 @@ func (s *ReleaseService) GetReleaseByID(ctx context.Context, id int64) (*entity.
 	return s.repo.GetReleaseByID(ctx, id)
 }
 
-// GenerateDownloadURL generates a presigned URL for downloading an artifact
-// If MinIO is not configured, returns a fallback URL
+// ------------------------------------------------------------------
+// MinIO download operations
+// ------------------------------------------------------------------
+
+// GenerateDownloadURL generates a presigned URL for a release artifact.
 func (s *ReleaseService) GenerateDownloadURL(ctx context.Context, artifact *entity.ReleaseArtifact) (string, error) {
-	// TODO: Implement MinIO presigned URL generation
-	// For now, return a placeholder or direct MinIO URL
-	if s.minioEndpoint == "" {
-		// Fallback: return a direct download URL that will be handled by the handler
-		return fmt.Sprintf("/api/v1/releases/download/%d", artifact.Id), nil
+	if s.minioClient == nil {
+		return "", fmt.Errorf("object storage not configured: set MINIO_ENDPOINT environment variable")
 	}
 
-	// TODO: Generate presigned URL with MinIO SDK
-	// Example:
-	// presignedURL, err := s.minioClient.PresignedGetObject(ctx, s.minioBucket, artifact.StoragePath, 1*time.Hour, nil)
-	// return presignedURL.String(), err
-
-	return "", fmt.Errorf("MinIO not configured")
+	presignedURL, err := s.minioClient.PresignedGetObject(ctx, s.minioBucket, artifact.StoragePath, time.Hour, nil)
+	if err != nil {
+		return "", fmt.Errorf("generate presigned URL for %s: %w", artifact.StoragePath, err)
+	}
+	return presignedURL.String(), nil
 }
 
 // HandleDownload handles download logic: logging and count increment
 func (s *ReleaseService) HandleDownload(ctx context.Context, artifactId int64, ipAddress, userAgent, referer string) error {
-	// Create download log (async to not block download)
 	go func() {
 		logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -125,13 +193,10 @@ func (s *ReleaseService) HandleDownload(ctx context.Context, artifactId int64, i
 		}
 
 		if err := s.repo.LogDownload(logCtx, log); err != nil {
-			// Log error but don't block download
-			// Using fmt.Printf as logger package doesn't export Error function
-			fmt.Printf("Error logging download: %v\n", err)
+			slog.Error("failed to log download", "artifact_id", artifactId, "error", err)
 		}
 	}()
 
-	// Increment download count (atomic operation)
 	if err := s.repo.IncrementDownloadCount(ctx, artifactId); err != nil {
 		return fmt.Errorf("failed to increment download count: %w", err)
 	}
@@ -144,10 +209,272 @@ func (s *ReleaseService) GetChangelog(ctx context.Context, releaseId int64) (str
 	return s.repo.GetChangelogByReleaseID(ctx, releaseId)
 }
 
-// compareVersions compares two semantic versions using golang.org/x/mod/semver
-// Returns -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+// ------------------------------------------------------------------
+// Dynamic tool manifest (MinIO-backed)
+// ------------------------------------------------------------------
+
+// npmTools returns the static npm tool entries (not stored in MinIO).
+func npmTools() map[string]ToolManifestEntry {
+	return map[string]ToolManifestEntry{
+		"claude": {
+			Type:          "npm",
+			NpmPackage:    "@anthropic-ai/claude-code",
+			LatestVersion: "1.0.26",
+		},
+		"codex": {
+			Type:          "npm",
+			NpmPackage:    "@openai/codex",
+			LatestVersion: "0.1.2505161344",
+		},
+		"gemini": {
+			Type:          "npm",
+			NpmPackage:    "@google/gemini-cli",
+			LatestVersion: "0.1.9",
+		},
+		"openclaw": {
+			Type:          "npm",
+			NpmPackage:    "openclaw",
+			LatestVersion: "1.0.0",
+		},
+	}
+}
+
+// BuildToolManifest returns a complete tool manifest. Binary tools are
+// discovered dynamically from MinIO; npm tools are static. Results are
+// cached for manifestCacheTTL.
+func (s *ReleaseService) BuildToolManifest(ctx context.Context) (*ToolManifestResponse, error) {
+	// Fast path: return cached manifest if still fresh
+	s.manifestMu.RLock()
+	if snap := s.manifestCache; snap != nil && time.Now().Before(snap.expiresAt) {
+		resp := snap.response
+		s.manifestMu.RUnlock()
+		return &resp, nil
+	}
+	s.manifestMu.RUnlock()
+
+	// Slow path: rebuild manifest
+	tools := npmTools()
+
+	if s.minioClient != nil {
+		binaryTools, err := s.discoverBinaryTools(ctx)
+		if err != nil {
+			slog.Warn("failed to discover binary tools from storage, returning npm-only manifest", "error", err)
+		} else {
+			for k, v := range binaryTools {
+				tools[k] = v
+			}
+		}
+	}
+
+	resp := ToolManifestResponse{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Tools:       tools,
+	}
+
+	// Cache the result
+	s.manifestMu.Lock()
+	s.manifestCache = &toolManifestSnapshot{
+		response:  resp,
+		expiresAt: time.Now().Add(manifestCacheTTL),
+	}
+	s.manifestMu.Unlock()
+
+	return &resp, nil
+}
+
+// discoverBinaryTools scans MinIO bucket under "tools/" prefix and builds
+// manifest entries for each tool, selecting the latest semver version.
+//
+// Expected MinIO layout:
+//
+//	tools/{tool_name}/{version}/{tool_name}-{os}-{arch}{ext}
+//	tools/{tool_name}/{version}/checksums.sha256
+func (s *ReleaseService) discoverBinaryTools(ctx context.Context) (map[string]ToolManifestEntry, error) {
+	// toolVersionFiles groups objects: tool → version → list of objects
+	toolVersionFiles := make(map[string]map[string][]storageObject)
+
+	listCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	for obj := range s.minioClient.ListObjects(listCtx, s.minioBucket, minio.ListObjectsOptions{
+		Prefix:    "tools/",
+		Recursive: true,
+	}) {
+		if obj.Err != nil {
+			return nil, fmt.Errorf("list objects in tools/: %w", obj.Err)
+		}
+
+		// Parse: tools/{tool}/{version}/{filename}
+		parts := strings.Split(obj.Key, "/")
+		if len(parts) < 4 {
+			continue
+		}
+		toolName := parts[1]
+		version := parts[2]
+
+		if toolVersionFiles[toolName] == nil {
+			toolVersionFiles[toolName] = make(map[string][]storageObject)
+		}
+		toolVersionFiles[toolName][version] = append(toolVersionFiles[toolName][version], storageObject{
+			key:  obj.Key,
+			size: obj.Size,
+		})
+	}
+
+	result := make(map[string]ToolManifestEntry, len(toolVersionFiles))
+
+	for toolName, versions := range toolVersionFiles {
+		latestVersion := latestSemverKey(versions)
+		if latestVersion == "" {
+			continue
+		}
+
+		objects := versions[latestVersion]
+
+		// Read checksums if available
+		checksums := s.readChecksums(ctx, toolName, latestVersion)
+
+		// Build platform entries
+		platforms := make(map[string]ToolManifestAsset)
+		for _, obj := range objects {
+			filename := path.Base(obj.key)
+
+			// Skip checksum files
+			if strings.HasSuffix(filename, ".sha256") || strings.HasSuffix(filename, ".sha256sum") {
+				continue
+			}
+
+			osName, arch := parsePlatformFromFilename(toolName, filename)
+			if osName == "" || arch == "" {
+				continue
+			}
+
+			presignedURL, err := s.minioClient.PresignedGetObject(ctx, s.minioBucket, obj.key, time.Hour, nil)
+			if err != nil {
+				slog.Warn("failed to generate presigned URL", "key", obj.key, "error", err)
+				continue
+			}
+
+			platformKey := osName + "/" + arch
+			asset := ToolManifestAsset{
+				URL:  presignedURL.String(),
+				Size: obj.size,
+			}
+			if sha, ok := checksums[filename]; ok {
+				asset.SHA256 = sha
+			}
+			platforms[platformKey] = asset
+		}
+
+		if len(platforms) == 0 {
+			continue
+		}
+
+		result[toolName] = ToolManifestEntry{
+			Type:          "binary",
+			LatestVersion: latestVersion,
+			Platforms:     platforms,
+		}
+	}
+
+	return result, nil
+}
+
+// readChecksums reads a checksums.sha256 file from MinIO and returns
+// a map of filename → sha256 hex string.
+func (s *ReleaseService) readChecksums(ctx context.Context, toolName, version string) map[string]string {
+	checksumKey := fmt.Sprintf("tools/%s/%s/checksums.sha256", toolName, version)
+
+	obj, err := s.minioClient.GetObject(ctx, s.minioBucket, checksumKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil
+	}
+	defer obj.Close()
+
+	result := make(map[string]string)
+	scanner := bufio.NewScanner(obj)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		// Format: "<sha256>  <filename>" or "<sha256> <filename>"
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			sha := fields[0]
+			fname := fields[len(fields)-1]
+			fname = strings.TrimPrefix(fname, "*")
+			result[fname] = sha
+		}
+	}
+	return result
+}
+
+// parsePlatformFromFilename extracts OS and arch from a binary filename.
+// Expected format: {tool}-{os}-{arch}{ext}
+func parsePlatformFromFilename(toolName, filename string) (osName, arch string) {
+	name := filename
+	for _, ext := range []string{".tar.gz", ".tgz", ".exe", ".zip", ".dmg"} {
+		if strings.HasSuffix(name, ext) {
+			name = name[:len(name)-len(ext)]
+			break
+		}
+	}
+
+	prefix := toolName + "-"
+	if !strings.HasPrefix(name, prefix) {
+		return "", ""
+	}
+	remainder := name[len(prefix):]
+
+	parts := strings.SplitN(remainder, "-", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+
+	osName = parts[0]
+	arch = parts[1]
+
+	validOS := map[string]bool{"windows": true, "linux": true, "darwin": true}
+	validArch := map[string]bool{"amd64": true, "arm64": true, "x86_64": true, "aarch64": true}
+	if !validOS[osName] || !validArch[arch] {
+		return "", ""
+	}
+
+	switch arch {
+	case "x86_64":
+		arch = "amd64"
+	case "aarch64":
+		arch = "arm64"
+	}
+
+	return osName, arch
+}
+
+// latestSemverKey finds the latest semantic version key from a map.
+func latestSemverKey(versions map[string][]storageObject) string {
+	versionList := make([]string, 0, len(versions))
+	for v := range versions {
+		versionList = append(versionList, v)
+	}
+	if len(versionList) == 0 {
+		return ""
+	}
+
+	sort.Slice(versionList, func(i, j int) bool {
+		return compareVersions(versionList[i], versionList[j]) > 0
+	})
+
+	return versionList[0]
+}
+
+// ------------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------------
+
+// compareVersions compares two semantic versions.
+// Returns -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2.
 func compareVersions(v1, v2 string) int {
-	// semver.Compare requires versions to start with 'v'
 	if !strings.HasPrefix(v1, "v") {
 		v1 = "v" + v1
 	}
@@ -155,9 +482,7 @@ func compareVersions(v1, v2 string) int {
 		v2 = "v" + v2
 	}
 
-	// Validate versions
 	if !semver.IsValid(v1) || !semver.IsValid(v2) {
-		// Fallback to string comparison for non-semver formats
 		if v1 == v2 {
 			return 0
 		}
@@ -170,15 +495,10 @@ func compareVersions(v1, v2 string) int {
 	return semver.Compare(v1, v2)
 }
 
-// extractCountryFromIP extracts country code from IP (placeholder)
 func extractCountryFromIP(ipAddress string) string {
-	// TODO: Implement GeoIP lookup
-	// For now, return empty or use a third-party service
 	ip := net.ParseIP(ipAddress)
 	if ip == nil {
 		return ""
 	}
-
-	// Placeholder: return empty for now
 	return ""
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
+	"github.com/QuantumNous/lurus-api/internal/pkg/resilience"
 	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/app/relay"
@@ -30,6 +31,21 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+// channelBreakers is the global per-channel circuit breaker registry.
+// Initialized with default config (CB_THRESHOLD=5, CB_TIMEOUT_SEC=30).
+var channelBreakers = resilience.NewRegistry(func() resilience.Config {
+	cfg := resilience.DefaultConfig()
+	cfg.OnStateChange = func(channelID int, from, to resilience.State) {
+		idStr := fmt.Sprintf("%d", channelID)
+		metrics.RecordCircuitBreakerState(idStr, int(to))
+		if to == resilience.StateOpen {
+			metrics.RecordCircuitBreakerTrip(idStr)
+		}
+		common.SysLog(fmt.Sprintf("circuit breaker channel #%d: %s → %s", channelID, from, to))
+	}
+	return cfg
+}())
 
 func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
@@ -191,6 +207,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 
+		// Circuit breaker: skip channels whose breaker is Open to avoid
+		// sending traffic to a known-failing upstream provider.
+		if !channelBreakers.Allow(channel.Id) {
+			metrics.RecordCircuitBreakerRejection(fmt.Sprintf("%d", channel.Id))
+			logger.LogDebug(c, "circuit breaker open for channel #%d, skipping", channel.Id)
+			continue
+		}
+
 		addUsedChannel(c, channel.Id)
 		requestBody, bodyErr := common.GetRequestBody(c)
 		if bodyErr != nil {
@@ -228,9 +252,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		metrics.RecordRelayRequest(providerName, relayInfo.OriginModelName, status, relayDuration)
 
 		if newAPIError == nil {
+			channelBreakers.RecordSuccess(channel.Id)
 			return
 		}
 
+		channelBreakers.RecordFailure(channel.Id)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {

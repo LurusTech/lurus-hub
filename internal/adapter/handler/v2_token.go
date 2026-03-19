@@ -25,9 +25,9 @@ func ListTokensV2(c *gin.Context) {
 		return
 	}
 
-	// Parse pagination parameters
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	// Parse pagination parameters (match frontend: p=&size=)
+	page, _ := strconv.Atoi(c.DefaultQuery("p", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
 
 	if page < 1 {
 		page = 1
@@ -55,7 +55,7 @@ func ListTokensV2(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"tokens":    tokens,
+			"items":     tokens,
 			"total":     total,
 			"page":      page,
 			"page_size": pageSize,

@@ -84,6 +84,8 @@ func NewReleaseService(releaseRepo *repo.ReleaseRepository) *ReleaseService {
 		client, err := minio.New(cfg.Storage.MinIOEndpoint, &minio.Options{
 			Creds:  credentials.NewStaticV4(cfg.Storage.MinIOAccessKey, cfg.Storage.MinIOSecretKey, ""),
 			Secure: cfg.Storage.MinIOSecure,
+			// Set region explicitly to prevent bucket-location HTTP lookup on each presign call.
+			Region: "us-east-1",
 		})
 		if err != nil {
 			slog.Error("failed to initialize MinIO client", "error", err)
@@ -94,14 +96,16 @@ func NewReleaseService(releaseRepo *repo.ReleaseRepository) *ReleaseService {
 	}
 
 	// Optional presign client using the public endpoint.
-	// PresignedGetObject is a pure local operation (no HTTP call), so
-	// connectivity to the public URL is not required from inside the cluster.
+	// Region must be set so minio-go skips the bucket-location HTTP lookup;
+	// that lookup would fail because the public DNS may not be resolvable from
+	// within the cluster. With a fixed region, PresignedGetObject is purely local.
 	if pub := cfg.Storage.MinIOPublicEndpoint; pub != "" && svc.minioClient != nil {
 		host := strings.TrimPrefix(strings.TrimPrefix(pub, "https://"), "http://")
 		secure := strings.HasPrefix(pub, "https://")
 		if pc, err := minio.New(host, &minio.Options{
-			Creds:  credentials.NewStaticV4(cfg.Storage.MinIOAccessKey, cfg.Storage.MinIOSecretKey, ""),
-			Secure: secure,
+			Creds:   credentials.NewStaticV4(cfg.Storage.MinIOAccessKey, cfg.Storage.MinIOSecretKey, ""),
+			Secure:  secure,
+			Region:  "us-east-1",
 		}); err != nil {
 			slog.Warn("failed to initialize MinIO presign client, presigned URLs will use internal endpoint", "error", err)
 		} else {

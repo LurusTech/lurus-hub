@@ -135,7 +135,7 @@ spec:
               value: "https://www.lurus.cn,https://gushen.lurus.cn,https://webmail.lurus.cn"
             # MinIO object storage for release artifacts
             - name: MINIO_ENDPOINT
-              value: "100.79.24.40:9000"
+              value: "minio-api.storage.svc:9000"
             - name: MINIO_ACCESS_KEY
               valueFrom:
                 secretKeyRef:

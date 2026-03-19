@@ -135,6 +135,15 @@ func SetApiV2Router(router *gin.Engine) {
 		{
 			// Identity overview — returns VIP level, Lubell wallet balance and subscription status.
 			platformUser.GET("/identity-overview", handler.GetIdentityOverview)
+
+			// Billing — unified wallet topup via lurus-platform
+			billingRoute := platformUser.Group("/billing")
+			{
+				billingRoute.GET("/summary", handler.GetBillingSummary)
+				billingRoute.GET("/payment-methods", handler.GetBillingPaymentMethods)
+				billingRoute.POST("/checkout", handler.CreateBillingCheckout)
+				billingRoute.GET("/checkout/:order_no/status", handler.GetBillingCheckoutStatus)
+			}
 		}
 
 		// ================================================================

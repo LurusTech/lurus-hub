@@ -467,6 +467,173 @@ func CreditWallet(ctx context.Context, accountID int64, amount float64, txType, 
 	return nil
 }
 
+// CheckoutResult holds the response from a cross-service checkout creation.
+type CheckoutResult struct {
+	OrderNo   string  `json:"order_no"`
+	PayURL    string  `json:"pay_url"`
+	Status    string  `json:"status"`
+	ExpiresAt *string `json:"expires_at"`
+}
+
+// CreateCheckout creates a checkout session on lurus-platform for wallet topup.
+// The sourceService identifies which product initiated the checkout (e.g., "lurus-api").
+func CreateCheckout(ctx context.Context, accountID int64, amountCNY float64, paymentMethod, sourceService, idempotencyKey, returnURL string) (*CheckoutResult, error) {
+	if IdentityServiceURL == "" {
+		return nil, fmt.Errorf("identity service not configured")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"account_id":      accountID,
+		"amount_cny":      amountCNY,
+		"payment_method":  paymentMethod,
+		"source_service":  sourceService,
+		"idempotency_key": idempotencyKey,
+		"return_url":      returnURL,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		IdentityServiceURL+"/internal/v1/checkout/create",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("identity CreateCheckout: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		var errResp struct{ Error string `json:"error"` }
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		return nil, fmt.Errorf("checkout failed: %s (status %d)", errResp.Error, resp.StatusCode)
+	}
+	var result CheckoutResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &result, nil
+}
+
+// CheckoutStatus holds the polling response for a checkout order.
+type CheckoutStatus struct {
+	OrderNo   string   `json:"order_no"`
+	Status    string   `json:"status"`
+	AmountCNY float64  `json:"amount_cny"`
+	PayURL    string   `json:"pay_url"`
+	PaidAt    *string  `json:"paid_at"`
+	ExpiresAt *string  `json:"expires_at"`
+}
+
+// GetCheckoutStatus polls the status of a checkout order on lurus-platform.
+func GetCheckoutStatus(ctx context.Context, orderNo string) (*CheckoutStatus, error) {
+	if IdentityServiceURL == "" {
+		return nil, fmt.Errorf("identity service not configured")
+	}
+	url := fmt.Sprintf("%s/internal/v1/checkout/%s/status", IdentityServiceURL, orderNo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("identity GetCheckoutStatus: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("checkout status: status %d", resp.StatusCode)
+	}
+	var result CheckoutStatus
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &result, nil
+}
+
+// PaymentMethod represents an available payment method from lurus-platform.
+type PaymentMethod struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Type     string `json:"type"` // "qr" or "redirect"
+}
+
+// GetPaymentMethods retrieves available payment methods from lurus-platform.
+func GetPaymentMethods(ctx context.Context) ([]PaymentMethod, error) {
+	if IdentityServiceURL == "" {
+		return nil, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		IdentityServiceURL+"/internal/v1/payment-methods", nil)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity GetPaymentMethods: %v", err))
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+	var result struct {
+		Methods []PaymentMethod `json:"payment_methods"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, nil
+	}
+	return result.Methods, nil
+}
+
+// BillingSummary holds aggregated billing information from lurus-platform.
+type BillingSummary struct {
+	Balance        float64 `json:"balance"`
+	Frozen         float64 `json:"frozen"`
+	Available      float64 `json:"available"`
+	LifetimeTopup  float64 `json:"lifetime_topup"`
+	LifetimeSpend  float64 `json:"lifetime_spend"`
+	ActivePreAuths int64   `json:"active_pre_auths"`
+	PendingOrders  int64   `json:"pending_orders"`
+}
+
+// GetBillingSummary retrieves aggregated billing info for an account from lurus-platform.
+func GetBillingSummary(ctx context.Context, accountID int64) (*BillingSummary, error) {
+	if IdentityServiceURL == "" {
+		return nil, nil
+	}
+	url := fmt.Sprintf("%s/internal/v1/accounts/%d/billing-summary", IdentityServiceURL, accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity GetBillingSummary: %v", err))
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil
+	}
+	var bs BillingSummary
+	if err := json.NewDecoder(resp.Body).Decode(&bs); err != nil {
+		return nil, nil
+	}
+	return &bs, nil
+}
+
 // ReportLLMUsage sends a usage record to lurus-platform for VIP accumulation.
 // Fire-and-forget — errors are logged but not propagated.
 func ReportLLMUsage(ctx context.Context, accountID int64, amountCNY float64) {

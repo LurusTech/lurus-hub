@@ -41,6 +41,14 @@ package handler
 // - CreateRedemptionV2: POST /api/v2/:tenant_slug/redemptions
 // - DeleteRedemptionV2: DELETE /api/v2/:tenant_slug/redemptions/:id
 //
+// Client API Controllers (v2_client_api.go) — for other Lurus products:
+// - ClientGetProfile: GET /api/v2/client/profile
+// - ClientGetUsageSummary: GET /api/v2/client/usage/summary
+// - ClientGetUsageByModel: GET /api/v2/client/usage/models
+// - ClientGetUsageDaily: GET /api/v2/client/usage/daily
+// - ClientGetTokens: GET /api/v2/client/tokens
+// - ClientGetSessions: GET /api/v2/client/sessions
+//
 // Platform Admin Controllers (v2_admin.go):
 // - ListUserMappingsV2: GET /api/v2/admin/mappings
 // - GetUserMappingV2: GET /api/v2/admin/mappings/:id

@@ -134,6 +134,26 @@ func SetApiV2Router(router *gin.Engine) {
 		apiV2.GET("/tools/download-manifest", handler.GetToolDownloadManifest)
 
 		// ================================================================
+		// Client API (FlexAuth: Zitadel JWT or API Token sk-xxx)
+		// 客户端 API — 供其他 Lurus 产品查询用户数据
+		// ================================================================
+
+		clientRoute := apiV2.Group("/client")
+		clientRoute.Use(middleware.FlexAuth())
+		{
+			clientRoute.GET("/profile", handler.ClientGetProfile)
+			clientRoute.GET("/tokens", handler.ClientGetTokens)
+			clientRoute.GET("/sessions", handler.ClientGetSessions)
+
+			clientUsage := clientRoute.Group("/usage")
+			{
+				clientUsage.GET("/summary", handler.ClientGetUsageSummary)
+				clientUsage.GET("/models", handler.ClientGetUsageByModel)
+				clientUsage.GET("/daily", handler.ClientGetUsageDaily)
+			}
+		}
+
+		// ================================================================
 		// Platform-wide User Routes (Zitadel JWT auth, no tenant context)
 		// 平台用户路由（Zitadel JWT 认证，无需 tenant context）
 		// ================================================================

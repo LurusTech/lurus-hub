@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -26,9 +25,11 @@ type ReleaseService struct {
 	repo        *repo.ReleaseRepository
 	minioClient *minio.Client
 	minioBucket string
-	// minioPublicEndpoint is the external base URL for presigned URLs, e.g. "https://minio-api.lurus.cn".
-	// If empty, presigned URLs use the internal endpoint as-is.
-	minioPublicEndpoint string
+	// minioPresignClient uses the public endpoint so presigned URLs have the
+	// externally reachable host in the signature. Traefik preserves Host on
+	// ingress, so MinIO signature verification succeeds. Falls back to
+	// minioClient when nil (internal URL only, suitable for in-cluster use).
+	minioPresignClient *minio.Client
 
 	manifestMu    sync.RWMutex
 	manifestCache *toolManifestSnapshot
@@ -88,12 +89,24 @@ func NewReleaseService(releaseRepo *repo.ReleaseRepository) *ReleaseService {
 			slog.Error("failed to initialize MinIO client", "error", err)
 		} else {
 			svc.minioClient = client
-			svc.minioPublicEndpoint = cfg.Storage.MinIOPublicEndpoint
-			slog.Info("MinIO client initialized",
-				"endpoint", cfg.Storage.MinIOEndpoint,
-				"public_endpoint", cfg.Storage.MinIOPublicEndpoint,
-				"bucket", svc.minioBucket,
-			)
+			slog.Info("MinIO client initialized", "endpoint", cfg.Storage.MinIOEndpoint, "bucket", svc.minioBucket)
+		}
+	}
+
+	// Optional presign client using the public endpoint.
+	// PresignedGetObject is a pure local operation (no HTTP call), so
+	// connectivity to the public URL is not required from inside the cluster.
+	if pub := cfg.Storage.MinIOPublicEndpoint; pub != "" && svc.minioClient != nil {
+		host := strings.TrimPrefix(strings.TrimPrefix(pub, "https://"), "http://")
+		secure := strings.HasPrefix(pub, "https://")
+		if pc, err := minio.New(host, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.Storage.MinIOAccessKey, cfg.Storage.MinIOSecretKey, ""),
+			Secure: secure,
+		}); err != nil {
+			slog.Warn("failed to initialize MinIO presign client, presigned URLs will use internal endpoint", "error", err)
+		} else {
+			svc.minioPresignClient = pc
+			slog.Info("MinIO presign client initialized", "public_endpoint", pub)
 		}
 	}
 
@@ -178,11 +191,11 @@ func (s *ReleaseService) GenerateDownloadURL(ctx context.Context, artifact *enti
 		return "", fmt.Errorf("object storage not configured: set MINIO_ENDPOINT environment variable")
 	}
 
-	presignedURL, err := s.minioClient.PresignedGetObject(ctx, s.minioBucket, artifact.StoragePath, time.Hour, nil)
+	presignedURL, err := s.presignClient().PresignedGetObject(ctx, s.minioBucket, artifact.StoragePath, time.Hour, nil)
 	if err != nil {
 		return "", fmt.Errorf("generate presigned URL for %s: %w", artifact.StoragePath, err)
 	}
-	return s.rewritePresignedURL(presignedURL), nil
+	return presignedURL.String(), nil
 }
 
 // HandleDownload handles download logic: logging and count increment
@@ -358,7 +371,7 @@ func (s *ReleaseService) discoverBinaryTools(ctx context.Context) (map[string]To
 				continue
 			}
 
-			presignedURL, err := s.minioClient.PresignedGetObject(ctx, s.minioBucket, obj.key, time.Hour, nil)
+			presignedURL, err := s.presignClient().PresignedGetObject(ctx, s.minioBucket, obj.key, time.Hour, nil)
 			if err != nil {
 				slog.Warn("failed to generate presigned URL", "key", obj.key, "error", err)
 				continue
@@ -366,7 +379,7 @@ func (s *ReleaseService) discoverBinaryTools(ctx context.Context) (map[string]To
 
 			platformKey := osName + "/" + arch
 			asset := ToolManifestAsset{
-				URL:  s.rewritePresignedURL(presignedURL),
+				URL:  presignedURL.String(),
 				Size: obj.size,
 			}
 			if sha, ok := checksums[filename]; ok {
@@ -504,20 +517,14 @@ func compareVersions(v1, v2 string) int {
 	return semver.Compare(v1, v2)
 }
 
-// rewritePresignedURL replaces the internal MinIO host with the public endpoint.
-// If minioPublicEndpoint is empty, the URL is returned unchanged.
-func (s *ReleaseService) rewritePresignedURL(u *url.URL) string {
-	if s.minioPublicEndpoint == "" {
-		return u.String()
+// presignClient returns the client to use for PresignedGetObject calls.
+// If a dedicated presign client with the public endpoint is available, it is
+// returned; otherwise the internal minioClient is used.
+func (s *ReleaseService) presignClient() *minio.Client {
+	if s.minioPresignClient != nil {
+		return s.minioPresignClient
 	}
-	pub, err := url.Parse(s.minioPublicEndpoint)
-	if err != nil || pub.Host == "" {
-		return u.String()
-	}
-	rewritten := *u
-	rewritten.Scheme = pub.Scheme
-	rewritten.Host = pub.Host
-	return rewritten.String()
+	return s.minioClient
 }
 
 func extractCountryFromIP(ipAddress string) string {

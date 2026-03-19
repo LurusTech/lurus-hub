@@ -182,6 +182,7 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		c.Set("tenant_context", tenantCtx)
 		c.Set("tenant_id", tenantID)
 		c.Set("user_id", userID)
+		c.Set("identity_account_id", int64(12345))
 
 		// Also set v1 session context for admin controllers
 		c.Set("id", userID)
@@ -219,6 +220,10 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		v2.GET("/redemptions", ListRedemptionsV2)
 		v2.POST("/redemptions", CreateRedemptionV2)
 		v2.DELETE("/redemptions/:id", DeleteRedemptionV2)
+
+		// Billing routes
+		v2.GET("/billing/topups", GetTopUpsV2)
+		v2.POST("/billing/topup", TopUpV2)
 
 		// Log routes
 		v2.GET("/logs", GetLogsV2)

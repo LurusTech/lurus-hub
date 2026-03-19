@@ -28,11 +28,12 @@ package handler
 // - DeleteChannelV2: DELETE /api/v2/:tenant_slug/channels/:id
 //
 // Billing Controllers (v2_billing.go):
-// - GetTopUpsV2: GET /api/v2/:tenant_slug/billing/topups
-// - TopUpV2: POST /api/v2/:tenant_slug/billing/topup
-// - GetSubscriptionsV2: GET /api/v2/:tenant_slug/billing/subscriptions
-// - SubscribeV2: POST /api/v2/:tenant_slug/billing/subscribe
-// - CancelSubscriptionV2: POST /api/v2/:tenant_slug/billing/subscriptions/:id/cancel
+// - GetBillingSummary: GET /api/v2/user/billing/summary (platform-wide, no tenant)
+// - GetBillingPaymentMethods: GET /api/v2/user/billing/payment-methods
+// - CreateBillingCheckout: POST /api/v2/user/billing/checkout
+// - GetBillingCheckoutStatus: GET /api/v2/user/billing/checkout/:order_no/status
+// - TopUpV2: POST /api/v2/:tenant_slug/billing/topup (wallet-to-quota transfer)
+// - GetTopUpsV2: GET /api/v2/:tenant_slug/billing/topups (topup history)
 //
 // Redemption Controllers (v2_redemption.go):
 // - RedeemCodeV2: POST /api/v2/:tenant_slug/redeem

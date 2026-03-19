@@ -119,3 +119,8 @@ func UploadRateLimit() func(c *gin.Context) {
 func RedemptionRateLimit() func(c *gin.Context) {
 	return rateLimitFactory(5, 60, "RD")
 }
+
+// TopupRateLimit limits wallet-to-quota transfer to 5 per minute per IP.
+func TopupRateLimit() func(c *gin.Context) {
+	return rateLimitFactory(5, 60, "TU")
+}

@@ -93,6 +93,14 @@ func SetApiV2Router(router *gin.Engine) {
 				configRoute.PUT("/:key", handler.UpdateTenantConfig)
 			}
 
+			// Billing routes (wallet-to-quota transfer)
+			// 计费路由（钱包转配额）
+			billingRoute := tenantRoute.Group("/billing")
+			{
+				billingRoute.GET("/topups", handler.GetTopUpsV2)
+				billingRoute.POST("/topup", middleware.TopupRateLimit(), handler.TopUpV2)
+			}
+
 			// Redemption code routes
 			// 兑换码路由
 			redemptionRoute := tenantRoute.Group("/redemptions")

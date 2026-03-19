@@ -111,6 +111,28 @@ func RecordLog(userId int, logType int, content string) {
 	}
 }
 
+// RecordLogWithTenant writes an audit log with explicit tenant_id.
+func RecordLogWithTenant(userId int, tenantID string, logType int, content string) {
+	if logType == LogTypeConsume && !common.LogConsumeEnabled {
+		return
+	}
+	username, _ := GetUsernameById(userId, false)
+	log := &Log{
+		UserId:    userId,
+		TenantId:  tenantID,
+		Username:  username,
+		CreatedAt: common.GetTimestamp(),
+		Type:      logType,
+		Content:   content,
+	}
+	err := LOG_DB.Create(log).Error
+	if err != nil {
+		common.SysLog("failed to record log: " + err.Error())
+	} else {
+		search.SyncLogAsync(convertLogToSearchLog(log))
+	}
+}
+
 // convertLogToSearchLog converts model.Log to search.Log
 // 将 model.Log 转换为 search.Log
 func convertLogToSearchLog(log *Log) *search.Log {

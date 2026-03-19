@@ -150,6 +150,8 @@ spec:
               value: "lurus-releases"
             - name: MINIO_SECURE
               value: "false"
+            - name: MINIO_PUBLIC_ENDPOINT
+              value: "https://minio-api.lurus.cn"
             # Model auto-sync frequency (minutes)
             - name: MODEL_SYNC_FREQUENCY
               value: "60"

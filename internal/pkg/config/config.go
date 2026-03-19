@@ -25,7 +25,7 @@ type Config struct {
 type StorageConfig struct {
 	// MinIOBucket is the MinIO bucket name for release artifacts.
 	MinIOBucket string
-	// MinIOEndpoint is the MinIO server address (host:port).
+	// MinIOEndpoint is the MinIO server address (host:port), used for internal cluster connections.
 	MinIOEndpoint string
 	// MinIOAccessKey is the MinIO access key.
 	MinIOAccessKey string
@@ -33,6 +33,9 @@ type StorageConfig struct {
 	MinIOSecretKey string
 	// MinIOSecure enables TLS for the MinIO connection.
 	MinIOSecure bool
+	// MinIOPublicEndpoint is the externally accessible base URL for presigned download URLs
+	// (e.g., "https://minio-api.lurus.cn"). If empty, the internal endpoint is used.
+	MinIOPublicEndpoint string
 }
 
 // CORSConfig holds CORS middleware settings.
@@ -122,11 +125,12 @@ func loadFromEnv() *Config {
 			SMSCodeExpiration: envDuration("SMS_CODE_EXPIRATION", 5*time.Minute),
 		},
 		Storage: StorageConfig{
-			MinIOBucket:    envString("MINIO_RELEASES_BUCKET", "lurus-releases"),
-			MinIOEndpoint:  envString("MINIO_ENDPOINT", ""),
-			MinIOAccessKey: envString("MINIO_ACCESS_KEY", ""),
-			MinIOSecretKey: envString("MINIO_SECRET_KEY", ""),
-			MinIOSecure:    envString("MINIO_SECURE", "false") == "true",
+			MinIOBucket:         envString("MINIO_RELEASES_BUCKET", "lurus-releases"),
+			MinIOEndpoint:       envString("MINIO_ENDPOINT", ""),
+			MinIOAccessKey:      envString("MINIO_ACCESS_KEY", ""),
+			MinIOSecretKey:      envString("MINIO_SECRET_KEY", ""),
+			MinIOSecure:         envString("MINIO_SECURE", "false") == "true",
+			MinIOPublicEndpoint: envString("MINIO_PUBLIC_ENDPOINT", ""),
 		},
 		CORS: CORSConfig{
 			AllowedOrigins: envStringSlice("ALLOWED_ORIGINS", []string{

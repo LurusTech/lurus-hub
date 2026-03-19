@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -25,6 +26,9 @@ type ReleaseService struct {
 	repo        *repo.ReleaseRepository
 	minioClient *minio.Client
 	minioBucket string
+	// minioPublicEndpoint is the external base URL for presigned URLs, e.g. "https://minio-api.lurus.cn".
+	// If empty, presigned URLs use the internal endpoint as-is.
+	minioPublicEndpoint string
 
 	manifestMu    sync.RWMutex
 	manifestCache *toolManifestSnapshot
@@ -84,7 +88,12 @@ func NewReleaseService(releaseRepo *repo.ReleaseRepository) *ReleaseService {
 			slog.Error("failed to initialize MinIO client", "error", err)
 		} else {
 			svc.minioClient = client
-			slog.Info("MinIO client initialized", "endpoint", cfg.Storage.MinIOEndpoint, "bucket", svc.minioBucket)
+			svc.minioPublicEndpoint = cfg.Storage.MinIOPublicEndpoint
+			slog.Info("MinIO client initialized",
+				"endpoint", cfg.Storage.MinIOEndpoint,
+				"public_endpoint", cfg.Storage.MinIOPublicEndpoint,
+				"bucket", svc.minioBucket,
+			)
 		}
 	}
 
@@ -173,7 +182,7 @@ func (s *ReleaseService) GenerateDownloadURL(ctx context.Context, artifact *enti
 	if err != nil {
 		return "", fmt.Errorf("generate presigned URL for %s: %w", artifact.StoragePath, err)
 	}
-	return presignedURL.String(), nil
+	return s.rewritePresignedURL(presignedURL), nil
 }
 
 // HandleDownload handles download logic: logging and count increment
@@ -357,7 +366,7 @@ func (s *ReleaseService) discoverBinaryTools(ctx context.Context) (map[string]To
 
 			platformKey := osName + "/" + arch
 			asset := ToolManifestAsset{
-				URL:  presignedURL.String(),
+				URL:  s.rewritePresignedURL(presignedURL),
 				Size: obj.size,
 			}
 			if sha, ok := checksums[filename]; ok {
@@ -493,6 +502,22 @@ func compareVersions(v1, v2 string) int {
 	}
 
 	return semver.Compare(v1, v2)
+}
+
+// rewritePresignedURL replaces the internal MinIO host with the public endpoint.
+// If minioPublicEndpoint is empty, the URL is returned unchanged.
+func (s *ReleaseService) rewritePresignedURL(u *url.URL) string {
+	if s.minioPublicEndpoint == "" {
+		return u.String()
+	}
+	pub, err := url.Parse(s.minioPublicEndpoint)
+	if err != nil || pub.Host == "" {
+		return u.String()
+	}
+	rewritten := *u
+	rewritten.Scheme = pub.Scheme
+	rewritten.Host = pub.Host
+	return rewritten.String()
 }
 
 func extractCountryFromIP(ipAddress string) string {

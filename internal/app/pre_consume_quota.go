@@ -46,7 +46,7 @@ func releasePlatformPreAuth(relayInfo *relaycommon.RelayInfo) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := common.ReleasePreAuthGRPC(ctx, preAuthID); err != nil {
+	if err := common.ReleaseWithBreaker(ctx, preAuthID); err != nil {
 		common.SysLog(fmt.Sprintf("release pre-auth %d failed, enqueuing outbox: %s", preAuthID, err.Error()))
 		if enqErr := EnqueueRelease(relayInfo.IdentityAccountID, preAuthID); enqErr != nil {
 			// Both release and outbox failed — platform TTL (300s) is the safety net.
@@ -123,14 +123,24 @@ func PreConsumeQuota(c *gin.Context, preConsumedQuota int, relayInfo *relaycommo
 }
 
 // platformPreAuthorize calls the platform to freeze wallet balance.
-// Separated for clarity and testability.
+// High-balance users can skip this call entirely (cache-based trust).
 func platformPreAuthorize(c *gin.Context, estimatedQuota int, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
 	estimatedLB := float64(estimatedQuota) / common.QuotaPerUnit
+	accountID := relayInfo.IdentityAccountID
+
+	// Fast path: skip pre-auth for users with high cached balance.
+	// They'll still be charged via settle; this just avoids the synchronous call.
+	if common.ShouldSkipPreAuth(accountID, estimatedLB) {
+		logger.LogInfo(c, fmt.Sprintf("skipping pre-auth for high-balance account %d (estimated %.4f LB)",
+			accountID, estimatedLB))
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()
 
 	preAuthStart := time.Now()
-	result, err := common.PreAuthorizeGRPC(ctx, relayInfo.IdentityAccountID, estimatedLB,
+	result, err := common.PreAuthorizeWithBreaker(ctx, accountID, estimatedLB,
 		"lurus-api", "", fmt.Sprintf("relay userId=%d model=%s", relayInfo.UserId, relayInfo.OriginModelName), 300)
 	metrics.BillingPreAuthDuration.Observe(time.Since(preAuthStart).Seconds())
 
@@ -143,6 +153,6 @@ func platformPreAuthorize(c *gin.Context, estimatedQuota int, relayInfo *relayco
 
 	relayInfo.PlatformPreAuthID = result.PreAuthID
 	logger.LogInfo(c, fmt.Sprintf("platform pre-auth created: id=%d amount=%.4f LB account=%d",
-		result.PreAuthID, estimatedLB, relayInfo.IdentityAccountID))
+		result.PreAuthID, estimatedLB, accountID))
 	return nil
 }

@@ -571,7 +571,7 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 				releasePlatformPreAuth(relayInfo)
 			} else {
 				settleCtx, settleCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_, settleErr := common.SettlePreAuthGRPC(settleCtx, relayInfo.PlatformPreAuthID, amountLB)
+				_, settleErr := common.SettleWithBreaker(settleCtx, relayInfo.PlatformPreAuthID, amountLB)
 				settleCancel()
 
 				if settleErr != nil {
@@ -585,6 +585,8 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 					}
 				} else {
 					metrics.BillingSettleTotal.WithLabelValues("success").Inc()
+					// Invalidate cached balance so next request gets fresh data
+					common.InvalidateCachedWalletBalance(accountID)
 				}
 			}
 			// Mark pre-auth as handled (settled or released)

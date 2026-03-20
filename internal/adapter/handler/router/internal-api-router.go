@@ -118,4 +118,11 @@ func SetInternalApiRouter(router *gin.Engine) {
 	{
 		modelReadGroup.GET("/catalog", handler.InternalGetModelCatalog)
 	}
+
+	// Admin operations (requires wildcard scope)
+	adminGroup := internalGroup.Group("/admin")
+	adminGroup.Use(middleware.RequireScope(repo.ScopeAll))
+	{
+		adminGroup.POST("/backfill-token-accounts", handler.InternalBackfillTokenAccountIDs)
+	}
 }

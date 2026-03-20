@@ -102,4 +102,20 @@ func SetInternalApiRouter(router *gin.Engine) {
 	{
 		currencyExchangeGroup.POST("/exchange", handler.InternalExchangeLucToLut)
 	}
+
+	// Log read APIs - query usage logs by user or token
+	logReadGroup := internalGroup.Group("/log")
+	logReadGroup.Use(middleware.RequireScope(repo.ScopeLogRead))
+	{
+		logReadGroup.GET("/user/:id", handler.InternalGetUserLogs)
+		logReadGroup.GET("/user/:id/stat", handler.InternalGetUserLogStat)
+		logReadGroup.GET("/token/:token_id", handler.InternalGetTokenLogs)
+	}
+
+	// Model catalog API - available models with pricing
+	modelReadGroup := internalGroup.Group("/models")
+	modelReadGroup.Use(middleware.RequireScope(repo.ScopeModelRead))
+	{
+		modelReadGroup.GET("/catalog", handler.InternalGetModelCatalog)
+	}
 }

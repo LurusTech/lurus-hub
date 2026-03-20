@@ -349,6 +349,12 @@ func SetupContextForToken(c *gin.Context, token *repo.Token, parts ...string) er
 	}
 	common.SetContextKey(c, constant.ContextKeyTokenGroup, token.Group)
 	common.SetContextKey(c, constant.ContextKeyTokenCrossGroupRetry, token.CrossGroupRetry)
+	// Carry identity account ID from token for platform billing (if not already set by session auth).
+	if token.IdentityAccountID > 0 {
+		if _, exists := c.Get("identity_account_id"); !exists {
+			c.Set("identity_account_id", token.IdentityAccountID)
+		}
+	}
 	if len(parts) > 1 {
 		if repo.IsAdmin(token.UserId) {
 			c.Set("specific_channel_id", parts[1])

@@ -1,11 +1,14 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
+	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
@@ -22,11 +25,47 @@ func ReturnPreConsumedQuota(c *gin.Context, relayInfo *relaycommon.RelayInfo) {
 			common.SysLog("error return pre-consumed quota: " + err.Error())
 		}
 	}
+
+	// Release platform pre-auth if one was created and relay failed
+	if relayInfo.PlatformPreAuthID > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := common.ReleasePreAuthGRPC(ctx, relayInfo.PlatformPreAuthID); err != nil {
+			common.SysLog(fmt.Sprintf("failed to release pre-auth %d on refund, enqueuing: %s", relayInfo.PlatformPreAuthID, err.Error()))
+			if enqErr := EnqueueRelease(relayInfo.IdentityAccountID, relayInfo.PlatformPreAuthID); enqErr != nil {
+				common.SysError(fmt.Sprintf("CRITICAL: release AND outbox both failed for preauth %d: %s",
+					relayInfo.PlatformPreAuthID, enqErr.Error()))
+			}
+		}
+	}
 }
 
 // PreConsumeQuota checks if the user has enough quota to pre-consume.
-// It returns the pre-consumed quota if successful, or an error if not.
+// When BILLING_UNIFIED_ENABLED and IdentityAccountID > 0, it also calls
+// platform PreAuthorize to freeze wallet balance (the authoritative check).
 func PreConsumeQuota(c *gin.Context, preConsumedQuota int, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
+	// Platform pre-authorization path: freeze wallet balance before relay
+	if common.BillingUnifiedEnabled && relayInfo.IdentityAccountID > 0 && preConsumedQuota > 0 {
+		estimatedLB := float64(preConsumedQuota) / common.QuotaPerUnit
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+		defer cancel()
+
+		preAuthStart := time.Now()
+		result, err := common.PreAuthorizeGRPC(ctx, relayInfo.IdentityAccountID, estimatedLB,
+			"lurus-api", "", fmt.Sprintf("relay userId=%d model=%s", relayInfo.UserId, relayInfo.OriginModelName), 300)
+		metrics.BillingPreAuthDuration.Observe(time.Since(preAuthStart).Seconds())
+		if err != nil {
+			return types.NewErrorWithStatusCode(
+				fmt.Errorf("insufficient balance: %w", err),
+				types.ErrorCodeInsufficientUserQuota, http.StatusPaymentRequired,
+				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
+		relayInfo.PlatformPreAuthID = result.PreAuthID
+		logger.LogInfo(c, fmt.Sprintf("platform pre-auth created: id=%d amount=%.4f LB account=%d",
+			result.PreAuthID, estimatedLB, relayInfo.IdentityAccountID))
+	}
+
+	// Legacy local quota check (always runs for backward compat)
 	userQuota, err := repo.GetUserQuota(relayInfo.UserId, false)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
@@ -42,18 +81,13 @@ func PreConsumeQuota(c *gin.Context, preConsumedQuota int, relayInfo *relaycommo
 
 	relayInfo.UserQuota = userQuota
 	if userQuota > trustQuota {
-		// 用户额度充足，判断令牌额度是否充足
 		if !relayInfo.TokenUnlimited {
-			// 非无限令牌，判断令牌额度是否充足
 			tokenQuota := c.GetInt("token_quota")
 			if tokenQuota > trustQuota {
-				// 令牌额度充足，信任令牌
 				preConsumedQuota = 0
 				logger.LogInfo(c, fmt.Sprintf("用户 %d 剩余额度 %s 且令牌 %d 额度 %d 充足, 信任且不需要预扣费", relayInfo.UserId, logger.FormatQuota(userQuota), relayInfo.TokenId, tokenQuota))
 			}
 		} else {
-			// in this case, we do not pre-consume quota
-			// because the user has enough quota
 			preConsumedQuota = 0
 			logger.LogInfo(c, fmt.Sprintf("用户 %d 额度充足且为无限额度令牌, 信任且不需要预扣费", relayInfo.UserId))
 		}

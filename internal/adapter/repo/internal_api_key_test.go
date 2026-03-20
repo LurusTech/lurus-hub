@@ -195,9 +195,9 @@ func TestHashKey(t *testing.T) {
 func TestGetAvailableScopes(t *testing.T) {
 	scopes := GetAvailableScopes()
 
-	// Should return 13 scopes
-	if len(scopes) != 13 {
-		t.Errorf("GetAvailableScopes() returned %d scopes, want 13", len(scopes))
+	// Should return 17 scopes (13 original + log:read + model:read + all + auth:login)
+	if len(scopes) != 17 {
+		t.Errorf("GetAvailableScopes() returned %d scopes, want 17", len(scopes))
 	}
 
 	// Check required fields

@@ -116,6 +116,7 @@ type RelayInfo struct {
 	FinalPreConsumedQuota  int   // 最终预消耗的配额
 	IsClaudeBetaQuery      bool  // /v1/messages?beta=true
 	IdentityAccountID      int64 // lurus-platform account ID for wallet bridging (0 = not available)
+	PlatformPreAuthID      int64 // Pre-authorization ID from platform wallet (0 = not using pre-auth)
 
 	PriceData types.PriceData
 

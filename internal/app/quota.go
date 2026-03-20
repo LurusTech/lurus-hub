@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
+	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
@@ -552,24 +553,47 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 		}
 	}
 
-	// Wallet bridge: mirror quota debit to lurus-platform wallet (async, best-effort).
-	// Active when the user authenticated via identity session token or Zitadel OIDC.
+	// Wallet settlement: settle pre-auth or fallback to legacy debit.
 	totalQuota := quota + preConsumedQuota
 	if relayInfo.IdentityAccountID > 0 && totalQuota > 0 {
 		accountID := relayInfo.IdentityAccountID
-		// Convert internal quota units to LB (1 LB = QuotaPerUnit tokens).
 		amountLB := float64(totalQuota) / common.QuotaPerUnit
-		gopool.Go(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			// Debit wallet via gRPC (auto-fallback to HTTP).
-			_, err := common.DebitWalletGRPC(ctx, accountID, amountLB, "llm_usage", fmt.Sprintf("LLM relay userId=%d", relayInfo.UserId), "lurus-api")
-			if err != nil {
-				common.SysLog(fmt.Sprintf("wallet bridge debit failed: accountID=%d, amount=%.4f LB, err=%s", accountID, amountLB, err.Error()))
+
+		if common.BillingUnifiedEnabled && relayInfo.PlatformPreAuthID > 0 {
+			// Pre-auth path: settle synchronously, outbox on failure
+			settleCtx, settleCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, settleErr := common.SettlePreAuthGRPC(settleCtx, relayInfo.PlatformPreAuthID, amountLB)
+			settleCancel()
+			if settleErr != nil {
+				metrics.BillingSettleTotal.WithLabelValues("error").Inc()
+				common.SysLog(fmt.Sprintf("settle pre-auth %d failed, enqueuing outbox: %s", relayInfo.PlatformPreAuthID, settleErr.Error()))
+				if enqErr := EnqueueSettle(accountID, relayInfo.PlatformPreAuthID, amountLB); enqErr != nil {
+					common.SysError(fmt.Sprintf("CRITICAL: settle AND outbox both failed for preauth %d: settle=%s, outbox=%s",
+						relayInfo.PlatformPreAuthID, settleErr.Error(), enqErr.Error()))
+				}
+			} else {
+				metrics.BillingSettleTotal.WithLabelValues("success").Inc()
 			}
-			// Report usage for VIP accumulation (fire-and-forget).
-			common.ReportLLMUsageGRPC(ctx, accountID, amountLB)
-		})
+			// Clear pre-auth ID to prevent double-release on error paths
+			relayInfo.PlatformPreAuthID = 0
+			// Report usage for VIP accumulation (async, non-critical)
+			gopool.Go(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				common.ReportLLMUsageGRPC(ctx, accountID, amountLB)
+			})
+		} else {
+			// Legacy path: fire-and-forget debit
+			gopool.Go(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, err := common.DebitWalletGRPC(ctx, accountID, amountLB, "llm_usage", fmt.Sprintf("LLM relay userId=%d", relayInfo.UserId), "lurus-api")
+				if err != nil {
+					common.SysLog(fmt.Sprintf("wallet bridge debit failed: accountID=%d, amount=%.4f LB, err=%s", accountID, amountLB, err.Error()))
+				}
+				common.ReportLLMUsageGRPC(ctx, accountID, amountLB)
+			})
+		}
 	}
 
 	return nil

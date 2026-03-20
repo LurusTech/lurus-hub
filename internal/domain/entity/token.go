@@ -24,6 +24,7 @@ type Token struct {
 	UsedQuota          int            `json:"used_quota" gorm:"default:0"`
 	Group              string         `json:"group" gorm:"default:''"`
 	CrossGroupRetry    bool           `json:"cross_group_retry"`
+	IdentityAccountID  int64          `json:"identity_account_id" gorm:"default:0;index:idx_identity_account,where:identity_account_id > 0"` // lurus-platform account ID
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 

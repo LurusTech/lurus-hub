@@ -471,9 +471,9 @@ func TestAdminGetApiKeyScopes(t *testing.T) {
 		t.Fatal("Expected data to be an array")
 	}
 
-	// Should have 13 scopes
-	if len(data) != 13 {
-		t.Errorf("Expected 13 scopes, got %d", len(data))
+	// Should have 17 scopes
+	if len(data) != 17 {
+		t.Errorf("Expected 17 scopes, got %d", len(data))
 	}
 
 	// Check each scope has required fields

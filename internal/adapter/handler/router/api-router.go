@@ -11,63 +11,25 @@ import (
 func SetApiRouter(router *gin.Engine) {
 	apiRouter := router.Group("/api")
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
-	apiRouter.Use(middleware.CORS()) // Enable CORS for cross-domain SSO
+	apiRouter.Use(middleware.CORS())
 	apiRouter.Use(middleware.GlobalAPIRateLimit())
 	{
 		apiRouter.GET("/setup", handler.GetSetup)
 		apiRouter.POST("/setup", handler.PostSetup)
 		apiRouter.GET("/status", handler.GetStatus)
 		apiRouter.GET("/uptime/status", handler.GetUptimeKumaStatus)
-		apiRouter.GET("/models", middleware.UserAuth(), handler.DashboardListModels)
-		apiRouter.GET("/status/test", middleware.AdminAuth(), handler.TestStatus)
+		apiRouter.GET("/models", middleware.AdminJWTAuth(), handler.DashboardListModels)
+		apiRouter.GET("/status/test", middleware.AdminJWTAuth(), handler.TestStatus)
 		apiRouter.GET("/notice", handler.GetNotice)
 		apiRouter.GET("/user-agreement", handler.GetUserAgreement)
 		apiRouter.GET("/privacy-policy", handler.GetPrivacyPolicy)
 		apiRouter.GET("/about", handler.GetAbout)
 		apiRouter.GET("/home_page_content", handler.GetHomePageContent)
-		apiRouter.GET("/pricing", middleware.TryUserAuth(), handler.GetPricing)
+		apiRouter.GET("/pricing", handler.GetPricing)
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), handler.GetRatioConfig)
 
-		// Universal secure verification routes
-		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), handler.UniversalVerify)
-		apiRouter.GET("/verify/status", middleware.UserAuth(), handler.GetVerificationStatus)
-
-		// Auth/Session endpoints (for SSO support)
-		authRoute := apiRouter.Group("/auth")
-		{
-			authRoute.GET("/session", handler.GetSessionInfo) // Session check for cross-domain SSO
-		}
-
-		userRoute := apiRouter.Group("/user")
-		{
-			userRoute.GET("/logout", handler.Logout)
-			userRoute.GET("/groups", handler.GetUserGroups)
-
-			selfRoute := userRoute.Group("/")
-			selfRoute.Use(middleware.UserAuth())
-			{
-				selfRoute.GET("/self/groups", handler.GetUserGroups)
-				selfRoute.GET("/self", handler.GetSelf)
-				selfRoute.GET("/models", handler.GetUserModels)
-				selfRoute.PUT("/self", handler.UpdateSelf)
-				selfRoute.GET("/token", handler.GenerateAccessToken)
-				selfRoute.PUT("/setting", handler.UpdateUserSetting)
-
-				// User verification status
-				selfRoute.GET("/verification-status", middleware.GetUserVerificationStatus)
-			}
-
-			adminRoute := userRoute.Group("/")
-			adminRoute.Use(middleware.AdminAuth())
-			{
-				adminRoute.GET("/", handler.GetAllUsers)
-				adminRoute.GET("/search", handler.SearchUsers)
-				adminRoute.GET("/:id", handler.GetUser)
-				adminRoute.PUT("/", handler.UpdateUser)
-			}
-		}
 		optionRoute := apiRouter.Group("/option")
-		optionRoute.Use(middleware.RootAuth())
+		optionRoute.Use(middleware.RootJWTAuth())
 		{
 			optionRoute.GET("/", handler.GetOptions)
 			optionRoute.PUT("/", handler.UpdateOption)
@@ -76,20 +38,21 @@ func SetApiRouter(router *gin.Engine) {
 		}
 
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
-		ratioSyncRoute.Use(middleware.RootAuth())
+		ratioSyncRoute.Use(middleware.RootJWTAuth())
 		{
 			ratioSyncRoute.GET("/channels", handler.GetSyncableChannels)
 			ratioSyncRoute.POST("/fetch", handler.FetchUpstreamRatios)
 		}
+
 		channelRoute := apiRouter.Group("/channel")
-		channelRoute.Use(middleware.AdminAuth())
+		channelRoute.Use(middleware.AdminJWTAuth())
 		{
 			channelRoute.GET("/", handler.GetAllChannels)
 			channelRoute.GET("/search", handler.SearchChannels)
 			channelRoute.GET("/models", handler.ChannelListModels)
 			channelRoute.GET("/models_enabled", handler.EnabledListModels)
 			channelRoute.GET("/:id", handler.GetChannel)
-			channelRoute.POST("/:id/key", middleware.RootAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), middleware.SecureVerificationRequired(), handler.GetChannelKey)
+			channelRoute.GET("/:id/key", middleware.RootJWTAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), handler.GetChannelKey)
 			channelRoute.GET("/test", handler.TestAllChannels)
 			channelRoute.GET("/test/:id", handler.TestChannel)
 			channelRoute.GET("/update_balance", handler.UpdateAllChannelsBalance)
@@ -114,8 +77,9 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/copy/:id", handler.CopyChannel)
 			channelRoute.POST("/multi_key/manage", handler.ManageMultiKeys)
 		}
+
 		tokenRoute := apiRouter.Group("/token")
-		tokenRoute.Use(middleware.UserAuth())
+		tokenRoute.Use(middleware.AdminJWTAuth())
 		{
 			tokenRoute.GET("/", handler.GetAllTokens)
 			tokenRoute.GET("/search", handler.SearchTokens)
@@ -137,7 +101,7 @@ func SetApiRouter(router *gin.Engine) {
 		}
 
 		redemptionRoute := apiRouter.Group("/redemption")
-		redemptionRoute.Use(middleware.AdminAuth())
+		redemptionRoute.Use(middleware.AdminJWTAuth())
 		{
 			redemptionRoute.GET("/", handler.GetAllRedemptions)
 			redemptionRoute.GET("/search", handler.SearchRedemptions)
@@ -147,31 +111,28 @@ func SetApiRouter(router *gin.Engine) {
 			redemptionRoute.DELETE("/invalid", handler.DeleteInvalidRedemption)
 			redemptionRoute.DELETE("/:id", handler.DeleteRedemption)
 		}
+
 		logRoute := apiRouter.Group("/log")
-		logRoute.GET("/", middleware.AdminAuth(), handler.GetAllLogs)
-		logRoute.DELETE("/", middleware.AdminAuth(), handler.DeleteHistoryLogs)
-		logRoute.GET("/stat", middleware.AdminAuth(), handler.GetLogsStat)
-		logRoute.GET("/self/stat", middleware.UserAuth(), handler.GetLogsSelfStat)
-		logRoute.GET("/search", middleware.AdminAuth(), handler.SearchAllLogs)
-		logRoute.GET("/self", middleware.UserAuth(), handler.GetUserLogs)
-		logRoute.GET("/self/search", middleware.UserAuth(), handler.SearchUserLogs)
-
-		dataRoute := apiRouter.Group("/data")
-		dataRoute.GET("/", middleware.AdminAuth(), handler.GetAllQuotaDates)
-		dataRoute.GET("/self", middleware.UserAuth(), handler.GetUserQuotaDates)
-
+		logRoute.GET("/", middleware.AdminJWTAuth(), handler.GetAllLogs)
+		logRoute.DELETE("/", middleware.AdminJWTAuth(), handler.DeleteHistoryLogs)
+		logRoute.GET("/stat", middleware.AdminJWTAuth(), handler.GetLogsStat)
+		logRoute.GET("/search", middleware.AdminJWTAuth(), handler.SearchAllLogs)
 		logRoute.Use(middleware.CORS())
 		{
 			logRoute.GET("/token", handler.GetLogByKey)
 		}
+
+		dataRoute := apiRouter.Group("/data")
+		dataRoute.GET("/", middleware.AdminJWTAuth(), handler.GetAllQuotaDates)
+
 		groupRoute := apiRouter.Group("/group")
-		groupRoute.Use(middleware.AdminAuth())
+		groupRoute.Use(middleware.AdminJWTAuth())
 		{
 			groupRoute.GET("/", handler.GetGroups)
 		}
 
 		prefillGroupRoute := apiRouter.Group("/prefill_group")
-		prefillGroupRoute.Use(middleware.AdminAuth())
+		prefillGroupRoute.Use(middleware.AdminJWTAuth())
 		{
 			prefillGroupRoute.GET("/", handler.GetPrefillGroups)
 			prefillGroupRoute.POST("/", handler.CreatePrefillGroup)
@@ -180,17 +141,15 @@ func SetApiRouter(router *gin.Engine) {
 		}
 
 		mjRoute := apiRouter.Group("/mj")
-		mjRoute.GET("/self", middleware.UserAuth(), handler.GetUserMidjourney)
-		mjRoute.GET("/", middleware.AdminAuth(), handler.GetAllMidjourney)
+		mjRoute.GET("/", middleware.AdminJWTAuth(), handler.GetAllMidjourney)
 
 		taskRoute := apiRouter.Group("/task")
 		{
-			taskRoute.GET("/self", middleware.UserAuth(), handler.GetUserTask)
-			taskRoute.GET("/", middleware.AdminAuth(), handler.GetAllTask)
+			taskRoute.GET("/", middleware.AdminJWTAuth(), handler.GetAllTask)
 		}
 
 		vendorRoute := apiRouter.Group("/vendors")
-		vendorRoute.Use(middleware.AdminAuth())
+		vendorRoute.Use(middleware.AdminJWTAuth())
 		{
 			vendorRoute.GET("/", handler.GetAllVendors)
 			vendorRoute.GET("/search", handler.SearchVendors)
@@ -201,7 +160,7 @@ func SetApiRouter(router *gin.Engine) {
 		}
 
 		modelsRoute := apiRouter.Group("/models")
-		modelsRoute.Use(middleware.AdminAuth())
+		modelsRoute.Use(middleware.AdminJWTAuth())
 		{
 			modelsRoute.GET("/sync_upstream/preview", handler.SyncUpstreamPreview)
 			modelsRoute.POST("/sync_upstream", handler.SyncUpstreamModels)
@@ -216,9 +175,8 @@ func SetApiRouter(router *gin.Engine) {
 			modelsRoute.DELETE("/:id", handler.DeleteModelMeta)
 		}
 
-		// Deployments (model deployment management)
 		deploymentsRoute := apiRouter.Group("/deployments")
-		deploymentsRoute.Use(middleware.AdminAuth())
+		deploymentsRoute.Use(middleware.AdminJWTAuth())
 		{
 			deploymentsRoute.GET("/settings", handler.GetModelDeploymentSettings)
 			deploymentsRoute.POST("/settings/test-connection", handler.TestIoNetConnection)
@@ -231,7 +189,6 @@ func SetApiRouter(router *gin.Engine) {
 			deploymentsRoute.POST("/price-estimation", handler.GetPriceEstimation)
 			deploymentsRoute.GET("/check-name", handler.CheckClusterNameAvailability)
 			deploymentsRoute.POST("/", handler.CreateDeployment)
-
 			deploymentsRoute.GET("/:id", handler.GetDeployment)
 			deploymentsRoute.GET("/:id/logs", handler.GetDeploymentLogs)
 			deploymentsRoute.GET("/:id/containers", handler.ListDeploymentContainers)
@@ -242,9 +199,8 @@ func SetApiRouter(router *gin.Engine) {
 			deploymentsRoute.DELETE("/:id", handler.DeleteDeployment)
 		}
 
-		// Internal API Key management (admin only)
 		apiKeyRoute := apiRouter.Group("/api-keys")
-		apiKeyRoute.Use(middleware.AdminAuth())
+		apiKeyRoute.Use(middleware.AdminJWTAuth())
 		{
 			apiKeyRoute.GET("/", handler.AdminListApiKeys)
 			apiKeyRoute.GET("/scopes", handler.AdminGetApiKeyScopes)
@@ -254,7 +210,6 @@ func SetApiRouter(router *gin.Engine) {
 			apiKeyRoute.PUT("/:id/toggle", handler.AdminToggleApiKey)
 		}
 
-		// Release/Download management (public, no auth required)
 		releaseRoute := apiRouter.Group("/releases")
 		{
 			releaseRoute.GET("/", handler.ListReleases)
@@ -262,6 +217,16 @@ func SetApiRouter(router *gin.Engine) {
 			releaseRoute.GET("/:id", handler.GetReleaseByID)
 			releaseRoute.GET("/:id/changelog", handler.GetChangelog)
 			releaseRoute.GET("/:id/download/:artifact_id", middleware.DownloadRateLimit(), handler.DownloadArtifact)
+		}
+
+		// User management (admin only)
+		userRoute := apiRouter.Group("/user")
+		userRoute.Use(middleware.AdminJWTAuth())
+		{
+			userRoute.GET("/", handler.GetAllUsers)
+			userRoute.GET("/search", handler.SearchUsers)
+			userRoute.GET("/:id", handler.GetUser)
+			userRoute.PUT("/", handler.UpdateUser)
 		}
 	}
 }

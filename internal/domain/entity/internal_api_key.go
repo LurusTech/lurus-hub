@@ -37,6 +37,8 @@ const (
 	ScopeCurrencyRead      = "currency:read"
 	ScopeCurrencyExchange  = "currency:exchange"
 	ScopeAuthLogin         = "auth:login"
+	ScopeLogRead           = "log:read"
+	ScopeModelRead         = "model:read"
 	ScopeAll               = "*"
 )
 

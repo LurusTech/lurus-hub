@@ -559,3 +559,53 @@ func GetTenantLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, 
 	err = tx.Order("created_at DESC").Offset(params.Offset).Limit(params.Limit).Find(&logs).Error
 	return logs, total, err
 }
+
+// GetUserLogsInternal returns paginated logs for a user (internal API, no tenant filter).
+func GetUserLogsInternal(userID, offset, limit int) (logs []*Log, total int64, err error) {
+	tx := LOG_DB.Model(&Log{}).Where("user_id = ?", userID)
+	err = tx.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	err = tx.Order("created_at DESC").Offset(offset).Limit(limit).Find(&logs).Error
+	return logs, total, err
+}
+
+// GetTokenLogsInternal returns paginated logs filtered by token ID (internal API).
+func GetTokenLogsInternal(tokenID, offset, limit int) (logs []*Log, total int64, err error) {
+	tx := LOG_DB.Model(&Log{}).Where("token_id = ?", tokenID)
+	err = tx.Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	err = tx.Order("created_at DESC").Offset(offset).Limit(limit).Find(&logs).Error
+	return logs, total, err
+}
+
+// LogStatEntry holds aggregated log statistics.
+type LogStatEntry struct {
+	Key        string `json:"key"`
+	Count      int64  `json:"count"`
+	TotalQuota int64  `json:"total_quota"`
+}
+
+// GetUserLogStatInternal returns aggregated usage stats (by model or day).
+func GetUserLogStatInternal(userID int, groupBy string) ([]LogStatEntry, error) {
+	var results []LogStatEntry
+	var selectExpr, groupExpr string
+	switch groupBy {
+	case "day":
+		selectExpr = "DATE(created_at) as key, COUNT(*) as count, COALESCE(SUM(quota), 0) as total_quota"
+		groupExpr = "DATE(created_at)"
+	default:
+		selectExpr = "model_name as key, COUNT(*) as count, COALESCE(SUM(quota), 0) as total_quota"
+		groupExpr = "model_name"
+	}
+	err := LOG_DB.Model(&Log{}).
+		Select(selectExpr).
+		Where("user_id = ?", userID).
+		Group(groupExpr).
+		Order("total_quota DESC").
+		Find(&results).Error
+	return results, err
+}

@@ -206,6 +206,84 @@ func DebitWalletGRPC(ctx context.Context, accountID int64, amount float64, txTyp
 	}, nil
 }
 
+// PreAuthorizeGRPC freezes wallet balance via gRPC, falls back to HTTP.
+func PreAuthorizeGRPC(ctx context.Context, accountID int64, amount float64, productID, referenceID, description string, ttlSeconds int) (*PreAuthResult, error) {
+	client := getGRPCClient()
+	if client == nil {
+		return PreAuthorize(ctx, accountID, amount, productID, referenceID, description, ttlSeconds)
+	}
+
+	gctx, cancel := billingGRPCTimeout(ctx)
+	defer cancel()
+
+	resp, err := client.WalletPreAuthorize(gctx, &identityv1.WalletPreAuthorizeRequest{
+		AccountId:   accountID,
+		Amount:      amount,
+		ProductId:   productID,
+		ReferenceId: referenceID,
+		Description: description,
+		TtlSeconds:  int32(ttlSeconds),
+	})
+	if err != nil {
+		slog.Debug("identity grpc WalletPreAuthorize failed, falling back to HTTP", "err", err)
+		return PreAuthorize(ctx, accountID, amount, productID, referenceID, description, ttlSeconds)
+	}
+
+	return &PreAuthResult{
+		PreAuthID: resp.PreauthId,
+		Amount:    resp.Amount,
+		Status:    resp.Status,
+	}, nil
+}
+
+// SettlePreAuthGRPC settles a pre-auth via gRPC, falls back to HTTP.
+func SettlePreAuthGRPC(ctx context.Context, preAuthID int64, actualAmount float64) (*SettlePreAuthResult, error) {
+	client := getGRPCClient()
+	if client == nil {
+		return SettlePreAuth(ctx, preAuthID, actualAmount)
+	}
+
+	gctx, cancel := billingGRPCTimeout(ctx)
+	defer cancel()
+
+	resp, err := client.WalletSettlePreAuth(gctx, &identityv1.WalletSettlePreAuthRequest{
+		PreauthId:    preAuthID,
+		ActualAmount: actualAmount,
+	})
+	if err != nil {
+		slog.Debug("identity grpc WalletSettlePreAuth failed, falling back to HTTP", "err", err)
+		return SettlePreAuth(ctx, preAuthID, actualAmount)
+	}
+
+	return &SettlePreAuthResult{
+		PreAuthID:    resp.PreauthId,
+		Status:       resp.Status,
+		HeldAmount:   resp.HeldAmount,
+		ActualAmount: resp.ActualAmount,
+	}, nil
+}
+
+// ReleasePreAuthGRPC releases a pre-auth via gRPC, falls back to HTTP.
+func ReleasePreAuthGRPC(ctx context.Context, preAuthID int64) error {
+	client := getGRPCClient()
+	if client == nil {
+		return ReleasePreAuth(ctx, preAuthID)
+	}
+
+	gctx, cancel := billingGRPCTimeout(ctx)
+	defer cancel()
+
+	_, err := client.WalletReleasePreAuth(gctx, &identityv1.WalletReleasePreAuthRequest{
+		PreauthId: preAuthID,
+	})
+	if err != nil {
+		slog.Debug("identity grpc WalletReleasePreAuth failed, falling back to HTTP", "err", err)
+		return ReleasePreAuth(ctx, preAuthID)
+	}
+
+	return nil
+}
+
 // CreditWalletGRPC adds credits to an account's wallet via gRPC.
 // Falls back to HTTP if gRPC client is not available.
 func CreditWalletGRPC(ctx context.Context, accountID int64, amount float64, txType, description, productID string) error {

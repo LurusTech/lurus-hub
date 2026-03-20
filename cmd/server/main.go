@@ -165,6 +165,22 @@ func run(ctx context.Context, startTime time.Time) error {
 		})
 	}
 
+	// Background task: billing outbox processor (5s ticker)
+	if common.BillingUnifiedEnabled {
+		g.Go(func() error {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-ticker.C:
+					_ = app.ProcessBillingOutbox(ctx)
+				}
+			}
+		})
+	}
+
 	if os.Getenv("BATCH_UPDATE_ENABLED") == "true" {
 		common.BatchUpdateEnabled = true
 		common.SysLog("batch update enabled with interval " + strconv.Itoa(common.BatchUpdateInterval) + "s")
@@ -434,6 +450,15 @@ func InitResources(ctx context.Context) error {
 		err = search.InitSyncWithContext(ctx)
 		if err != nil {
 			common.SysError(fmt.Sprintf("Failed to initialize Meilisearch sync: %v", err))
+		}
+	}
+
+	// Initialize billing outbox (pre-auth settlement retry queue)
+	if common.BillingUnifiedEnabled {
+		if err := app.InitBillingOutbox(repo.DB); err != nil {
+			common.SysError(fmt.Sprintf("Failed to initialize billing outbox: %v", err))
+		} else {
+			common.SysLog("billing unified mode enabled, outbox initialized")
 		}
 	}
 

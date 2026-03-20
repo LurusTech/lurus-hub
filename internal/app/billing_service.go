@@ -1,8 +1,9 @@
 package app
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/currency"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
 )
 
@@ -16,14 +17,17 @@ type SubscriptionQuotaInfo struct {
 }
 
 // CalculateDisplayAmount converts a raw quota value to the display amount
-// based on the configured display type (USD, CNY, or Tokens).
+// based on the configured display type (USD, CNY, Tokens, or Lute).
 func CalculateDisplayAmount(quota int) float64 {
 	amount := float64(quota)
 	switch operation_setting.GetQuotaDisplayType() {
 	case operation_setting.QuotaDisplayTypeCNY:
 		amount = amount / common.QuotaPerUnit * operation_setting.USDExchangeRate
+	case operation_setting.QuotaDisplayTypeLute:
+		// Lute: 1 LUT = 1 quota unit, display as LUC equivalent
+		amount = currency.LutToLucDisplay(quota)
 	case operation_setting.QuotaDisplayTypeTokens:
-		// Keep raw token count
+		// Keep raw token count (= LUT amount, since 1 LUT = 1 quota unit)
 	default:
 		// USD
 		amount = amount / common.QuotaPerUnit

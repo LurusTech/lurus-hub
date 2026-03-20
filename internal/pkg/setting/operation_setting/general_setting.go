@@ -8,6 +8,7 @@ const (
 	QuotaDisplayTypeCNY    = "CNY"
 	QuotaDisplayTypeTokens = "TOKENS"
 	QuotaDisplayTypeCustom = "CUSTOM"
+	QuotaDisplayTypeLute   = "LUTE" // Display as Lute (LUT) with Chinese wan/yi formatting
 )
 
 type GeneralSetting struct {

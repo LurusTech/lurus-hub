@@ -34,6 +34,8 @@ const (
 	ScopeBalanceWrite      = "balance:write"
 	ScopeTokenRead         = "token:read"
 	ScopeTokenWrite        = "token:write"
+	ScopeCurrencyRead      = "currency:read"
+	ScopeCurrencyExchange  = "currency:exchange"
 	ScopeAuthLogin         = "auth:login"
 	ScopeAll               = "*"
 )

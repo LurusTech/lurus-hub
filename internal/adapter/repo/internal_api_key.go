@@ -25,6 +25,8 @@ const (
 	ScopeBalanceWrite      = entity.ScopeBalanceWrite
 	ScopeTokenRead         = entity.ScopeTokenRead
 	ScopeTokenWrite        = entity.ScopeTokenWrite
+	ScopeCurrencyRead      = entity.ScopeCurrencyRead
+	ScopeCurrencyExchange  = entity.ScopeCurrencyExchange
 	ScopeAuthLogin         = entity.ScopeAuthLogin
 	ScopeAll               = entity.ScopeAll
 )
@@ -151,6 +153,8 @@ func GetAvailableScopes() []map[string]string {
 		{"key": ScopeBalanceWrite, "name": "Write Balance", "description": "Top up user balance"},
 		{"key": ScopeTokenRead, "name": "Read Token", "description": "Get user tokens"},
 		{"key": ScopeTokenWrite, "name": "Write Token", "description": "Create user tokens"},
+		{"key": ScopeCurrencyRead, "name": "Read Currency", "description": "View exchange rates and model pricing in Lute"},
+		{"key": ScopeCurrencyExchange, "name": "Currency Exchange", "description": "Exchange LuCoin to Lute for users"},
 		{"key": ScopeAuthLogin, "name": "Auth Login", "description": "Authenticate users via login"},
 		{"key": ScopeAll, "name": "All Permissions", "description": "Full access to all internal APIs"},
 	}

@@ -4,9 +4,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/currency"
+	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -223,6 +224,14 @@ func InternalGetUserQuota(c *gin.Context) {
 			"group":            user.Group,
 			"base_group":       user.BaseGroup,
 			"fallback_group":   user.FallbackGroup,
+			// Lute currency overlay (1 LUT = 1 quota unit)
+			"lute": gin.H{
+				"balance":         user.Quota,
+				"balance_display": currency.FormatLutCN(user.Quota),
+				"used":            user.UsedQuota,
+				"used_display":    currency.FormatLutCN(user.UsedQuota),
+				"luc_equivalent":  currency.LutToLucDisplay(user.Quota),
+			},
 		},
 	})
 }
@@ -323,16 +332,22 @@ func InternalGetUserBalance(c *gin.Context) {
 		return
 	}
 
-	// Convert quota to RMB
-	balanceRmb := float64(user.Quota) / common.QuotaPerUnit
+	// Convert quota to LUC (1 LUC = QuotaPerUnit quota units)
+	balanceLuc := currency.LutToLucDisplay(user.Quota)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
 			"user_id":     user.Id,
-			"balance":     user.Quota,      // Balance in tokens
-			"balance_rmb": balanceRmb,      // Balance in RMB
+			"balance":     user.Quota,                          // Balance in LUT (= quota units)
+			"balance_luc": balanceLuc,                          // Balance in LUC
+			"balance_rmb": balanceLuc,                          // LUC ~ CNY 1:1 (backward compat)
 			"used_quota":  user.UsedQuota,
+			"lute": gin.H{
+				"balance":         user.Quota,
+				"balance_display": currency.FormatLutCN(user.Quota),
+				"luc_equivalent":  balanceLuc,
+			},
 		},
 	})
 }

@@ -263,6 +263,8 @@ func migrateDB() error {
 		&entity.DownloadLog{},
 		// Switch config presets
 		&SwitchConfigPresetRow{},
+		// Currency exchange ledger
+		&entity.CurrencyExchange{},
 	)
 	if err != nil {
 		return err

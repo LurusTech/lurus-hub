@@ -14,20 +14,48 @@ func SetInternalApiRouter(router *gin.Engine) {
 	internalGroup := router.Group("/internal")
 	internalGroup.Use(middleware.InternalApiAuth())
 
-	// User APIs - query user information
-	userGroup := internalGroup.Group("/user")
-	userGroup.Use(middleware.RequireScope(repo.ScopeUserRead))
+	// User read APIs - query user information
+	userReadGroup := internalGroup.Group("/user")
+	userReadGroup.Use(middleware.RequireScope(repo.ScopeUserRead))
 	{
-		userGroup.GET("/:id", handler.InternalGetUser)
-		userGroup.GET("/by-email/:email", handler.InternalGetUserByEmail)
-		userGroup.GET("/by-phone/:phone", handler.InternalGetUserByPhone)
+		userReadGroup.GET("/:id", handler.InternalGetUser)
+		userReadGroup.GET("/by-email/:email", handler.InternalGetUserByEmail)
+		userReadGroup.GET("/by-phone/:phone", handler.InternalGetUserByPhone)
+		userReadGroup.GET("/by-zitadel-sub/:sub", handler.InternalGetUserByZitadelSub)
 	}
 
-	// User write APIs - modify user information
+	// User write APIs - create and modify users
 	userWriteGroup := internalGroup.Group("/user")
 	userWriteGroup.Use(middleware.RequireScope(repo.ScopeUserWrite))
 	{
+		userWriteGroup.POST("", handler.InternalCreateUser)
 		userWriteGroup.PUT("/:id", handler.InternalUpdateUser)
+		userWriteGroup.POST("/provision", handler.InternalProvisionUser)
+	}
+
+	// User delete APIs
+	userDeleteGroup := internalGroup.Group("/user")
+	userDeleteGroup.Use(middleware.RequireScope(repo.ScopeUserDelete))
+	{
+		userDeleteGroup.DELETE("/:id", handler.InternalDeleteUser)
+	}
+
+	// Token read APIs
+	tokenReadGroup := internalGroup.Group("/token")
+	tokenReadGroup.Use(middleware.RequireScope(repo.ScopeTokenRead))
+	{
+		tokenReadGroup.GET("/user/:id", handler.InternalGetUserTokens)
+		tokenReadGroup.GET("/:id", handler.InternalGetToken)
+		tokenReadGroup.GET("/:id/usage", handler.InternalGetTokenUsage)
+	}
+
+	// Token write APIs
+	tokenWriteGroup := internalGroup.Group("/token")
+	tokenWriteGroup.Use(middleware.RequireScope(repo.ScopeTokenWrite))
+	{
+		tokenWriteGroup.POST("", handler.InternalCreateToken)
+		tokenWriteGroup.PUT("/:id", handler.InternalUpdateToken)
+		tokenWriteGroup.DELETE("/:id", handler.InternalDeleteToken)
 	}
 
 	// Quota APIs - read user quota
@@ -56,5 +84,22 @@ func SetInternalApiRouter(router *gin.Engine) {
 	balanceWriteGroup.Use(middleware.RequireScope(repo.ScopeBalanceWrite))
 	{
 		balanceWriteGroup.POST("/topup", handler.InternalTopupBalance)
+	}
+
+	// Currency APIs - read exchange rates, model pricing, user balance in Lute
+	currencyReadGroup := internalGroup.Group("/currency")
+	currencyReadGroup.Use(middleware.RequireScope(repo.ScopeCurrencyRead))
+	{
+		currencyReadGroup.GET("/info", handler.InternalGetCurrencyInfo)
+		currencyReadGroup.GET("/models/pricing", handler.InternalGetModelPricing)
+		currencyReadGroup.GET("/balance/:id", handler.InternalGetUserBalanceLute)
+		currencyReadGroup.GET("/exchanges/:id", handler.InternalGetExchangeHistory)
+	}
+
+	// Currency APIs - perform LUC -> LUT exchange
+	currencyExchangeGroup := internalGroup.Group("/currency")
+	currencyExchangeGroup.Use(middleware.RequireScope(repo.ScopeCurrencyExchange))
+	{
+		currencyExchangeGroup.POST("/exchange", handler.InternalExchangeLucToLut)
 	}
 }

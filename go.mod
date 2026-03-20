@@ -114,7 +114,7 @@ require (
 	github.com/gorilla/sessions v1.4.0 // indirect
 	github.com/grafana/pyroscope-go/godeltaprof v0.1.9 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.25.1 // indirect
-	github.com/hanmahong5-arch/lurus-platform v0.0.0
+	github.com/hanmahong5-arch/lurus-proto-go v0.0.0
 	github.com/icza/bitio v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
@@ -170,4 +170,4 @@ require (
 	modernc.org/sqlite v1.40.1 // indirect
 )
 
-replace github.com/hanmahong5-arch/lurus-platform => ../2l-svc-platform
+replace github.com/hanmahong5-arch/lurus-proto-go => ../shared/lurus-proto-go

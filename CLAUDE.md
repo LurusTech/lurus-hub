@@ -328,8 +328,8 @@ Midjourney/Suno 通过独立 handler 处理（`handler.RelayMidjourney`, `handle
 - **SQLite fallback**: 未设置 `SQL_DSN` 时使用 SQLite (`one-api.db`)，仅用于开发
 - **渠道缓存**: Redis 存在时自动启用内存缓存，`SYNC_FREQUENCY` 控制同步周期
 - **Background tasks**: `lifecycle.Manager` 管理，`TickerTask` 封装定时任务
-- **ProtoImport**: 直接引用 `lurus-platform` 的 proto gen（`go.mod replace`），无需独立 `lurus-proto`
-- **go.mod replace**: `github.com/hanmahong5-arch/lurus-platform => ../lurus-platform`（本地开发需同级目录）
+- **ProtoImport**: 通过独立模块 `lurus-proto-go` 引用 identity gRPC 契约类型（`github.com/hanmahong5-arch/lurus-proto-go/identity/v1`）
+- **go.mod replace**: `github.com/hanmahong5-arch/lurus-proto-go => ../shared/lurus-proto-go`（本地开发；发布到 GitHub 后移除）
 
 ## BMAD
 

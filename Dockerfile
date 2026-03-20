@@ -18,8 +18,8 @@ ENV GOEXPERIMENT=greenteagc
 
 WORKDIR /build
 
-# Copy lurus-platform for local replace directive in go.mod
-COPY lurus-platform/ /2l-svc-platform/
+# Copy proto-go module (identity gRPC contract types)
+COPY lurus-proto-go/ /shared/lurus-proto-go/
 
 ADD go.mod go.sum ./
 RUN go mod download

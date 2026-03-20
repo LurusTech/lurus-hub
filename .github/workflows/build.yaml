@@ -22,11 +22,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Checkout lurus-proto
+      - name: Checkout lurus-proto-go
         uses: actions/checkout@v4
         with:
-          repository: hanmahong5-arch/lurus-platform
-          path: lurus-platform
+          repository: hanmahong5-arch/lurus-proto-go
+          path: lurus-proto-go
           fetch-depth: 1
 
       - name: Set up Docker Buildx

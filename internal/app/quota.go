@@ -504,7 +504,7 @@ func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {
 }
 
 func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (err error) {
-
+	// Phase 1: Update local user quota
 	if quota > 0 {
 		err = repo.DecreaseUserQuota(relayInfo.UserId, quota)
 	} else {
@@ -514,14 +514,17 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 		return err
 	}
 
-	// Update daily quota used (for subscription-based quota management)
+	// Phase 2: Update daily quota (non-critical, best-effort)
 	if quota > 0 {
-		if err := repo.PostConsumeDailyQuota(relayInfo.UserId, quota); err != nil {
-			// Log error but don't fail the request - daily quota is secondary to main quota
-			common.SysLog("failed to update daily quota: " + err.Error())
+		if dailyErr := repo.PostConsumeDailyQuota(relayInfo.UserId, quota); dailyErr != nil {
+			common.SysLog("failed to update daily quota: " + dailyErr.Error())
 		}
 	}
 
+	// Phase 3: Update token quota with compensation on failure.
+	// If token quota update fails, we release the platform pre-auth rather than
+	// settling — prevents double-debit when local state is inconsistent.
+	localQuotaConsistent := true
 	if !relayInfo.IsPlayground {
 		if quota > 0 {
 			err = repo.DecreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, quota)
@@ -529,73 +532,89 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 			err = repo.IncreaseTokenQuota(relayInfo.TokenId, relayInfo.TokenKey, -quota)
 		}
 		if err != nil {
-			// Compensate: reverse user quota change to maintain consistency
-			common.SysLog(fmt.Sprintf("token quota update failed, compensating user quota: userId=%d, quota=%d, err=%s",
+			localQuotaConsistent = false
+			common.SysLog(fmt.Sprintf("token quota update failed, compensating: userId=%d, quota=%d, err=%s",
 				relayInfo.UserId, quota, err.Error()))
 			if quota > 0 {
 				if compErr := repo.IncreaseUserQuota(relayInfo.UserId, quota, false); compErr != nil {
-					common.SysError(fmt.Sprintf("CRITICAL: failed to compensate user quota after token quota failure: userId=%d, quota=%d, err=%s",
+					common.SysError(fmt.Sprintf("CRITICAL: compensation failed: userId=%d, quota=%d, err=%s",
 						relayInfo.UserId, quota, compErr.Error()))
 				}
 			} else {
 				if compErr := repo.DecreaseUserQuota(relayInfo.UserId, -quota); compErr != nil {
-					common.SysError(fmt.Sprintf("CRITICAL: failed to compensate user quota after token quota failure: userId=%d, quota=%d, err=%s",
+					common.SysError(fmt.Sprintf("CRITICAL: compensation failed: userId=%d, quota=%d, err=%s",
 						relayInfo.UserId, -quota, compErr.Error()))
 				}
 			}
-			return err
+			// Don't return yet — must still handle platform pre-auth release below
 		}
 	}
 
-	if sendEmail {
-		if (quota + preConsumedQuota) != 0 {
-			checkAndSendQuotaNotify(relayInfo, quota, preConsumedQuota)
-		}
+	// Phase 4: Email notification (non-critical, async)
+	if sendEmail && (quota+preConsumedQuota) != 0 {
+		checkAndSendQuotaNotify(relayInfo, quota, preConsumedQuota)
 	}
 
-	// Wallet settlement: settle pre-auth or fallback to legacy debit.
+	// Phase 5: Platform wallet settlement.
+	// Decision: use PlatformPreAuthID > 0 as the signal (not the feature flag),
+	// because the pre-auth was created under the flag state at request start.
+	// This prevents orphaned pre-auths when the flag is toggled mid-flight.
 	totalQuota := quota + preConsumedQuota
 	if relayInfo.IdentityAccountID > 0 && totalQuota > 0 {
 		accountID := relayInfo.IdentityAccountID
 		amountLB := float64(totalQuota) / common.QuotaPerUnit
 
-		if common.BillingUnifiedEnabled && relayInfo.PlatformPreAuthID > 0 {
-			// Pre-auth path: settle synchronously, outbox on failure
-			settleCtx, settleCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_, settleErr := common.SettlePreAuthGRPC(settleCtx, relayInfo.PlatformPreAuthID, amountLB)
-			settleCancel()
-			if settleErr != nil {
-				metrics.BillingSettleTotal.WithLabelValues("error").Inc()
-				common.SysLog(fmt.Sprintf("settle pre-auth %d failed, enqueuing outbox: %s", relayInfo.PlatformPreAuthID, settleErr.Error()))
-				if enqErr := EnqueueSettle(accountID, relayInfo.PlatformPreAuthID, amountLB); enqErr != nil {
-					common.SysError(fmt.Sprintf("CRITICAL: settle AND outbox both failed for preauth %d: settle=%s, outbox=%s",
-						relayInfo.PlatformPreAuthID, settleErr.Error(), enqErr.Error()))
-				}
+		if relayInfo.PlatformPreAuthID > 0 {
+			if !localQuotaConsistent {
+				// Local quota is inconsistent — release pre-auth instead of settling,
+				// to avoid charging the wallet for a request that wasn't properly recorded locally.
+				releasePlatformPreAuth(relayInfo)
 			} else {
-				metrics.BillingSettleTotal.WithLabelValues("success").Inc()
+				settleCtx, settleCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_, settleErr := common.SettlePreAuthGRPC(settleCtx, relayInfo.PlatformPreAuthID, amountLB)
+				settleCancel()
+
+				if settleErr != nil {
+					metrics.BillingSettleTotal.WithLabelValues("error").Inc()
+					common.SysLog(fmt.Sprintf("settle pre-auth %d failed, enqueuing: %s",
+						relayInfo.PlatformPreAuthID, settleErr.Error()))
+					if enqErr := EnqueueSettle(accountID, relayInfo.PlatformPreAuthID, amountLB); enqErr != nil {
+						common.SysError(fmt.Sprintf("CRITICAL: pre-auth %d — settle failed (%s), outbox failed (%s). "+
+							"Platform TTL will auto-expire. Manual reconciliation may be needed.",
+							relayInfo.PlatformPreAuthID, settleErr.Error(), enqErr.Error()))
+					}
+				} else {
+					metrics.BillingSettleTotal.WithLabelValues("success").Inc()
+				}
 			}
-			// Clear pre-auth ID to prevent double-release on error paths
+			// Mark pre-auth as handled (settled or released)
 			relayInfo.PlatformPreAuthID = 0
+
 			// Report usage for VIP accumulation (async, non-critical)
 			gopool.Go(func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				common.ReportLLMUsageGRPC(ctx, accountID, amountLB)
+				rptCtx, rptCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer rptCancel()
+				common.ReportLLMUsageGRPC(rptCtx, accountID, amountLB)
 			})
 		} else {
-			// Legacy path: fire-and-forget debit
+			// Legacy path: fire-and-forget debit (no pre-auth)
 			gopool.Go(func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_, err := common.DebitWalletGRPC(ctx, accountID, amountLB, "llm_usage", fmt.Sprintf("LLM relay userId=%d", relayInfo.UserId), "lurus-api")
-				if err != nil {
-					common.SysLog(fmt.Sprintf("wallet bridge debit failed: accountID=%d, amount=%.4f LB, err=%s", accountID, amountLB, err.Error()))
+				debitCtx, debitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer debitCancel()
+				if _, debitErr := common.DebitWalletGRPC(debitCtx, accountID, amountLB, "llm_usage",
+					fmt.Sprintf("relay userId=%d", relayInfo.UserId), "lurus-api"); debitErr != nil {
+					common.SysLog(fmt.Sprintf("legacy wallet debit failed: accountID=%d, amount=%.4f LB, err=%s",
+						accountID, amountLB, debitErr.Error()))
 				}
-				common.ReportLLMUsageGRPC(ctx, accountID, amountLB)
+				common.ReportLLMUsageGRPC(debitCtx, accountID, amountLB)
 			})
 		}
 	}
 
+	// Return the original token quota error if local state was inconsistent
+	if !localQuotaConsistent {
+		return err
+	}
 	return nil
 }
 

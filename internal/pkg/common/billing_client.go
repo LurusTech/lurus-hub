@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -24,47 +25,46 @@ type PreAuthResult struct {
 }
 
 // PreAuthorize freezes an estimated amount in the wallet before LLM relay.
-// Returns the pre-auth ID for later settle/release, or an error (e.g. insufficient balance).
 func PreAuthorize(ctx context.Context, accountID int64, amount float64, productID, referenceID, description string, ttlSeconds int) (*PreAuthResult, error) {
 	if IdentityServiceURL == "" {
-		return nil, fmt.Errorf("identity service not configured")
+		return nil, fmt.Errorf("billing service not configured")
 	}
 	body, _ := json.Marshal(map[string]any{
-		"amount":      amount,
-		"product_id":  productID,
+		"amount":       amount,
+		"product_id":   productID,
 		"reference_id": referenceID,
-		"description": description,
-		"ttl_seconds": ttlSeconds,
+		"description":  description,
+		"ttl_seconds":  ttlSeconds,
 	})
 	url := fmt.Sprintf("%s/internal/v1/accounts/%d/wallet/pre-authorize", IdentityServiceURL, accountID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("billing service unavailable")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("pre-authorize request: %w", err)
+		return nil, fmt.Errorf("billing service unavailable")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusBadRequest {
-		var errResp struct {
-			Error string `json:"error"`
+		reason := parseErrorResponse(resp.Body)
+		if reason == "insufficient_balance" {
+			return nil, fmt.Errorf("insufficient_balance")
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil {
-			return nil, fmt.Errorf("%s", errResp.Error)
-		}
-		return nil, fmt.Errorf("pre-authorize failed: status %d", resp.StatusCode)
+		SysLog(fmt.Sprintf("pre-authorize rejected: account=%d, status=%d, reason=%s", accountID, resp.StatusCode, reason))
+		return nil, fmt.Errorf("insufficient_balance")
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("pre-authorize failed: status %d", resp.StatusCode)
+		SysLog(fmt.Sprintf("pre-authorize failed: account=%d, status=%d", accountID, resp.StatusCode))
+		return nil, fmt.Errorf("billing service unavailable")
 	}
 	var result PreAuthResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return nil, fmt.Errorf("billing service error")
 	}
 	return &result, nil
 }
@@ -80,7 +80,7 @@ type SettlePreAuthResult struct {
 // SettlePreAuth settles a pre-authorization with the actual consumed amount.
 func SettlePreAuth(ctx context.Context, preAuthID int64, actualAmount float64) (*SettlePreAuthResult, error) {
 	if IdentityServiceURL == "" {
-		return nil, fmt.Errorf("identity service not configured")
+		return nil, fmt.Errorf("billing service not configured")
 	}
 	body, _ := json.Marshal(map[string]any{
 		"actual_amount": actualAmount,
@@ -88,23 +88,25 @@ func SettlePreAuth(ctx context.Context, preAuthID int64, actualAmount float64) (
 	url := fmt.Sprintf("%s/internal/v1/wallet/pre-auth/%d/settle", IdentityServiceURL, preAuthID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("settle request failed")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("settle request: %w", err)
+		return nil, fmt.Errorf("settle: billing service unreachable")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("settle failed: status %d", resp.StatusCode)
+		reason := parseErrorResponse(resp.Body)
+		SysLog(fmt.Sprintf("settle failed: preauth=%d, status=%d, reason=%s", preAuthID, resp.StatusCode, reason))
+		return nil, fmt.Errorf("settle failed: %s", reason)
 	}
 	var result SettlePreAuthResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+		return nil, fmt.Errorf("settle response decode failed")
 	}
 	return &result, nil
 }
@@ -112,25 +114,39 @@ func SettlePreAuth(ctx context.Context, preAuthID int64, actualAmount float64) (
 // ReleasePreAuth cancels a pre-authorization and unfreezes the held amount.
 func ReleasePreAuth(ctx context.Context, preAuthID int64) error {
 	if IdentityServiceURL == "" {
-		return fmt.Errorf("identity service not configured")
+		return fmt.Errorf("billing service not configured")
 	}
 	url := fmt.Sprintf("%s/internal/v1/wallet/pre-auth/%d/release", IdentityServiceURL, preAuthID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return fmt.Errorf("release request failed")
 	}
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("release request: %w", err)
+		return fmt.Errorf("release: billing service unreachable")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("release failed: status %d", resp.StatusCode)
+		reason := parseErrorResponse(resp.Body)
+		SysLog(fmt.Sprintf("release failed: preauth=%d, status=%d, reason=%s", preAuthID, resp.StatusCode, reason))
+		return fmt.Errorf("release failed: %s", reason)
 	}
 	return nil
+}
+
+// parseErrorResponse extracts the "error" field from a JSON error response body.
+// Returns "unknown" if parsing fails. Consumes the reader.
+func parseErrorResponse(body io.Reader) string {
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(body).Decode(&errResp); err == nil && errResp.Error != "" {
+		return errResp.Error
+	}
+	return "unknown"
 }
 
 // billingGRPCTimeout wraps a context with a 5s timeout for billing gRPC calls.

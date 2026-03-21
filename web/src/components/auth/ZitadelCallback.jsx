@@ -23,7 +23,9 @@ const ZitadelCallback = () => {
 
     const loadSession = async () => {
       try {
-        const res = await API.get('/api/v2/auth/session-info');
+        const res = await API.get('/api/v2/auth/session-info', {
+          skipErrorHandler: true,
+        });
         if (cancelled) return;
 
         const { success, message, data } = res.data;

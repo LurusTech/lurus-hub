@@ -206,8 +206,8 @@ func ZitadelCallback(c *gin.Context) {
 		return
 	}
 
-	// Check state expiration (5 minutes)
-	if time.Since(stateData.CreatedAt) > 5*time.Minute {
+	// Check state expiration (10 minutes)
+	if time.Since(stateData.CreatedAt) > 10*time.Minute {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "OAuth state expired, please try again",
@@ -381,6 +381,9 @@ func GetSessionInfo(c *gin.Context) {
 	session := sessions.Default(c)
 	id := session.Get("id")
 	if id == nil {
+		if os.Getenv("ZITADEL_DEBUG_LOGGING") == "true" {
+			common.SysLog(fmt.Sprintf("GetSessionInfo: session has no 'id' key (cookie present: %v)", c.Request.Header.Get("Cookie") != ""))
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"message": "Not logged in",
@@ -390,6 +393,7 @@ func GetSessionInfo(c *gin.Context) {
 
 	userId, ok := id.(int)
 	if !ok {
+		common.SysError(fmt.Sprintf("GetSessionInfo: id type assertion failed: got %T(%v)", id, id))
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"message": "Invalid session",

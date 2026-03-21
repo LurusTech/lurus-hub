@@ -22,6 +22,9 @@ func SetApiV2Router(router *gin.Engine) {
 		apiV2.POST("/oauth/logout", handler.ZitadelLogout)
 		apiV2.POST("/oauth/refresh", handler.RefreshAccessToken)
 
+		// Tenant-scoped user endpoint (session auth — called by frontend in V2 mode)
+		apiV2.GET("/:tenant_slug/user/me", middleware.UserAuth(), handler.GetSelf)
+
 		// ================================================================
 		// Switch Public Routes (no authentication required)
 		// ================================================================

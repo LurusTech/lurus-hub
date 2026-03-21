@@ -118,6 +118,9 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.DELETE("/", middleware.AdminJWTAuth(), handler.DeleteHistoryLogs)
 		logRoute.GET("/stat", middleware.AdminJWTAuth(), handler.GetLogsStat)
 		logRoute.GET("/search", middleware.AdminJWTAuth(), handler.SearchAllLogs)
+		logRoute.GET("/self/", middleware.UserAuth(), handler.GetUserLogs)
+		logRoute.GET("/self/stat", middleware.UserAuth(), handler.GetLogsSelfStat)
+		logRoute.GET("/self/search", middleware.UserAuth(), handler.SearchUserLogs)
 		logRoute.Use(middleware.CORS())
 		{
 			logRoute.GET("/token", handler.GetLogByKey)
@@ -125,6 +128,7 @@ func SetApiRouter(router *gin.Engine) {
 
 		dataRoute := apiRouter.Group("/data")
 		dataRoute.GET("/", middleware.AdminJWTAuth(), handler.GetAllQuotaDates)
+		dataRoute.GET("/self/", middleware.UserAuth(), handler.GetUserQuotaDates)
 
 		groupRoute := apiRouter.Group("/group")
 		groupRoute.Use(middleware.AdminJWTAuth())
@@ -143,6 +147,7 @@ func SetApiRouter(router *gin.Engine) {
 
 		mjRoute := apiRouter.Group("/mj")
 		mjRoute.GET("/", middleware.AdminJWTAuth(), handler.GetAllMidjourney)
+		mjRoute.GET("/self/", middleware.UserAuth(), handler.GetUserMidjourney)
 
 		taskRoute := apiRouter.Group("/task")
 		{

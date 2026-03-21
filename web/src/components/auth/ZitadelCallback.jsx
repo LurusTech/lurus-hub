@@ -33,11 +33,6 @@ const ZitadelCallback = () => {
           throw new Error(message || t('登录失败'));
         }
 
-        // Store tenant context for V2 mode
-        if (data.tenant_slug) {
-          setTenantSlug(data.tenant_slug);
-        }
-
         userDispatch({ type: 'login', payload: data });
         localStorage.setItem('user', JSON.stringify(data));
         setUserData(data);

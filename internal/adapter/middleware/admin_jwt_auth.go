@@ -13,19 +13,20 @@ import (
 )
 
 // AdminJWTAuth validates a Zitadel JWT and requires the "admin" role.
-// Unlike ZitadelAuth, it does NOT:
-// - Fall back to session cookies
-// - Auto-create users or tenants
-// - Map Zitadel users to local lurus users
-// It purely validates the JWT signature and extracts identity.
+// Falls back to session-based auth (UserAuth) when no JWT Bearer token
+// is present, enabling the frontend to work with both JWT and session cookies.
 func AdminJWTAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// If no Authorization header, fall back to session-based admin auth.
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			authHelper(c, common.RoleAdminUser)
+			return
+		}
+
 		if !zitadelEnabled || jwksManager == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"success": false,
-				"message": "Admin authentication not configured",
-			})
-			c.Abort()
+			// JWT requested but not configured — try session fallback
+			authHelper(c, common.RoleAdminUser)
 			return
 		}
 
@@ -62,14 +63,17 @@ func AdminJWTAuth() gin.HandlerFunc {
 }
 
 // RootJWTAuth is like AdminJWTAuth but requires the "root" role specifically.
+// Falls back to session-based auth when no JWT Bearer token is present.
 func RootJWTAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			authHelper(c, common.RoleRootUser)
+			return
+		}
+
 		if !zitadelEnabled || jwksManager == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"success": false,
-				"message": "Admin authentication not configured",
-			})
-			c.Abort()
+			authHelper(c, common.RoleRootUser)
 			return
 		}
 

@@ -8,11 +8,20 @@ import (
 )
 
 // SetApiV2Router sets up v2 API routes.
-// OAuth login/callback, multi-tenant, and FlexAuth routes have been removed.
 // Admin operations use AdminJWTAuth; billing uses ZitadelAuth.
 func SetApiV2Router(router *gin.Engine) {
 	apiV2 := router.Group("/api/v2")
 	{
+		// ================================================================
+		// OAuth / Zitadel Routes (public — handles redirects & callbacks)
+		// ================================================================
+
+		apiV2.GET("/:tenant_slug/auth/login", handler.ZitadelLoginRedirect)
+		apiV2.GET("/oauth/callback", handler.ZitadelCallback)
+		apiV2.GET("/auth/session-info", handler.GetSessionInfo)
+		apiV2.POST("/oauth/logout", handler.ZitadelLogout)
+		apiV2.POST("/oauth/refresh", handler.RefreshAccessToken)
+
 		// ================================================================
 		// Switch Public Routes (no authentication required)
 		// ================================================================

@@ -13,11 +13,12 @@ import (
 )
 
 // AdminJWTAuth validates a Zitadel JWT and requires the "admin" role.
-// Falls back to session-based auth (UserAuth) when no JWT Bearer token
-// is present, enabling the frontend to work with both JWT and session cookies.
+// Used by v2 API routes that receive JWT tokens from external clients.
+// For v1 web UI routes, use AdminAuth() (session-based) instead.
 func AdminJWTAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// If no Authorization header, fall back to session-based admin auth.
+		// If no Authorization header, fall back to session-based admin auth
+		// to support the web frontend which uses session cookies after OAuth login.
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			authHelper(c, common.RoleAdminUser)
@@ -25,7 +26,6 @@ func AdminJWTAuth() gin.HandlerFunc {
 		}
 
 		if !zitadelEnabled || jwksManager == nil {
-			// JWT requested but not configured — try session fallback
 			authHelper(c, common.RoleAdminUser)
 			return
 		}
@@ -53,7 +53,6 @@ func AdminJWTAuth() gin.HandlerFunc {
 		c.Set("admin_sub", claims.Subject)
 		c.Set("admin_email", claims.Email)
 		c.Set("admin_roles", roles)
-		// Set identity_account_id for wallet bridging if needed
 		if im, _ := common.GetAccountByZitadelSubGRPC(c.Request.Context(), claims.Subject); im != nil {
 			c.Set("identity_account_id", im.ID)
 		}

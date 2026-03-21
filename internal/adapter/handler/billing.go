@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )
 
@@ -52,6 +53,71 @@ func calculateDisplayAmount(quota int) float64 {
 		amount = amount / common.QuotaPerUnit
 	}
 	return amount
+}
+
+// getSessionAccountID reads the platform account ID from the session.
+// Returns 0 if not available (user didn't login via OAuth or platform was unreachable).
+func getSessionAccountID(c *gin.Context) int64 {
+	session := sessions.Default(c)
+	v := session.Get("identity_account_id")
+	if v == nil {
+		return 0
+	}
+	id, ok := v.(int64)
+	if !ok {
+		return 0
+	}
+	return id
+}
+
+// GetWalletInfo returns platform wallet balance for the current session user.
+// GET /api/wallet/info
+func GetWalletInfo(c *gin.Context) {
+	accountID := getSessionAccountID(c)
+	if accountID == 0 {
+		// Fallback: return internal quota as "balance" for non-platform users.
+		userId := c.GetInt("id")
+		user, err := repo.GetUserById(userId, false)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to load user"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"source":         "internal",
+				"balance":        float64(user.Quota) / common.QuotaPerUnit,
+				"frozen":         0,
+				"available":      float64(user.Quota) / common.QuotaPerUnit,
+				"lifetime_topup": 0,
+				"lifetime_spend": float64(user.UsedQuota) / common.QuotaPerUnit,
+			},
+		})
+		return
+	}
+
+	bs, err := common.GetBillingSummary(c.Request.Context(), accountID)
+	if err != nil || bs == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "platform billing unavailable",
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"source":          "platform",
+			"balance":         bs.Balance,
+			"frozen":          bs.Frozen,
+			"available":       bs.Available,
+			"lifetime_topup":  bs.LifetimeTopup,
+			"lifetime_spend":  bs.LifetimeSpend,
+			"active_preauths": bs.ActivePreAuths,
+			"pending_orders":  bs.PendingOrders,
+			"topup_url":       common.IdentityPublicURL + "/wallet/topup",
+		},
+	})
 }
 
 func GetSubscription(c *gin.Context) {

@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -337,8 +339,6 @@ func ZitadelCallback(c *gin.Context) {
 	}
 
 	// Ensure user has at least one API token (auto-create if none).
-	// This eliminates the need for manual token creation before using
-	// the playground or API.
 	tokenCount, _ := repo.CountUserTokens(user.Id)
 	if tokenCount == 0 {
 		if defaultToken, err := repo.AutoCreateDefaultToken(user.Id); err != nil {
@@ -346,6 +346,12 @@ func ZitadelCallback(c *gin.Context) {
 		} else {
 			common.SysLog(fmt.Sprintf("Auto-created default token for user %s (id=%d, key_prefix=%s)", user.Username, user.Id, defaultToken.Key[:8]))
 		}
+	}
+
+	// Resolve platform account ID for billing integration.
+	// Store in session so billing endpoints work without JWT.
+	if im, _ := common.GetAccountByZitadelSubGRPC(c.Request.Context(), claims.Subject); im != nil {
+		session.Set("identity_account_id", im.ID)
 	}
 
 	// Clear PKCE and nonce from session (one-time use)
@@ -533,8 +539,17 @@ func RefreshAccessToken(c *gin.Context) {
 // Helper functions
 // ============================================================================
 
-// generateOAuthState generates a state parameter and nonce for OAuth flow
-// Returns: state (base64 encoded), nonce (for ID token verification), error
+// computeStateHMAC computes HMAC-SHA256 of data using SessionSecret as the key.
+func computeStateHMAC(data []byte) string {
+	mac := hmac.New(sha256.New, []byte(common.SessionSecret))
+	mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// generateOAuthState generates a state parameter and nonce for OAuth flow.
+// The state is HMAC-signed to prevent tampering.
+// Format: base64(json).hmac_hex
+// Returns: state (signed), nonce (for ID token verification), error
 func generateOAuthState(tenantSlug string, redirectURL string) (string, string, error) {
 	// Generate random nonce (used for both state and ID token verification)
 	nonceBytes := make([]byte, 32) // 256 bits for security
@@ -558,14 +573,36 @@ func generateOAuthState(tenantSlug string, redirectURL string) (string, string, 
 	}
 
 	// Encode as base64
-	state := base64.URLEncoding.EncodeToString(stateJSON)
+	payload := base64.URLEncoding.EncodeToString(stateJSON)
+
+	// Sign with HMAC-SHA256 using SessionSecret
+	sig := computeStateHMAC([]byte(payload))
+
+	// Final state format: payload.signature
+	state := payload + "." + sig
 	return state, nonce, nil
 }
 
-// parseOAuthState parses and validates the state parameter
+// parseOAuthState parses and validates the state parameter.
+// Verifies HMAC-SHA256 signature before parsing to prevent tampering.
+// Expected format: base64(json).hmac_hex
 func parseOAuthState(state string) (*OAuthStateData, error) {
+	// Split into payload and signature
+	dotIdx := strings.LastIndex(state, ".")
+	if dotIdx < 0 {
+		return nil, fmt.Errorf("invalid state format: missing signature")
+	}
+	payload := state[:dotIdx]
+	sig := state[dotIdx+1:]
+
+	// Verify HMAC signature
+	expectedSig := computeStateHMAC([]byte(payload))
+	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
+		return nil, fmt.Errorf("invalid state signature")
+	}
+
 	// Decode base64
-	stateJSON, err := base64.URLEncoding.DecodeString(state)
+	stateJSON, err := base64.URLEncoding.DecodeString(payload)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base64 encoding: %w", err)
 	}
@@ -773,11 +810,18 @@ func generatePKCE() (*PKCEData, error) {
 // ID Token Validation Functions
 // ============================================================================
 
-// validateIDToken validates the ID token JWT and returns the claims
-// Validates: structure, expiration, issuer, audience, and nonce
+// validateIDToken validates the ID token JWT and returns the claims.
+// Validates: structure, expiration, issuer (exact match), audience (exact match), and nonce.
+//
+// SECURITY: Token is obtained directly from the issuer's token endpoint over TLS
+// (exchangeCodeForToken → POST issuer/oauth/v2/token). It never passes through the
+// user-agent, so signature forgery requires compromising the TLS channel to the IdP.
+// ParseUnverified is acceptable here; adding JWKS verification is tracked as a
+// future hardening task.
 func validateIDToken(idToken string, expectedNonce string) (*IDTokenClaims, error) {
-	// Parse the ID token without verification first to get the claims
-	// Full signature verification is done by the middleware using JWKS
+	// Parse the ID token without signature verification.
+	// This is safe because the token was obtained directly from the issuer's
+	// token endpoint over TLS, not from an untrusted client.
 	token, _, err := new(jwt.Parser).ParseUnverified(idToken, &IDTokenClaims{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse ID token: %w", err)

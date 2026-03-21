@@ -33,8 +33,10 @@ import UptimePanel from './UptimePanel';
 import SearchModal from './modals/SearchModal';
 import UsageGauge from './UsageGauge';
 import UsageAlertBanner from './UsageAlertBanner';
+import WalletCard from './WalletCard';
 
 import { useDashboardData } from '../../hooks/dashboard/useDashboardData';
+import useWalletData from '../../hooks/common/useWalletData';
 import { useDashboardStats } from '../../hooks/dashboard/useDashboardStats';
 import { useDashboardCharts } from '../../hooks/dashboard/useDashboardCharts';
 import { useUsageGauge } from '../../hooks/dashboard/useUsageGauge';
@@ -76,6 +78,9 @@ const Dashboard = () => {
     dashboardData.setModelColors,
     dashboardData.t,
   );
+
+  // ========== 钱包数据 ==========
+  const { wallet, loading: walletLoading } = useWalletData();
 
   // ========== 用量仪表 ==========
   const gauge = useUsageGauge(userState, dashboardData.trendData);
@@ -193,6 +198,8 @@ const Dashboard = () => {
       <OnboardingChecklist
         serverAddress={statusState?.status?.server_address}
       />
+
+      <WalletCard wallet={wallet} loading={walletLoading} CARD_PROPS={CARD_PROPS} />
 
       <UsageAlertBanner gauge={gauge} />
       <UsageGauge

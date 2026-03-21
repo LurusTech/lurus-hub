@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/config"
@@ -418,6 +419,9 @@ func InitResources(ctx context.Context) error {
 	}
 
 	repo.CheckSetup()
+
+	// Initialize audit event writer for governance system
+	governance.SetAuditWriter(&repo.AuditEventRepo{})
 
 	// Initialize options, should after repo.InitDB()
 	repo.InitOptionMap()

@@ -21,7 +21,12 @@ type Log struct {
 	TokenId          int    `json:"token_id" gorm:"default:0;index"`
 	Group            string `json:"group" gorm:"index"`
 	Ip               string `json:"ip" gorm:"index;default:''"`
-	Other            string `json:"other"`
+	Other              string `json:"other"`
+	ChannelType        int    `json:"channel_type" gorm:"default:0;index:idx_gov_channel_type"`
+	RelayMode          int    `json:"relay_mode" gorm:"default:0;index:idx_gov_relay_mode"`
+	RequestFingerprint string `json:"request_fingerprint" gorm:"type:varchar(16);default:'';index:idx_gov_fingerprint"`
+	UpstreamModel      string `json:"upstream_model" gorm:"type:varchar(128);default:''"`
+	TotalLatencyMs     int    `json:"total_latency_ms" gorm:"default:0"`
 }
 
 // don't use iota, avoid change log type value
@@ -47,7 +52,13 @@ type RecordConsumeLogParams struct {
 	UseTimeSeconds   int                    `json:"use_time_seconds"`
 	IsStream         bool                   `json:"is_stream"`
 	Group            string                 `json:"group"`
-	Other            map[string]interface{} `json:"other"`
+	Other              map[string]interface{} `json:"other"`
+	ChannelType        int                    `json:"channel_type"`
+	RelayMode          int                    `json:"relay_mode"`
+	RequestFingerprint string                 `json:"request_fingerprint"`
+	UpstreamModel      string                 `json:"upstream_model"`
+	TotalLatencyMs     int                    `json:"total_latency_ms"`
+	LogDetailLevel     string                 `json:"-"` // Governance: "none" skips logging, "full" adds prompt preview
 }
 
 // LogQueryParams contains parameters for log queries

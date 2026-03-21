@@ -103,7 +103,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	scanner.Buffer(make([]byte, relayCfg.StreamScannerInitialBuffer), getScannerBufferSize())
 	scanner.Split(bufio.ScanLines)
-	SetEventStreamHeaders(c)
+	SetEventStreamHeaders(c, info)
 
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()

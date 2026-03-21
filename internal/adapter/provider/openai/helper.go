@@ -198,10 +198,14 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	responseId string, createAt int64, model string, systemFingerprint string,
 	usage *dto.Usage, containStreamUsage bool) {
 
+	// Compute perception extension for the final streaming chunk
+	estimatedQuota := helper.EstimateQuotaFromUsage(info, usage)
+	lurusExt := helper.ComputeLurusExtension(info, usage, estimatedQuota)
+
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		if info.ShouldIncludeUsage && !containStreamUsage {
-			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
+			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage, lurusExt)
 			response.SetSystemFingerprint(systemFingerprint)
 			helper.ObjectData(c, response)
 		}

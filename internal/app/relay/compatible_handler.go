@@ -14,8 +14,9 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
-	"github.com/QuantumNous/lurus-api/internal/app/relay/helper"
 	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
+	"github.com/QuantumNous/lurus-api/internal/app/relay/helper"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/model_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
@@ -467,7 +468,7 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		other["image_generation_call"] = true
 		other["image_generation_call_price"] = imageGenerationCallPrice
 	}
-	repo.RecordConsumeLog(ctx, relayInfo.UserId, repo.RecordConsumeLogParams{
+	logParams := repo.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
@@ -480,5 +481,7 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
-	})
+	}
+	governance.EnrichLogParams(ctx, relayInfo, &logParams)
+	repo.RecordConsumeLog(ctx, relayInfo.UserId, logParams)
 }

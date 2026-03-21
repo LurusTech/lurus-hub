@@ -60,6 +60,14 @@ func SetRelayRouter(router *gin.Engine) {
 	{
 		playgroundRouter.POST("/chat/completions", handler.Playground)
 	}
+	// Self-service billing API (authenticated via TokenAuth, no distribution needed)
+	billingRouter := router.Group("/v1/billing")
+	billingRouter.Use(middleware.TokenAuth())
+	{
+		billingRouter.GET("/balance", handler.SelfBillingBalance)
+		billingRouter.GET("/usage", handler.SelfBillingUsage)
+	}
+
 	relayV1Router := router.Group("/v1")
 	relayV1Router.Use(middleware.TokenAuth())
 	relayV1Router.Use(middleware.EntitlementCheck())

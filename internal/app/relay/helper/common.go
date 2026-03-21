@@ -6,9 +6,11 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -38,7 +40,7 @@ func FlushWriter(c *gin.Context) (err error) {
 	return nil
 }
 
-func SetEventStreamHeaders(c *gin.Context) {
+func SetEventStreamHeaders(c *gin.Context, info ...*relaycommon.RelayInfo) {
 	// 检查是否已经设置过头部
 	if _, exists := c.Get("event_stream_headers_set"); exists {
 		return
@@ -52,6 +54,14 @@ func SetEventStreamHeaders(c *gin.Context) {
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("Transfer-Encoding", "chunked")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
+
+	// Set known perception headers at stream start
+	if reqID := c.GetString(common.RequestIdKey); reqID != "" {
+		c.Writer.Header().Set("X-Request-Id", reqID)
+	}
+	if len(info) > 0 && info[0] != nil && info[0].ChannelMeta != nil {
+		c.Writer.Header().Set("X-Model-Provider", constant.GetChannelTypeName(info[0].ChannelType))
+	}
 }
 
 func ClaudeData(c *gin.Context, resp dto.ClaudeResponse) error {
@@ -198,7 +208,11 @@ func GenerateStopResponse(id string, createAt int64, model string, finishReason 
 	}
 }
 
-func GenerateFinalUsageResponse(id string, createAt int64, model string, usage dto.Usage) *dto.ChatCompletionsStreamResponse {
+func GenerateFinalUsageResponse(id string, createAt int64, model string, usage dto.Usage, ext ...*types.LurusUsageExtension) *dto.ChatCompletionsStreamResponse {
+	u := usage
+	if len(ext) > 0 && ext[0] != nil {
+		u.XLurus = ext[0]
+	}
 	return &dto.ChatCompletionsStreamResponse{
 		Id:                id,
 		Object:            "chat.completion.chunk",
@@ -206,6 +220,6 @@ func GenerateFinalUsageResponse(id string, createAt int64, model string, usage d
 		Model:             model,
 		SystemFingerprint: nil,
 		Choices:           make([]dto.ChatCompletionsStreamResponseChoice, 0),
-		Usage:             &usage,
+		Usage:             &u,
 	}
 }

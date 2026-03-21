@@ -7,11 +7,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/app"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
 
 	"github.com/gin-contrib/sessions"
@@ -266,6 +267,9 @@ func TokenAuth() func(c *gin.Context) {
 			}
 		}
 		if err != nil {
+			governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorToken, 0,
+				governance.ActionAuthFailed, governance.ResourceToken, 0,
+				fmt.Sprintf(`{"reason":"invalid_token"}`)))
 			abortWithOpenAiMessage(c, http.StatusUnauthorized, err.Error())
 			return
 		}
@@ -280,6 +284,9 @@ func TokenAuth() func(c *gin.Context) {
 				return
 			}
 			if common.IsIpInCIDRList(ip, allowIps) == false {
+				governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorToken, token.UserId,
+					governance.ActionAuthIPRejected, governance.ResourceToken, token.Id,
+					fmt.Sprintf(`{"ip":%q}`, clientIp)))
 				abortWithOpenAiMessage(c, http.StatusForbidden, "您的 IP 不在令牌允许访问的列表中")
 				return
 			}

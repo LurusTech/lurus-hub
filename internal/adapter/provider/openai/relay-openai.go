@@ -253,24 +253,38 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
 
+	// Compute perception extension before writing the response
+	estimatedQuota := helper.EstimateQuotaFromUsage(info, &simpleResponse.Usage)
+	lurusExt := helper.ComputeLurusExtension(info, &simpleResponse.Usage, estimatedQuota)
+
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
+		// Inject x_lurus into the response body for OpenAI format
+		var bodyMap map[string]interface{}
+		err = common.Unmarshal(responseBody, &bodyMap)
+		if err != nil {
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
 		if usageModified {
-			var bodyMap map[string]interface{}
-			err = common.Unmarshal(responseBody, &bodyMap)
-			if err != nil {
-				return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-			}
 			bodyMap["usage"] = simpleResponse.Usage
-			responseBody, _ = common.Marshal(bodyMap)
+		}
+		if lurusExt != nil {
+			if usageMap, ok := bodyMap["usage"].(map[string]interface{}); ok {
+				usageMap["x_lurus"] = lurusExt
+			} else {
+				// usage field is a struct (from usageModified), re-read after marshal
+				simpleResponse.Usage.XLurus = lurusExt
+				bodyMap["usage"] = simpleResponse.Usage
+			}
 		}
 		if forceFormat {
+			simpleResponse.Usage.XLurus = lurusExt
 			responseBody, err = common.Marshal(simpleResponse)
 			if err != nil {
 				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 			}
 		} else {
-			break
+			responseBody, _ = common.Marshal(bodyMap)
 		}
 	case types.RelayFormatClaude:
 		claudeResp := app.ResponseOpenAI2Claude(&simpleResponse, info)
@@ -287,6 +301,9 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		}
 		responseBody = geminiRespStr
 	}
+
+	// Set perception headers before the response is written
+	helper.SetPerceptionHeaders(c, info, lurusExt)
 
 	app.IOCopyBytesGracefully(c, resp, responseBody)
 

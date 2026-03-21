@@ -7,13 +7,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/QuantumNous/lurus-api/internal/adapter/provider/ollama"
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/adapter/provider/ollama"
 	"github.com/QuantumNous/lurus-api/internal/pkg/search"
-	"github.com/QuantumNous/lurus-api/internal/app"
 
 	"github.com/gin-gonic/gin"
 )
@@ -801,6 +802,8 @@ func DeleteChannel(c *gin.Context) {
 		return
 	}
 	repo.InitChannelCache()
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionChannelDeleted, governance.ResourceChannel, id, ""))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -851,6 +854,9 @@ func DisableTagChannels(c *gin.Context) {
 		return
 	}
 	repo.InitChannelCache()
+	tagBytes, _ := json.Marshal(map[string]string{"tag": channelTag.Tag})
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionChannelTagDisabled, governance.ResourceChannel, 0, string(tagBytes)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -954,6 +960,9 @@ func DeleteChannelBatch(c *gin.Context) {
 		return
 	}
 	repo.InitChannelCache()
+	batchBytes, _ := json.Marshal(map[string]interface{}{"count": len(channelBatch.Ids)})
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionChannelBatchDeleted, governance.ResourceChannel, 0, string(batchBytes)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -1071,6 +1080,8 @@ func UpdateChannel(c *gin.Context) {
 	}
 	repo.InitChannelCache()
 	app.ResetProxyClientCache()
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionChannelUpdated, governance.ResourceChannel, channel.Id, ""))
 	channel.Key = ""
 	clearChannelInfo(&channel.Channel)
 	c.JSON(http.StatusOK, gin.H{

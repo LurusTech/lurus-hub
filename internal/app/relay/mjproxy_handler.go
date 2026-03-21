@@ -17,8 +17,9 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
 	relayconstant "github.com/QuantumNous/lurus-api/internal/adapter/provider/constant"
-	"github.com/QuantumNous/lurus-api/internal/app/relay/helper"
 	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
+	"github.com/QuantumNous/lurus-api/internal/app/relay/helper"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/system_setting"
 
@@ -219,7 +220,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, constant.MjActionSwapFace)
 			other := app.GenerateMjOtherInfo(info, priceData)
-			repo.RecordConsumeLog(c, info.UserId, repo.RecordConsumeLogParams{
+			logParams := repo.RecordConsumeLogParams{
 				ChannelId: info.ChannelId,
 				ModelName: modelName,
 				TokenName: tokenName,
@@ -228,7 +229,9 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 				TokenId:   info.TokenId,
 				Group:     info.UsingGroup,
 				Other:     other,
-			})
+			}
+			governance.EnrichLogParams(c, info, &logParams)
+			repo.RecordConsumeLog(c, info.UserId, logParams)
 			repo.UpdateUserUsedQuotaAndRequestCount(info.UserId, priceData.Quota)
 			repo.UpdateChannelUsedQuota(info.ChannelId, priceData.Quota)
 		}
@@ -519,7 +522,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
 			other := app.GenerateMjOtherInfo(relayInfo, priceData)
-			repo.RecordConsumeLog(c, relayInfo.UserId, repo.RecordConsumeLogParams{
+			logParams := repo.RecordConsumeLogParams{
 				ChannelId: relayInfo.ChannelId,
 				ModelName: modelName,
 				TokenName: tokenName,
@@ -528,7 +531,9 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 				TokenId:   relayInfo.TokenId,
 				Group:     relayInfo.UsingGroup,
 				Other:     other,
-			})
+			}
+			governance.EnrichLogParams(c, relayInfo, &logParams)
+			repo.RecordConsumeLog(c, relayInfo.UserId, logParams)
 			repo.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, priceData.Quota)
 			repo.UpdateChannelUsedQuota(relayInfo.ChannelId, priceData.Quota)
 		}

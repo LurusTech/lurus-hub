@@ -5,9 +5,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 )
@@ -284,6 +285,8 @@ func CreateChannelV2(c *gin.Context) {
 
 	// Refresh channel cache
 	go repo.InitChannelCache()
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, tenantCtx.UserID,
+		governance.ActionChannelUpdated, governance.ResourceChannel, channel.Id, ""))
 
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
@@ -423,6 +426,8 @@ func UpdateChannelV2(c *gin.Context) {
 
 	// Refresh channel cache
 	go repo.InitChannelCache()
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, tenantCtx.UserID,
+		governance.ActionChannelUpdated, governance.ResourceChannel, existingChannel.Id, ""))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -488,6 +493,8 @@ func DeleteChannelV2(c *gin.Context) {
 
 	// Refresh channel cache
 	go repo.InitChannelCache()
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, tenantCtx.UserID,
+		governance.ActionChannelDeleted, governance.ResourceChannel, channelID, ""))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

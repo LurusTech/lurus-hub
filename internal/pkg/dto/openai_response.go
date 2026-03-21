@@ -237,6 +237,9 @@ type Usage struct {
 
 	// OpenRouter Params
 	Cost any `json:"cost,omitempty"`
+
+	// Lurus billing extension (omitted when nil for backward compatibility)
+	XLurus *types.LurusUsageExtension `json:"x_lurus,omitempty"`
 }
 
 type OpenAIVideoResponse struct {

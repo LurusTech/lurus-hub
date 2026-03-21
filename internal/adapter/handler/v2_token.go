@@ -4,10 +4,13 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/QuantumNous/lurus-api/internal/app"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"encoding/json"
+
 	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 )
@@ -165,6 +168,9 @@ func CreateTokenV2(c *gin.Context) {
 		})
 		return
 	}
+	detailBytes, _ := json.Marshal(map[string]string{"name": token.Name})
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, tenantCtx.UserID,
+		governance.ActionTokenCreated, governance.ResourceToken, token.Id, string(detailBytes)))
 
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
@@ -312,6 +318,8 @@ func UpdateTokenV2(c *gin.Context) {
 		return
 	}
 
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, tenantCtx.UserID,
+		governance.ActionTokenUpdated, governance.ResourceToken, tokenID, ""))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Token updated successfully",
@@ -371,6 +379,8 @@ func DeleteTokenV2(c *gin.Context) {
 		})
 		return
 	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, tenantCtx.UserID,
+		governance.ActionTokenDeleted, governance.ResourceToken, tokenID, ""))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

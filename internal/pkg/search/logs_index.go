@@ -30,6 +30,11 @@ type LogDocument struct {
 	ChannelName      string `json:"channel_name"`
 	Group            string `json:"group"`
 	IP               string `json:"ip"`
+	// Governance fields (Public/Internal tier — safe for search index)
+	ChannelType    int    `json:"channel_type"`
+	RelayMode      int    `json:"relay_mode"`
+	UpstreamModel  string `json:"upstream_model,omitempty"`
+	TotalLatencyMs int    `json:"total_latency_ms"`
 }
 
 // Log represents the log model (to avoid circular import with model package)
@@ -54,6 +59,10 @@ type Log struct {
 	Group            string
 	Ip               string
 	Other            string
+	ChannelType      int
+	RelayMode        int
+	UpstreamModel    string
+	TotalLatencyMs   int
 }
 
 // ConvertLogToDocument converts a Log to LogDocument
@@ -78,6 +87,10 @@ func ConvertLogToDocument(log *Log) *LogDocument {
 		ChannelName:      log.ChannelName,
 		Group:            log.Group,
 		IP:               log.Ip,
+		ChannelType:      log.ChannelType,
+		RelayMode:        log.RelayMode,
+		UpstreamModel:    log.UpstreamModel,
+		TotalLatencyMs:   log.TotalLatencyMs,
 	}
 }
 

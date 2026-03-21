@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/system_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
@@ -221,7 +222,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	}
 	other := GenerateWssOtherInfo(ctx, relayInfo, usage, modelRatio, groupRatio,
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
-	repo.RecordConsumeLog(ctx, relayInfo.UserId, repo.RecordConsumeLogParams{
+	logParams := repo.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.InputTokens,
 		CompletionTokens: usage.OutputTokens,
@@ -234,7 +235,9 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
-	})
+	}
+	governance.EnrichLogParams(ctx, relayInfo, &logParams)
+	repo.RecordConsumeLog(ctx, relayInfo.UserId, logParams)
 }
 
 func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) {
@@ -338,7 +341,7 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 		cacheCreationTokens5m, cacheCreationRatio5m,
 		cacheCreationTokens1h, cacheCreationRatio1h,
 		modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
-	repo.RecordConsumeLog(ctx, relayInfo.UserId, repo.RecordConsumeLogParams{
+	logParams := repo.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
@@ -351,8 +354,9 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
-	})
-
+	}
+	governance.EnrichLogParams(ctx, relayInfo, &logParams)
+	repo.RecordConsumeLog(ctx, relayInfo.UserId, logParams)
 }
 
 func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData) int {
@@ -463,7 +467,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 	other := GenerateAudioOtherInfo(ctx, relayInfo, usage, modelRatio, groupRatio,
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
-	repo.RecordConsumeLog(ctx, relayInfo.UserId, repo.RecordConsumeLogParams{
+	logParams := repo.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
@@ -476,7 +480,9 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
-	})
+	}
+	governance.EnrichLogParams(ctx, relayInfo, &logParams)
+	repo.RecordConsumeLog(ctx, relayInfo.UserId, logParams)
 }
 
 func PreConsumeTokenQuota(relayInfo *relaycommon.RelayInfo, quota int) error {

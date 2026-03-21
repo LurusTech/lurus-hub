@@ -1,13 +1,15 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
+	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 )
@@ -163,6 +165,10 @@ func AddToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	detailBytes, _ := json.Marshal(map[string]string{"name": cleanToken.Name})
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, c.GetInt("id"),
+		governance.ActionTokenCreated, governance.ResourceToken, cleanToken.Id,
+		string(detailBytes)))
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }
 
@@ -174,6 +180,8 @@ func DeleteToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, userId,
+		governance.ActionTokenDeleted, governance.ResourceToken, id, ""))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -218,6 +226,10 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	updateBytes, _ := json.Marshal(map[string]string{"name": cleanToken.Name})
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, userId,
+		governance.ActionTokenUpdated, governance.ResourceToken, cleanToken.Id,
+		string(updateBytes)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -244,6 +256,10 @@ func DeleteTokenBatch(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	batchBytes, _ := json.Marshal(map[string]interface{}{"count": count})
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, userId,
+		governance.ActionTokenBatchDeleted, governance.ResourceToken, 0,
+		string(batchBytes)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

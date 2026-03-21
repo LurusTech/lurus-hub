@@ -72,6 +72,17 @@ func SetApiV2Router(router *gin.Engine) {
 
 			adminRoute.GET("/stats", handler.GetSystemStatsV2)
 			adminRoute.POST("/switch/presets", handler.CreateSwitchPreset)
+
+			// Governance (rate-limited: heavy aggregation queries)
+			govRoute := adminRoute.Group("/governance")
+			govRoute.Use(middleware.CriticalRateLimit())
+			{
+				govRoute.GET("/channels", handler.GetGovernanceChannelDistribution)
+				govRoute.GET("/fingerprints", handler.GetGovernanceFingerprintStats)
+				govRoute.GET("/latency", handler.GetGovernanceLatencyStats)
+				govRoute.GET("/efficiency", handler.GetGovernanceEfficiencyStats)
+			}
+			adminRoute.GET("/audit/events", middleware.CriticalRateLimit(), handler.GetAuditEvents)
 		}
 	}
 }

@@ -39,15 +39,47 @@ const (
 func formatUserLogs(logs []*Log) {
 	for i := range logs {
 		logs[i].ChannelName = ""
+		// Strip Internal-tier governance struct fields (not visible to regular users).
+		logs[i].RequestFingerprint = ""
+		logs[i].UpstreamModel = ""
 		var otherMap map[string]interface{}
 		otherMap, _ = common.StrToMap(logs[i].Other)
 		if otherMap != nil {
-			// delete admin
-			delete(otherMap, "admin_info")
+			// Strip Internal-tier fields from Other map (governance classification).
+			for _, key := range internalOtherKeys {
+				delete(otherMap, key)
+			}
 		}
 		logs[i].Other = common.MapToJsonStr(otherMap)
 		logs[i].Id = logs[i].Id % 1024
 	}
+}
+
+// internalOtherKeys lists Other map keys classified as TierInternal that must
+// be stripped before returning logs to non-admin users.
+var internalOtherKeys = []string{
+	"admin_info",
+	"model_ratio",
+	"group_ratio",
+	"completion_ratio",
+	"cache_ratio",
+	"cache_creation_ratio",
+	"model_price",
+	"user_group_ratio",
+	"frt",
+	"is_model_mapped",
+	"upstream_model_name",
+	"web_search_price",
+	"web_search_call_count",
+	"file_search_price",
+	"file_search_call_count",
+	"image_ratio",
+	"audio_ratio",
+	"audio_completion_ratio",
+	"audio_input_price",
+	"image_generation_call_price",
+	"data_flow_source",
+	"data_flow_dest",
 }
 
 func GetLogByKey(key string) (logs []*Log, err error) {
@@ -156,6 +188,10 @@ func convertLogToSearchLog(log *Log) *search.Log {
 		Group:            log.Group,
 		Ip:               log.Ip,
 		Other:            log.Other,
+		ChannelType:      log.ChannelType,
+		RelayMode:        log.RelayMode,
+		UpstreamModel:    log.UpstreamModel,
+		TotalLatencyMs:   log.TotalLatencyMs,
 	}
 }
 
@@ -171,8 +207,15 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 			needRecordIp = true
 		}
 	}
+	// Extract governance fields from context for error logs.
+	channelType := c.GetInt("channel_type")
+	tenantId := c.GetString("tenant_id")
+	if tenantId == "" {
+		tenantId = "default"
+	}
 	log := &Log{
 		UserId:           userId,
+		TenantId:         tenantId,
 		Username:         username,
 		CreatedAt:        common.GetTimestamp(),
 		Type:             LogTypeError,
@@ -193,7 +236,8 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 			}
 			return ""
 		}(),
-		Other: otherStr,
+		Other:       otherStr,
+		ChannelType: channelType,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
@@ -209,6 +253,13 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if !common.LogConsumeEnabled {
 		return
 	}
+	// Content strategy: skip log record if user opted out via LogDetailLevel="none".
+	// NOTE: This only skips the log write — quota deduction and billing settlement
+	// have already occurred before RecordConsumeLog is called. Financial records
+	// remain intact; only the consume log entry is omitted.
+	if params.LogDetailLevel == "none" {
+		return
+	}
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
 	otherStr := common.MapToJsonStr(params.Other)
@@ -219,8 +270,13 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			needRecordIp = true
 		}
 	}
+	tenantId := c.GetString("tenant_id")
+	if tenantId == "" {
+		tenantId = "default"
+	}
 	log := &Log{
 		UserId:           userId,
+		TenantId:         tenantId,
 		Username:         username,
 		CreatedAt:        common.GetTimestamp(),
 		Type:             LogTypeConsume,
@@ -241,7 +297,12 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			}
 			return ""
 		}(),
-		Other: otherStr,
+		Other:              otherStr,
+		ChannelType:        params.ChannelType,
+		RelayMode:          params.RelayMode,
+		RequestFingerprint: params.RequestFingerprint,
+		UpstreamModel:      params.UpstreamModel,
+		TotalLatencyMs:     params.TotalLatencyMs,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
@@ -590,6 +651,18 @@ type LogStatEntry struct {
 }
 
 // GetUserLogStatInternal returns aggregated usage stats (by model or day).
+// GetUserLogStatByPeriod returns usage stats filtered by time period and grouped by model.
+func GetUserLogStatByPeriod(userID int, since time.Time) ([]LogStatEntry, error) {
+	var results []LogStatEntry
+	err := LOG_DB.Model(&Log{}).
+		Select("model_name as key, COUNT(*) as count, COALESCE(SUM(quota), 0) as total_quota").
+		Where("user_id = ? AND created_at >= ?", userID, since).
+		Group("model_name").
+		Order("total_quota DESC").
+		Find(&results).Error
+	return results, err
+}
+
 func GetUserLogStatInternal(userID int, groupBy string) ([]LogStatEntry, error) {
 	var results []LogStatEntry
 	var selectExpr, groupExpr string

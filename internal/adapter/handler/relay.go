@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/resilience"
 	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
 	"github.com/QuantumNous/lurus-api/internal/app/relay"
 	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
 	relayconstant "github.com/QuantumNous/lurus-api/internal/adapter/provider/constant"
@@ -138,6 +139,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
+	governance.EnrichContext(c, relayInfo.TokenId, relayInfo.OriginModelName)
+
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
 	// Avoid building huge CombineText (strings.Join) when token counting and sensitive check are both disabled.
@@ -152,6 +155,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		contains, words := app.CheckSensitiveText(meta.CombineText)
 		if contains {
 			logger.LogWarn(c, fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", ")))
+			governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorToken,
+				relayInfo.UserId, governance.ActionSensitiveBlocked, governance.ResourceUser,
+				relayInfo.TokenId, fmt.Sprintf(`{"word_count":%d}`, len(words))))
 			newAPIError = types.NewError(err, types.ErrorCodeSensitiveWordsDetected)
 			return
 		}
@@ -416,6 +422,10 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		other["channel_id"] = channelId
 		other["channel_name"] = c.GetString("channel_name")
 		other["channel_type"] = c.GetInt("channel_type")
+		other["relay_mode"] = c.GetInt("relay_mode")
+		if upModel := c.GetString("original_model"); upModel != "" {
+			other["upstream_model"] = upModel
+		}
 		adminInfo := make(map[string]interface{})
 		adminInfo["use_channel"] = c.GetStringSlice("use_channel")
 		isMultiKey := common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey)

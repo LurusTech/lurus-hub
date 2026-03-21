@@ -13,11 +13,12 @@ import (
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/adapter/provider"
 	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
 	relayconstant "github.com/QuantumNous/lurus-api/internal/adapter/provider/constant"
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -240,7 +241,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 				if hasUserGroupRatio {
 					other["user_group_ratio"] = userGroupRatio
 				}
-				repo.RecordConsumeLog(c, info.UserId, repo.RecordConsumeLogParams{
+				logParams := repo.RecordConsumeLogParams{
 					ChannelId: info.ChannelId,
 					ModelName: modelName,
 					TokenName: tokenName,
@@ -249,7 +250,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 					TokenId:   info.TokenId,
 					Group:     info.UsingGroup,
 					Other:     other,
-				})
+				}
+				governance.EnrichLogParams(c, info, &logParams)
+				repo.RecordConsumeLog(c, info.UserId, logParams)
 				repo.UpdateUserUsedQuotaAndRequestCount(info.UserId, quota)
 				repo.UpdateChannelUsedQuota(info.ChannelId, quota)
 			}

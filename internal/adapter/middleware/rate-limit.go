@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -51,6 +52,8 @@ func redisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark st
 		// See: https://stackoverflow.com/questions/50970900/why-is-time-since-returning-negative-durations-on-windows
 		if int64(nowTime.Sub(oldTime).Seconds()) < duration {
 			rdb.Expire(ctx, key, common.RateLimitKeyExpirationDuration)
+			retryAfter := duration - int64(nowTime.Sub(oldTime).Seconds())
+			setRateLimitResponseHeaders(c, maxRequestNum, 0, retryAfter)
 			c.Status(http.StatusTooManyRequests)
 			c.Abort()
 			return
@@ -65,6 +68,7 @@ func redisRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark st
 func memoryRateLimiter(c *gin.Context, maxRequestNum int, duration int64, mark string) {
 	key := mark + c.ClientIP()
 	if !inMemoryRateLimiter.Request(key, maxRequestNum, duration) {
+		setRateLimitResponseHeaders(c, maxRequestNum, 0, duration)
 		c.Status(http.StatusTooManyRequests)
 		c.Abort()
 		return
@@ -123,4 +127,10 @@ func RedemptionRateLimit() func(c *gin.Context) {
 // TopupRateLimit limits wallet-to-quota transfer to 5 per minute per IP.
 func TopupRateLimit() func(c *gin.Context) {
 	return rateLimitFactory(5, 60, "TU")
+}
+
+func setRateLimitResponseHeaders(c *gin.Context, limit int, remaining int, retryAfterSec int64) {
+	c.Writer.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+	c.Writer.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
+	c.Writer.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 }

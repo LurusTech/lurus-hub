@@ -2,14 +2,17 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/QuantumNous/lurus-api/internal/app/governance"
+	"github.com/QuantumNous/lurus-api/internal/domain/entity"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
 )
@@ -33,6 +36,18 @@ func DisableChannel(channelError types.ChannelError, reason string) {
 		subject := fmt.Sprintf("通道「%s」（#%d）已被禁用", channelError.ChannelName, channelError.ChannelId)
 		content := fmt.Sprintf("通道「%s」（#%d）已被禁用，原因：%s", channelError.ChannelName, channelError.ChannelId, reason)
 		NotifyRootUser(context.TODO(), formatNotifyType(channelError.ChannelId, common.ChannelStatusAutoDisabled), subject, content)
+		governance.RecordAuditEvent(&entity.AuditEvent{
+			TenantID:   "default",
+			Timestamp:  common.GetTimestamp(),
+			ActorType:  governance.ActorSystem,
+			Action:     governance.ActionChannelDisabled,
+			Resource:   governance.ResourceChannel,
+			ResourceID: channelError.ChannelId,
+			Details: func() string {
+				b, _ := json.Marshal(map[string]string{"name": channelError.ChannelName, "reason": reason})
+				return string(b)
+			}(),
+		})
 	}
 }
 

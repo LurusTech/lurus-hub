@@ -372,3 +372,59 @@ func SetupContextForToken(c *gin.Context, token *repo.Token, parts ...string) er
 	}
 	return nil
 }
+
+// PlaygroundAuth authenticates via session and auto-resolves the user's first
+// active token. This lets the web UI playground work without requiring users
+// to manually create and select API tokens.
+// If a Bearer token IS provided, it falls through to standard TokenAuth behavior.
+func PlaygroundAuth() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		// If Bearer token provided, use standard TokenAuth flow.
+		if authHeader := c.Request.Header.Get("Authorization"); authHeader != "" {
+			TokenAuth()(c)
+			return
+		}
+
+		// Session-based: authenticate user first.
+		session := sessions.Default(c)
+		id := session.Get("id")
+		if id == nil {
+			abortWithOpenAiMessage(c, http.StatusUnauthorized, "未登录，请先登录")
+			return
+		}
+		userId, ok := id.(int)
+		if !ok {
+			abortWithOpenAiMessage(c, http.StatusUnauthorized, "会话无效")
+			return
+		}
+
+		// Find user's first active token.
+		tokens, err := repo.GetAllUserTokens(userId, 0, 1)
+		if err != nil || len(tokens) == 0 {
+			// Auto-create a default token for the user.
+			token, createErr := repo.AutoCreateDefaultToken(userId)
+			if createErr != nil {
+				common.SysError(fmt.Sprintf("PlaygroundAuth: failed to auto-create token for user %d: %v", userId, createErr))
+				abortWithOpenAiMessage(c, http.StatusInternalServerError, "无法创建默认令牌")
+				return
+			}
+			tokens = []*repo.Token{token}
+			common.SysLog(fmt.Sprintf("PlaygroundAuth: auto-created default token for user %d", userId))
+		}
+
+		token := tokens[0]
+		if token.Status != common.TokenStatusEnabled {
+			abortWithOpenAiMessage(c, http.StatusForbidden, "令牌已禁用，请到令牌管理中启用或创建新令牌")
+			return
+		}
+
+		// Set up token context for relay.
+		c.Set("id", token.UserId)
+		if err := SetupContextForToken(c, token); err != nil {
+			abortWithOpenAiMessage(c, http.StatusInternalServerError, "令牌上下文初始化失败")
+			return
+		}
+
+		c.Next()
+	}
+}

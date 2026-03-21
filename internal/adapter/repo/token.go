@@ -180,6 +180,32 @@ func (token *Token) Insert() error {
 	return err
 }
 
+// AutoCreateDefaultToken creates a default unlimited-quota token for a user
+// so the playground and other session-based features work without manual setup.
+func AutoCreateDefaultToken(userId int) (*Token, error) {
+	key, err := common.GenerateRandomKey(48)
+	if err != nil {
+		return nil, fmt.Errorf("generate token key: %w", err)
+	}
+	token := &Token{
+		UserId:         userId,
+		TenantId:       "default",
+		Key:            key,
+		Status:         common.TokenStatusEnabled,
+		Name:           "default",
+		CreatedTime:    common.GetTimestamp(),
+		AccessedTime:   common.GetTimestamp(),
+		ExpiredTime:    -1, // never expires
+		RemainQuota:    0,
+		UnlimitedQuota: true,
+		Group:          "",
+	}
+	if err := token.Insert(); err != nil {
+		return nil, fmt.Errorf("insert token: %w", err)
+	}
+	return token, nil
+}
+
 // Update Make sure your token's fields is completed, because this will update non-zero values
 func (token *Token) Update() (err error) {
 	defer func() {

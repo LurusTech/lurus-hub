@@ -220,6 +220,11 @@ func SetApiRouter(router *gin.Engine) {
 			releaseRoute.GET("/:id/download/:artifact_id", middleware.DownloadRateLimit(), handler.DownloadArtifact)
 		}
 
+		// Current user endpoints (session auth — used by frontend after OAuth login)
+		apiRouter.GET("/user/self", middleware.UserAuth(), handler.GetSelf)
+		apiRouter.PUT("/user/self", middleware.UserAuth(), handler.UpdateSelf)
+		apiRouter.GET("/user/self/groups", middleware.UserAuth(), handler.GetUserGroups)
+
 		// User management (admin only)
 		userRoute := apiRouter.Group("/user")
 		userRoute.Use(middleware.AdminJWTAuth())

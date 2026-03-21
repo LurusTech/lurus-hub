@@ -7,7 +7,7 @@ import {
   showSuccess,
   updateAPI,
   setUserData,
-  setTenantSlug,
+  clearTenantSlug,
 } from '../../helpers';
 import { UserContext } from '../../context/User';
 import Loading from '../common/ui/Loading';
@@ -32,6 +32,9 @@ const ZitadelCallback = () => {
         if (!success) {
           throw new Error(message || t('登录失败'));
         }
+
+        // Ensure V2 mode is off — web UI uses v1 session routes exclusively.
+        clearTenantSlug();
 
         userDispatch({ type: 'login', payload: data });
         localStorage.setItem('user', JSON.stringify(data));

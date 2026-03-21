@@ -336,6 +336,18 @@ func ZitadelCallback(c *gin.Context) {
 		return
 	}
 
+	// Ensure user has at least one API token (auto-create if none).
+	// This eliminates the need for manual token creation before using
+	// the playground or API.
+	tokenCount, _ := repo.CountUserTokens(user.Id)
+	if tokenCount == 0 {
+		if defaultToken, err := repo.AutoCreateDefaultToken(user.Id); err != nil {
+			common.SysError(fmt.Sprintf("Failed to auto-create default token for user %d: %v", user.Id, err))
+		} else {
+			common.SysLog(fmt.Sprintf("Auto-created default token for user %s (id=%d, key_prefix=%s)", user.Username, user.Id, defaultToken.Key[:8]))
+		}
+	}
+
 	// Clear PKCE and nonce from session (one-time use)
 	session.Delete("pkce_code_verifier")
 	session.Delete("oauth_nonce")

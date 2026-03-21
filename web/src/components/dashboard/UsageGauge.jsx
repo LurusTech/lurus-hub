@@ -6,7 +6,7 @@
  */
 
 import React from 'react';
-import { Card, Progress, Button } from '@douyinfe/semi-ui';
+import { Card, Progress, Button, Skeleton } from '@douyinfe/semi-ui';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { renderQuota } from '../../helpers/render';
@@ -31,6 +31,41 @@ export default function UsageGauge({
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+
+  // Show skeleton while loading (if gauge data is not yet available)
+  if (loading && (!gauge || gauge.totalQuota === 0)) {
+    return (
+      <div className='mb-4'>
+        <Card
+          {...CARD_PROPS}
+          className='!rounded-2xl'
+          title={
+            <div className='flex items-center gap-2'>
+              <span>{t('额度用量')}</span>
+            </div>
+          }
+        >
+          <div className='space-y-3'>
+            <Skeleton.Paragraph
+              active
+              rows={1}
+              style={{ width: '60%', height: '16px' }}
+            />
+            <Skeleton.Paragraph
+              active
+              rows={1}
+              style={{ width: '100%', height: '8px', marginTop: '8px' }}
+            />
+            <Skeleton.Paragraph
+              active
+              rows={1}
+              style={{ width: '80%', height: '14px', marginTop: '8px' }}
+            />
+          </div>
+        </Card>
+      </div>
+    );
+  }
 
   if (!gauge || gauge.totalQuota === 0) return null;
 

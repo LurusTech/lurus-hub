@@ -207,6 +207,7 @@ const Dashboard = () => {
         getTrendSpec={getTrendSpec}
         CARD_PROPS={CARD_PROPS}
         CHART_CONFIG={CHART_CONFIG}
+        usageGauge={gauge}
       />
 
       {/* API信息和图表面板 */}

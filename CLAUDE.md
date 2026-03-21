@@ -23,84 +23,21 @@ LLM 统一网关（Multi-tenant AI Gateway）。OpenAI 兼容接口代理 30+ �
 ## Directory Structure
 
 ```
-cmd/server/main.go           # 启动、路由注册、graceful shutdown
+cmd/server/main.go           # Entry point
 internal/
-├── domain/entity/           # 领域实体 (channel, user, log, token, tenant, task, midjourney…)
-├── app/                     # 业务编排
-│   ├── relay/               # 各模态请求分发 (audio/claude/compatible/embedding/gemini/image/mjproxy/rerank/responses/websocket)
-│   │   └── helper/          # 公共 relay 工具 (price, model_mapped, stream_scanner, valid_request)
-│   ├── passkey/             # WebAuthn passkey (service/session/user)
-│   ├── billing_service.go   # 配额显示换算 (USD/CNY/Tokens)
-│   ├── quota.go             # 配额扣减与预扣
-│   ├── pre_consume_quota.go # relay 前置配额检查
-│   ├── channel.go           # 渠道选择与测试
-│   ├── channel_select.go    # 渠道负载均衡
-│   ├── token_service.go     # API Token 管理
-│   ├── log_service.go       # 日志写入
-│   ├── midjourney.go        # MJ 任务代理
-│   ├── user_service.go      # 用户业务逻辑
-│   └── sensitive.go         # 敏感词过滤
+├── domain/entity/           # Domain entities (channel, user, log, token, tenant, task…)
+├── app/                     # Business logic (relay/, passkey/, billing, quota, channel…)
+│   └── relay/               # Multi-modal request dispatch (30+ providers)
 ├── adapter/
-│   ├── handler/             # HTTP controllers
-│   │   ├── router/          # 路由注册 (api-router / api-v2-router / relay-router / internal-api-router / web-router / video-router / dashboard)
-│   │   ├── relay.go         # Relay 入口
-│   │   ├── internal_api.go  # /internal/* handlers
-│   │   ├── internal_api_ext.go  # /internal/* 扩展 (quota/balance)
-│   │   ├── billing.go       # 订阅/用量 handlers
-│   │   ├── v2_*.go          # v2 多租户 handlers
-│   │   └── *.go             # 其余业务 handlers
-│   ├── middleware/          # Gin middleware
-│   │   ├── auth.go          # UserAuth / AdminAuth / RootAuth
-│   │   ├── zitadel_auth.go  # Zitadel JWT 验证 (v2 API)
-│   │   ├── internal_api_auth.go  # InternalApiAuth + RequireScope
-│   │   ├── distributor.go   # Distribute (渠道分配)
-│   │   ├── rate-limit.go / model-rate-limit.go / email-verification-rate-limit.go
-│   │   ├── cors.go          # CORS
-│   │   ├── stats.go         # 请求统计
-│   │   └── *.go             # secure_verification, sensitive_action, turnstile…
-│   ├── repo/                # GORM repositories
-│   │   ├── channel.go / channel_cache.go
-│   │   ├── user.go / user_cache.go / user_mapping.go
-│   │   ├── token.go / token_cache.go
-│   │   ├── log.go
-│   │   ├── tenant.go / tenant_config.go / tenant_context.go / tenant_plugin.go
-│   │   ├── internal_api_key.go  # Scoped API keys
-│   │   ├── daily_quota_cron.go
-│   │   └── *.go             # ability, checkin, midjourney, pricing, task…
-│   └── provider/            # AI 供应商适配器
-│       ├── common/          # relay_info, relay_utils
-│       ├── constant/        # relay_mode
-│       └── <vendor>/        # openai, claude, gemini, aws, baidu, cloudflare, cohere, coze, dify,
-│                            # jina, minimax, mokaai, ollama, palm, perplexity, siliconflow,
-│                            # tencent, vertex, xunfei, zhipu, zhipu_4v
-├── lifecycle/lifecycle.go   # Task interface + Manager + TickerTask (background task lifecycle)
-└── pkg/
-    ├── common/              # 全局变量, Redis client, identity_client.go (HTTP), identity_grpc_client.go (gRPC→HTTP fallback)
-    ├── config/config.go     # 集中式配置 (从 env 加载, 启动时 fast-fail)
-    ├── constant/            # api_type, azure, cache_key, channel, context_key, endpoint_type, env, finish_reason, midjourney, multi_key_mode, setup, task
-    ├── dto/                 # 请求/响应 DTOs (audio, claude, embedding, gemini, openai_*, rerank, video…)
-    ├── types/               # 共享类型 (channel_error, relay_format, request_meta, rw_map, set, file_data, price_data)
-    ├── logger/logger.go     # 结构化日志
-    ├── metrics/             # Prometheus metrics + Gin middleware
-    ├── pool/pool.go         # goroutine pool
-    ├── search/              # Meilisearch (client, logs_index, channels_index, users_index, sync)
-    ├── setting/             # 运行时热更新设置
-    │   ├── ratio_setting/   # model_ratio, group_ratio, cache_ratio, expose_ratio, model_family
-    │   ├── model_setting/   # global, claude, gemini
-    │   ├── operation_setting/ # general, quota, monitor, checkin, tools
-    │   ├── system_setting/  # oidc, passkey, discord, legal, fetch_setting
-    │   ├── console_setting/ # config, validation
-    │   ├── reasoning/       # suffix
-    │   └── *.go             # auto_group, chat, midjourney, rate_limit, sensitive, user_usable_group
-    └── tracing/             # OpenTelemetry tracing + Gin middleware
+│   ├── handler/             # HTTP controllers + router/ (v1/v2/relay/internal/web)
+│   ├── middleware/          # Auth, CORS, rate-limit, distributor, stats
+│   ├── repo/                # GORM repositories (channel, user, token, tenant, log…)
+│   └── provider/            # AI vendor adapters (openai, claude, gemini, aws, +18 more)
+├── lifecycle/               # Background task lifecycle manager
+└── pkg/                     # Shared: config, common, constant, dto, types, logger, metrics, search, setting, tracing
 web/                         # React frontend (Bun)
-migrations/                  # PostgreSQL SQL migrations (001-004)
-deploy/k8s/                  # K8s manifests (deployment, service, ingress, hpa, pdb, servicemonitor, kustomization)
-deploy/k8s/staging/          # Staging overlay
-pkg/ionet/                   # io.net 客户端 (client, container, deployment, hardware)
-doc/runbook/                 # 运维 runbooks (database, deployment, ha-deployment, incident-response, staging, tenant-onboarding)
-doc/decisions/               # 架构决策记录 (ha-deployment, observability, v1-deprecation)
-doc/process.md               # 变更日志
+migrations/                  # PostgreSQL SQL migrations
+deploy/k8s/                  # K8s manifests + staging overlay
 ```
 
 ## Commands
@@ -145,7 +82,7 @@ ssh root@100.98.57.55 "kubectl describe pod -n lurus-system <pod>"
 | Meilisearch | `http://meilisearch:7700` (in-cluster) |
 | Outbound proxy | `http://10.42.1.1:10808` (for Gemini/OpenAI/外网 LLM) |
 | NO_PROXY | `*.svc,*.svc.cluster.local,*.lurus.cn,10.0.0.0/8,…` |
-| ALLOWED_ORIGINS | `https://www.lurus.cn,https://gushen.lurus.cn,https://webmail.lurus.cn` |
+| ALLOWED_ORIGINS | `https://www.lurus.cn,https://lucrum.lurus.cn,https://webmail.lurus.cn` |
 | MODEL_SYNC_FREQUENCY | `60` (分钟) |
 | Secret | `lurus-api-secrets` (SESSION_SECRET, SQL_DSN, ZITADEL_CLIENT_ID, IDENTITY_SESSION_SECRET, IDENTITY_SERVICE_INTERNAL_KEY, ALIPAY_*) |
 

@@ -47,4 +47,14 @@ var (
 			Help:      "Total billing outbox entries that permanently failed after max retries",
 		},
 	)
+
+	// BillingCircuitBreakerState tracks circuit breaker state (0=closed, 1=open, 2=halfopen).
+	BillingCircuitBreakerState = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: "billing",
+			Name:      "circuit_breaker_state",
+			Help:      "Circuit breaker state: 0=closed (healthy), 1=open (platform down), 2=halfopen (probing)",
+		},
+	)
 )

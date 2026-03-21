@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
 )
 
 // billingBreaker is a simple circuit breaker for platform billing calls.
@@ -42,6 +44,7 @@ func BillingBreakerAllow() error {
 	case 1: // open
 		if time.Since(billingBreaker.lastFailTime) >= billingBreaker.timeout {
 			billingBreaker.state = 2 // transition to half-open
+			metrics.BillingCircuitBreakerState.Set(2)
 			return nil
 		}
 		return fmt.Errorf("billing service temporarily unavailable (circuit open, retry in %ds)",
@@ -62,6 +65,7 @@ func BillingBreakerSuccess() {
 	}
 	billingBreaker.consecutiveFails = 0
 	billingBreaker.state = 0
+	metrics.BillingCircuitBreakerState.Set(0)
 }
 
 // BillingBreakerFailure records a failed billing call.
@@ -76,11 +80,13 @@ func BillingBreakerFailure() {
 	case 0: // closed
 		if billingBreaker.consecutiveFails >= billingBreaker.threshold {
 			billingBreaker.state = 1
+			metrics.BillingCircuitBreakerState.Set(1)
 			slog.Warn("billing circuit breaker OPEN — platform unreachable",
 				"consecutive_failures", billingBreaker.consecutiveFails)
 		}
 	case 2: // half-open probe failed
 		billingBreaker.state = 1
+		metrics.BillingCircuitBreakerState.Set(1)
 		slog.Warn("billing circuit breaker re-opened — probe failed")
 	}
 }

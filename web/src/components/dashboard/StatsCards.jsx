@@ -18,17 +18,33 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import { Card, Avatar, Skeleton } from '@douyinfe/semi-ui';
+import { Card, Avatar, Skeleton, Progress } from '@douyinfe/semi-ui';
 import { VChart } from '@visactor/react-vchart';
+import { useTranslation } from 'react-i18next';
+import { renderQuota } from '../../helpers/render';
+
+/**
+ * Determine progress bar color based on usage percentage.
+ * <=50% green, 50-80% yellow, >80% red.
+ */
+const getUsageColor = (percent) => {
+  if (percent > 80) return 'var(--semi-color-danger)';
+  if (percent > 50) return 'var(--semi-color-warning)';
+  return 'var(--semi-color-success)';
+};
+
 const StatsCards = ({
   groupedStatsData,
   loading,
   getTrendSpec,
   CARD_PROPS,
   CHART_CONFIG,
+  usageGauge,
 }) => {
+  const { t } = useTranslation();
+
   return (
-    <div className='mb-4'>
+    <div className='mb-4' aria-live='polite'>
       <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4'>
         {groupedStatsData.map((group, idx) => (
           <Card
@@ -86,6 +102,62 @@ const StatsCards = ({
                   )}
                 </div>
               ))}
+
+              {/* Usage progress bar — only in the first card (account data) */}
+              {idx === 0 && (
+                <div className='pt-2 border-t border-gray-200/50'>
+                  <Skeleton
+                    loading={loading}
+                    active
+                    placeholder={
+                      <Skeleton.Paragraph
+                        active
+                        rows={2}
+                        style={{
+                          width: '100%',
+                          height: '12px',
+                          marginTop: '4px',
+                        }}
+                      />
+                    }
+                  >
+                    {usageGauge && usageGauge.totalQuota > 0 ? (
+                      <>
+                        <div className='flex justify-between items-center mb-1'>
+                          <span className='text-xs text-gray-500'>
+                            {t('额度已使用')} {usageGauge.usagePercent}%
+                          </span>
+                          <span
+                            className='text-xs font-mono font-semibold'
+                            style={{
+                              color: getUsageColor(usageGauge.usagePercent),
+                            }}
+                          >
+                            {renderQuota(usageGauge.usedQuota)} /{' '}
+                            {renderQuota(usageGauge.totalQuota)}
+                          </span>
+                        </div>
+                        <Progress
+                          percent={usageGauge.usagePercent}
+                          showInfo={false}
+                          stroke={getUsageColor(usageGauge.usagePercent)}
+                          size='small'
+                          style={{ height: 6 }}
+                        />
+                        <div className='text-xs text-gray-400 mt-1'>
+                          {t('本月已使用')}{' '}
+                          {renderQuota(usageGauge.usedQuota)} /{' '}
+                          {renderQuota(usageGauge.totalQuota)}
+                        </div>
+                      </>
+                    ) : (
+                      <div className='text-xs text-gray-400 text-center py-1'>
+                        {t('暂无用量数据')}
+                      </div>
+                    )}
+                  </Skeleton>
+                </div>
+              )}
             </div>
           </Card>
         ))}

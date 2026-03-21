@@ -132,7 +132,7 @@ spec:
               value: "production"
             # CORS allowed origins (comma-separated)
             - name: ALLOWED_ORIGINS
-              value: "https://www.lurus.cn,https://gushen.lurus.cn,https://webmail.lurus.cn"
+              value: "https://www.lurus.cn,https://lucrum.lurus.cn,https://webmail.lurus.cn"
             # MinIO object storage for release artifacts
             - name: MINIO_ENDPOINT
               value: "minio-api.storage.svc:9000"
@@ -172,6 +172,9 @@ spec:
             - name: IDENTITY_GRPC_ADDR
               value: "platform-core.lurus-platform.svc.cluster.local:18105"
             # Identity auth redirect (set "true" to redirect register/login/topup to identity)
+            # Unified billing: pre-auth/settle/release via platform wallet
+            - name: BILLING_UNIFIED_ENABLED
+              value: "true"
             - name: IDENTITY_AUTH_REDIRECT
               value: "false"
             - name: IDENTITY_PUBLIC_URL

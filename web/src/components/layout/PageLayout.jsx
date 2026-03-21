@@ -185,6 +185,7 @@ const PageLayout = () => {
           }}
         >
           <Content
+            role='main'
             style={{
               flex: '1 0 auto',
               overflowY: isMobile ? 'visible' : 'hidden',

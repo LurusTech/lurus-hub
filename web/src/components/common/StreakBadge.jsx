@@ -1,0 +1,257 @@
+/**
+ * Daily Streak Badge
+ *
+ * Displays a fire icon + consecutive day count in the header.
+ * Hover shows a Semi UI Tooltip with streak details.
+ * CSS-only bounce animation on milestone (7/30 days).
+ *
+ * Storage: localStorage key "lurus-api:streak"
+ * Each product stores streak independently.
+ */
+
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { Tooltip } from '@douyinfe/semi-ui';
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const STORAGE_KEY = 'lurus-api:streak';
+const MILESTONE_7 = 7;
+const MILESTONE_30 = 30;
+const CELEBRATION_DURATION_MS = 1500;
+
+// =============================================================================
+// Streak Logic (pure functions)
+// =============================================================================
+
+/** Return today's date as YYYY-MM-DD in local timezone */
+function getLocalDateString() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/** Check if dateB is exactly 1 calendar day after dateA */
+function isConsecutiveDay(dateA, dateB) {
+  const a = new Date(dateA + 'T00:00:00');
+  const b = new Date(dateB + 'T00:00:00');
+  const diffMs = b.getTime() - a.getTime();
+  const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
+  return diffDays === 1;
+}
+
+/** Load streak state from localStorage */
+function loadStreak() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Save streak state to localStorage */
+function saveStreak(state) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Quota exceeded or restricted environment — fail silently
+  }
+}
+
+/** Record activity and return updated state */
+function recordActivity(current) {
+  const today = getLocalDateString();
+  const state = current || {
+    currentStreak: 0,
+    lastActiveDate: '',
+    longestStreak: 0,
+    rewards: [],
+  };
+
+  // Already recorded today — no change
+  if (state.lastActiveDate === today) return state;
+
+  const updated = { ...state };
+
+  if (isConsecutiveDay(state.lastActiveDate, today)) {
+    updated.currentStreak = state.currentStreak + 1;
+  } else {
+    updated.currentStreak = 1;
+  }
+
+  updated.lastActiveDate = today;
+
+  if (updated.currentStreak > updated.longestStreak) {
+    updated.longestStreak = updated.currentStreak;
+  }
+
+  // Milestone rewards
+  const milestones = [MILESTONE_7, MILESTONE_30];
+  for (const threshold of milestones) {
+    if (updated.currentStreak === threshold) {
+      const label =
+        threshold === 7
+          ? `7 \u5929\u8FDE\u7EED\u7B7E\u5230\u8FBE\u6210 (${today})`
+          : `30 \u5929\u8FDE\u7EED\u7B7E\u5230\u8FBE\u6210 (${today})`;
+      if (!updated.rewards.includes(label)) {
+        updated.rewards = [...updated.rewards, label];
+      }
+    }
+  }
+
+  return updated;
+}
+
+// =============================================================================
+// CSS (injected once)
+// =============================================================================
+
+const STYLE_ID = 'streak-badge-styles';
+
+function ensureStyles() {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById(STYLE_ID)) return;
+
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+  style.textContent = `
+    @keyframes streak-bounce {
+      0%, 100% { transform: scale(1); }
+      25% { transform: scale(1.3); }
+      50% { transform: scale(0.95); }
+      75% { transform: scale(1.15); }
+    }
+    @keyframes streak-particle {
+      0% { opacity: 1; transform: translate(0, 0) scale(1); }
+      100% { opacity: 0; transform: translate(var(--tx), var(--ty)) scale(0); }
+    }
+    .streak-celebrate-api { animation: streak-bounce 0.6s ease-in-out; }
+    .streak-confetti-api {
+      position: absolute; inset: 0; pointer-events: none;
+    }
+    .streak-confetti-api::before,
+    .streak-confetti-api::after {
+      content: ''; position: absolute; width: 4px; height: 4px;
+      border-radius: 50%; animation: streak-particle 0.8s ease-out forwards;
+    }
+    .streak-confetti-api::before {
+      background: #f59e0b; top: 0; left: 50%; --tx: -8px; --ty: -12px;
+    }
+    .streak-confetti-api::after {
+      background: #ef4444; top: 0; right: 30%; --tx: 10px; --ty: -10px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .streak-celebrate-api { animation: none; }
+      .streak-confetti-api::before,
+      .streak-confetti-api::after { animation: none; }
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+// =============================================================================
+// Component
+// =============================================================================
+
+const StreakBadge = () => {
+  const [streak, setStreak] = useState(null);
+  const [celebrating, setCelebrating] = useState(false);
+  const prevStreakRef = useRef(0);
+
+  // Inject styles once
+  useEffect(() => {
+    ensureStyles();
+  }, []);
+
+  // Load and record on mount
+  useEffect(() => {
+    const current = loadStreak();
+    const updated = recordActivity(current);
+    saveStreak(updated);
+    setStreak(updated);
+  }, []);
+
+  // Detect milestone celebration
+  useEffect(() => {
+    if (!streak) return;
+    const prev = prevStreakRef.current;
+    if (
+      streak.currentStreak !== prev &&
+      (streak.currentStreak === MILESTONE_7 || streak.currentStreak === MILESTONE_30)
+    ) {
+      setCelebrating(true);
+      const timer = setTimeout(() => setCelebrating(false), CELEBRATION_DURATION_MS);
+      prevStreakRef.current = streak.currentStreak;
+      return () => clearTimeout(timer);
+    }
+    prevStreakRef.current = streak.currentStreak;
+  }, [streak]);
+
+  const progressMessage = useMemo(() => {
+    if (!streak) return '';
+    const s = streak.currentStreak;
+    if (s < MILESTONE_7) return `\u518D\u575A\u6301 ${MILESTONE_7 - s} \u5929\u89E3\u9501 7 \u5929\u6210\u5C31`;
+    if (s < MILESTONE_30) return `\u518D\u575A\u6301 ${MILESTONE_30 - s} \u5929\u89E3\u9501 30 \u5929\u5927\u5956`;
+    return '\u5DF2\u89E3\u9501\u5168\u90E8\u91CC\u7A0B\u7891';
+  }, [streak]);
+
+  // Don't render until loaded, or if no activity yet
+  if (!streak || streak.currentStreak <= 0) return null;
+
+  const tooltipContent = (
+    <div style={{ maxWidth: 200 }}>
+      <div style={{ fontWeight: 600, marginBottom: 4 }}>
+        {'\uD83D\uDD25'} {'\u8FDE\u7EED\u7B7E\u5230'} {streak.currentStreak} {'\u5929'}
+      </div>
+      <div style={{ fontSize: 12, opacity: 0.7 }}>
+        {progressMessage}
+      </div>
+      {streak.longestStreak > streak.currentStreak && (
+        <div style={{ fontSize: 12, opacity: 0.5, marginTop: 2 }}>
+          {'\u5386\u53F2\u6700\u957F'}: {streak.longestStreak} {'\u5929'}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <Tooltip content={tooltipContent} position="bottom">
+      <button
+        className={celebrating ? 'streak-celebrate-api' : ''}
+        style={{
+          position: 'relative',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          padding: '4px 8px',
+          border: 'none',
+          background: 'transparent',
+          borderRadius: 6,
+          cursor: 'default',
+          transition: 'background 0.15s',
+          fontSize: 14,
+        }}
+        aria-label={`\u8FDE\u7EED\u7B7E\u5230 ${streak.currentStreak} \u5929`}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(var(--semi-grey-9), 0.08)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'transparent';
+        }}
+      >
+        <span role="img" aria-hidden="true">{'\uD83D\uDD25'}</span>
+        <span style={{ fontFamily: 'monospace', fontWeight: 500, fontSize: 13 }}>
+          {streak.currentStreak}
+        </span>
+        {celebrating && <span className="streak-confetti-api" aria-hidden="true" />}
+      </button>
+    </Tooltip>
+  );
+};
+
+export default StreakBadge;

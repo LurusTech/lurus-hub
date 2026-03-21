@@ -34,7 +34,7 @@ export default function UsageAlertBanner({ gauge }) {
 
   if (gauge.level === 'critical') {
     return (
-      <div className='mb-4'>
+      <div className='mb-4' role='alert' aria-live='assertive'>
         <Banner
           type='danger'
           fullMode={false}
@@ -56,7 +56,7 @@ export default function UsageAlertBanner({ gauge }) {
 
   if (gauge.level === 'red') {
     return (
-      <div className='mb-4'>
+      <div className='mb-4' role='alert' aria-live='assertive'>
         <Banner
           type='danger'
           fullMode={false}
@@ -78,7 +78,7 @@ export default function UsageAlertBanner({ gauge }) {
 
   // Yellow
   return (
-    <div className='mb-4'>
+    <div className='mb-4' role='alert' aria-live='polite'>
       <Banner
         type='warning'
         fullMode={false}

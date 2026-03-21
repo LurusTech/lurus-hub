@@ -281,6 +281,8 @@ var defaultModelPrice = map[string]float64{
 	"suno_lyrics":                    0.01,
 	"dall-e-3":                       0.04,
 	"imagen-3.0-generate-002":        0.03,
+	"imagen-4.0-generate-001":        0.04, // Google Imagen 4 standard
+	"imagen-4.0-ultra-generate-001":  0.06, // Google Imagen 4 Ultra
 	"black-forest-labs/flux-1.1-pro": 0.04,
 	"gpt-4-gizmo-*":                  0.1,
 	"mj_video":                       0.8,

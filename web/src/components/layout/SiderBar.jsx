@@ -373,7 +373,8 @@ const SiderBar = ({ onNavigate = () => {} }) => {
   };
 
   return (
-    <div
+    <nav
+      aria-label='Sidebar navigation'
       className='sidebar-container'
       style={{
         width: 'var(--sidebar-current-width)',
@@ -489,11 +490,13 @@ const SiderBar = ({ onNavigate = () => {} }) => {
             theme='outline'
             type='tertiary'
             size='small'
+            aria-label={collapsed ? t('展开侧边栏') : t('收起侧边栏')}
             icon={
               <ChevronLeft
                 size={16}
                 strokeWidth={2.5}
                 color='var(--semi-color-text-2)'
+                aria-hidden='true'
                 style={{
                   transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)',
                 }}
@@ -511,7 +514,7 @@ const SiderBar = ({ onNavigate = () => {} }) => {
           </Button>
         </SkeletonWrapper>
       </div>
-    </div>
+    </nav>
   );
 };
 

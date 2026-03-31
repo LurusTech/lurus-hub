@@ -195,7 +195,7 @@ func run(ctx context.Context, startTime time.Time) error {
 
 	// pprof server
 	if os.Getenv("ENABLE_PPROF") == "true" {
-		pprofServer := &http.Server{Addr: "0.0.0.0:8005", Handler: nil}
+		pprofServer := &http.Server{Addr: "127.0.0.1:8005", Handler: nil}
 		g.Go(func() error {
 			common.SysLog("pprof enabled on :8005")
 			if err := pprofServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

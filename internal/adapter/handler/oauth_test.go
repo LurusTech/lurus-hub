@@ -76,6 +76,7 @@ func TestOAuthState_UniqueNonce(t *testing.T) {
 }
 
 func TestOAuthState_ParseInvalidBase64(t *testing.T) {
+	// Missing signature separator should fail
 	_, err := parseOAuthState("!!!not-base64!!!")
 	if err == nil {
 		t.Fatal("expected error for invalid base64 state")
@@ -83,8 +84,10 @@ func TestOAuthState_ParseInvalidBase64(t *testing.T) {
 }
 
 func TestOAuthState_ParseInvalidJSON(t *testing.T) {
-	encoded := base64.URLEncoding.EncodeToString([]byte("not json"))
-	_, err := parseOAuthState(encoded)
+	payload := base64.URLEncoding.EncodeToString([]byte("not json"))
+	sig := computeStateHMAC([]byte(payload))
+	signed := payload + "." + sig
+	_, err := parseOAuthState(signed)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON state")
 	}
@@ -101,9 +104,11 @@ func TestOAuthState_ParseValidManual(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}
-	encoded := base64.URLEncoding.EncodeToString(data)
+	payload := base64.URLEncoding.EncodeToString(data)
+	sig := computeStateHMAC([]byte(payload))
+	signed := payload + "." + sig
 
-	parsed, err := parseOAuthState(encoded)
+	parsed, err := parseOAuthState(signed)
 	if err != nil {
 		t.Fatalf("parseOAuthState() returned error: %v", err)
 	}
@@ -112,6 +117,39 @@ func TestOAuthState_ParseValidManual(t *testing.T) {
 	}
 	if parsed.Nonce != "test-nonce-123" {
 		t.Errorf("Nonce mismatch: got %q", parsed.Nonce)
+	}
+}
+
+func TestOAuthState_TamperedSignature(t *testing.T) {
+	// Generate a valid state
+	state, _, err := generateOAuthState("tenant", "/callback")
+	if err != nil {
+		t.Fatalf("generateOAuthState() failed: %v", err)
+	}
+
+	// Tamper with the signature
+	tampered := state + "ff"
+	_, err = parseOAuthState(tampered)
+	if err == nil {
+		t.Fatal("expected error for tampered state signature, got nil")
+	}
+}
+
+func TestOAuthState_MissingSignature(t *testing.T) {
+	// State without signature separator
+	stateData := OAuthStateData{
+		TenantSlug:  "tenant",
+		RedirectURL: "/page",
+		Nonce:       "nonce",
+		CreatedAt:   time.Now(),
+	}
+	data, _ := json.Marshal(stateData)
+	payload := base64.URLEncoding.EncodeToString(data)
+
+	// No HMAC appended
+	_, err := parseOAuthState(payload)
+	if err == nil {
+		t.Fatal("expected error for unsigned state, got nil")
 	}
 }
 
@@ -199,10 +237,12 @@ func TestOAuthCallback_ExpiredState(t *testing.T) {
 		TenantSlug:  "expired-tenant",
 		RedirectURL: "/home",
 		Nonce:       "nonce-expired",
-		CreatedAt:   time.Now().Add(-10 * time.Minute), // expired
+		CreatedAt:   time.Now().Add(-10*time.Minute - 5*time.Second), // expired (beyond 10min threshold)
 	}
 	stateJSON, _ := json.Marshal(stateData)
-	state := base64.URLEncoding.EncodeToString(stateJSON)
+	payload := base64.URLEncoding.EncodeToString(stateJSON)
+	sig := computeStateHMAC([]byte(payload))
+	state := payload + "." + sig
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v2/oauth/callback?code=authcode&state="+state, nil)
 	w := httptest.NewRecorder()

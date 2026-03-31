@@ -82,7 +82,7 @@ ssh root@100.98.57.55 "kubectl describe pod -n lurus-system <pod>"
 | Meilisearch | `http://meilisearch:7700` (in-cluster) |
 | Outbound proxy | `http://10.42.1.1:10808` (for Gemini/OpenAI/外网 LLM) |
 | NO_PROXY | `*.svc,*.svc.cluster.local,*.lurus.cn,10.0.0.0/8,…` |
-| ALLOWED_ORIGINS | `https://www.lurus.cn,https://lucrum.lurus.cn,https://webmail.lurus.cn` |
+| ALLOWED_ORIGINS | `https://www.lurus.cn,https://lucrum.lurus.cn` |
 | MODEL_SYNC_FREQUENCY | `60` (分钟) |
 | Secret | `lurus-api-secrets` (SESSION_SECRET, SQL_DSN, ZITADEL_CLIENT_ID, IDENTITY_SESSION_SECRET, IDENTITY_SERVICE_INTERNAL_KEY, ALIPAY_*) |
 

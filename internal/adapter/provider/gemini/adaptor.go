@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,8 +53,10 @@ func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.AudioRequest) (io.Reader, error) {
-	//TODO implement me
-	return nil, errors.New("not implemented")
+	if info.RelayMode == constant.RelayModeAudioSpeech {
+		return ConvertAudioRequestToGemini(request)
+	}
+	return nil, errors.New("gemini adapter only supports TTS (audio speech), not transcription")
 }
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
@@ -84,12 +87,22 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 	}
 
 	// build gemini imagen request
+	instance := dto.GeminiImageInstance{
+		Prompt: request.Prompt,
+	}
+
+	// Handle image-to-image: pass reference image if provided
+	if len(request.Image) > 0 {
+		var imageB64 string
+		if err := json.Unmarshal(request.Image, &imageB64); err == nil && imageB64 != "" {
+			instance.Image = &dto.GeminiImageData{
+				BytesBase64Encoded: imageB64,
+			}
+		}
+	}
+
 	geminiRequest := dto.GeminiImageRequest{
-		Instances: []dto.GeminiImageInstance{
-			{
-				Prompt: request.Prompt,
-			},
-		},
+		Instances:  []dto.GeminiImageInstance{instance},
 		Parameters: dto.GeminiImageParameters{
 			SampleCount:      int(request.N),
 			AspectRatio:      aspectRatio,
@@ -147,6 +160,11 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 	if strings.HasPrefix(info.UpstreamModelName, "imagen") {
 		return fmt.Sprintf("%s/%s/models/%s:predict", info.ChannelBaseUrl, version, info.UpstreamModelName), nil
+	}
+
+	// TTS models use generateContent with audio output modality
+	if info.RelayMode == constant.RelayModeAudioSpeech {
+		return fmt.Sprintf("%s/%s/models/%s:generateContent", info.ChannelBaseUrl, version, info.UpstreamModelName), nil
 	}
 
 	if strings.HasPrefix(info.UpstreamModelName, "text-embedding") ||
@@ -259,6 +277,10 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 
 	if strings.HasPrefix(info.UpstreamModelName, "imagen") {
 		return GeminiImageHandler(c, info, resp)
+	}
+
+	if info.RelayMode == constant.RelayModeAudioSpeech {
+		return GeminiTTSHandler(c, info, resp)
 	}
 
 	// check if the model is an embedding model

@@ -336,10 +336,12 @@ func TestOAuthState_TimingAttack(t *testing.T) {
 		TenantSlug:  "test-tenant",
 		RedirectURL: "/dashboard",
 		Nonce:       "test-nonce",
-		CreatedAt:   time.Now().Add(-5*time.Minute - 1*time.Second), // Just expired
+		CreatedAt:   time.Now().Add(-10*time.Minute - 1*time.Second), // Just expired (10min + 1s)
 	}
 	stateJSON, _ := json.Marshal(stateData)
-	state := base64.URLEncoding.EncodeToString(stateJSON)
+	payload := base64.URLEncoding.EncodeToString(stateJSON)
+	sig := computeStateHMAC([]byte(payload))
+	state := payload + "." + sig
 
 	router := gin.New()
 	router.GET("/api/v2/oauth/callback", ZitadelCallback)

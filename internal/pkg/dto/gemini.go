@@ -387,7 +387,12 @@ type GeminiImageRequest struct {
 }
 
 type GeminiImageInstance struct {
-	Prompt string `json:"prompt"`
+	Prompt string           `json:"prompt"`
+	Image  *GeminiImageData `json:"image,omitempty"`
+}
+
+type GeminiImageData struct {
+	BytesBase64Encoded string `json:"bytesBase64Encoded"`
 }
 
 type GeminiImageParameters struct {

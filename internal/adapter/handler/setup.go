@@ -24,9 +24,9 @@ type SetupRequest struct {
 
 func GetSetup(c *gin.Context) {
 	setup := Setup{
-		Status: constant.Setup,
+		Status: constant.IsSetup(),
 	}
-	if constant.Setup {
+	if constant.IsSetup() {
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    setup,
@@ -50,14 +50,24 @@ func GetSetup(c *gin.Context) {
 }
 
 func PostSetup(c *gin.Context) {
-	// Check if setup is already completed
-	if constant.Setup {
+	// Atomically claim the setup slot. Only ONE request can win;
+	// all others are rejected immediately, eliminating the TOCTOU race.
+	if !constant.TryClaimSetup() {
 		c.JSON(200, gin.H{
 			"success": false,
 			"message": "系统已经初始化完成",
 		})
 		return
 	}
+
+	// From here on, this goroutine is the sole owner of setup.
+	// If anything fails, revert so setup can be retried.
+	committed := false
+	defer func() {
+		if !committed {
+			constant.SetSetup(false)
+		}
+	}()
 
 	// Check if root user already exists
 	rootExists := repo.RootUserExists()
@@ -123,9 +133,7 @@ func PostSetup(c *gin.Context) {
 		return
 	}
 
-	// Update setup status
-	constant.Setup = true
-
+	// Persist the setup record (atomic flag already set by TryClaimSetup)
 	setup := repo.Setup{
 		Version:       common.Version,
 		InitializedAt: time.Now().Unix(),
@@ -139,6 +147,7 @@ func PostSetup(c *gin.Context) {
 		return
 	}
 
+	committed = true
 	c.JSON(200, gin.H{
 		"success": true,
 		"message": "系统初始化成功",

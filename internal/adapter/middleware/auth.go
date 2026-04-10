@@ -187,7 +187,15 @@ func authHelper(c *gin.Context, minRole int) {
 	c.Request = c.Request.WithContext(common.WithUserID(c.Request.Context(), fmt.Sprintf("%v", id)))
 
 	// Inject tenant context for v1 API tenant isolation
-	userId, _ := id.(int)
+	userId, ok := id.(int)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "invalid session data: user ID is not an integer",
+		})
+		c.Abort()
+		return
+	}
 	tenantId := "default"
 	if userCache, cacheErr := repo.GetUserCache(userId); cacheErr == nil && userCache.TenantId != "" {
 		tenantId = userCache.TenantId

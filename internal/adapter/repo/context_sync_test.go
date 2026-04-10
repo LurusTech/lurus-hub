@@ -248,8 +248,6 @@ func TestSyncOptionsWithContext_ShortFrequency(t *testing.T) {
 	cleanup := SetupTestDB(t)
 	defer cleanup()
 
-	var syncCount atomic.Int32
-
 	// We can't easily count syncs without modifying the function,
 	// but we can at least verify it handles short intervals
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -270,8 +268,6 @@ func TestSyncOptionsWithContext_ShortFrequency(t *testing.T) {
 		t.Fatal("did not exit after timeout")
 	}
 
-	// Verify syncCount is reasonable (this is a weak assertion)
-	_ = syncCount
 }
 
 // Stress test: many concurrent syncs

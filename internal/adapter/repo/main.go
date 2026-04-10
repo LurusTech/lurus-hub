@@ -95,15 +95,15 @@ func CheckSetup() {
 			if err != nil {
 				common.SysLog("failed to create setup record: " + err.Error())
 			}
-			constant.Setup = true
+			constant.SetSetup(true)
 		} else {
 			common.SysLog("system is not initialized and no root user exists")
-			constant.Setup = false
+			constant.SetSetup(false)
 		}
 	} else {
 		// Setup record exists, system is initialized
 		common.SysLog("system is already initialized at: " + time.Unix(setup.InitializedAt, 0).String())
-		constant.Setup = true
+		constant.SetSetup(true)
 	}
 }
 

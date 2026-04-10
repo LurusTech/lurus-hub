@@ -1,12 +1,26 @@
-# lurus-api
+# Lurus Hub (2b-svc-api)
 
-LLM 统一网关（Multi-tenant AI Gateway）。OpenAI 兼容接口代理 30+ 供应商，内置计费、配额、渠道管理、多租户、全文搜索。
+AI 数据处理枢纽 — Platform 产品组核心成员。在 New API 开源基座上进化：数据处理管道 + 个性化定制中转 + 企业级计费集成。
 
-- **Module**: `github.com/QuantumNous/lurus-api`
+**产品定位**: 不只是 LLM 中转站，更是数据处理枢纽 — 实时用量分析、成本优化、模型性能监控、按产品个性化路由。
+**与 NewAPI 的关系**: lurus-newapi 是稳定开源中转基座（定期同步上游），Hub 在其上增加数据处理能力和公司定制逻辑。
+
+- **Module**: `github.com/QuantumNous/lurus-api` (legacy, rename pending)
 - **Namespace / Port**: `lurus-system` / pod:3000, svc:8850
-- **Image**: `ghcr.io/hanmahong5-arch/lurus-api:main`
-- **DB**: PostgreSQL (`lurus_api` schema, GORM auto-migrate) + SQLite fallback (dev only), Redis DB 0, Meilisearch（可选）
-- **Auth**: Zitadel OIDC (`auth.lurus.cn`)，Passkey，session cookie/Redis
+- **Image**: `ghcr.io/hanmahong5-arch/lurus-api:main` (legacy, rename pending)
+- **DB**: PostgreSQL (`lurus_api` schema, GORM auto-migrate) + SQLite fallback (dev only), Redis DB 0, Meilisearch (optional)
+- **Auth**: Zitadel OIDC (`auth.lurus.cn`), Passkey, session cookie/Redis
+- **Product Group**: Platform (P0)
+
+## Core Capabilities
+
+| Capability | Description |
+|------------|-------------|
+| **Data Processing** | Real-time LLM usage analytics, cost optimization, model performance monitoring |
+| **Custom Relay** | Per-product routing rules, per-tenant model pools, quota enforcement |
+| **Billing Integration** | Usage metering → Platform billing (gRPC ReportUsage + WalletDebit) |
+| **Multi-tenant** | Channel/Token/quota/log isolation per tenant |
+| **Upstream Sync** | Cherry-pick New API upstream fixes monthly; security patches immediately |
 
 ## Tech Stack
 

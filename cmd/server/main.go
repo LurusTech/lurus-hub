@@ -15,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/lurus-api/internal/app"
 	"github.com/QuantumNous/lurus-api/internal/app/governance"
+	"github.com/QuantumNous/lurus-api/internal/app/hub"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/config"
@@ -124,6 +125,20 @@ func run(ctx context.Context, startTime time.Time) error {
 	// Background task: update quota dashboard data
 	g.Go(func() error {
 		repo.UpdateQuotaDataWithContext(ctx)
+		return nil
+	})
+
+	// Hub data processing: channel scoring + usage aggregation
+	hub.Init(func(flushCtx context.Context, buckets []hub.UsageBucket) error {
+		// Persist aggregated usage buckets to quota_data table
+		for _, b := range buckets {
+			repo.LogQuotaData(0, b.TenantID, b.ModelName, int(b.QuotaConsumed),
+				b.WindowStart.Unix(), int(b.InputTokens+b.OutputTokens))
+		}
+		return nil
+	})
+	g.Go(func() error {
+		hub.Get().RunBackgroundTasks(ctx)
 		return nil
 	})
 

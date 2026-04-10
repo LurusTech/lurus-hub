@@ -117,6 +117,8 @@ func SetInternalApiRouter(router *gin.Engine) {
 	modelReadGroup.Use(middleware.RequireScope(repo.ScopeModelRead))
 	{
 		modelReadGroup.GET("/catalog", handler.InternalGetModelCatalog)
+		modelReadGroup.GET("/video-catalog", handler.InternalGetVideoCatalog)
+		modelReadGroup.GET("/video-status", handler.InternalGetVideoStatus)
 	}
 
 	// Admin operations (requires wildcard scope)

@@ -317,6 +317,36 @@ func (m *JWKSManager) getKeyWithRefresh(kid string) (*rsa.PublicKey, error) {
 	return m.getKey(kid)
 }
 
+// VerifyIDTokenWithJWKS verifies an ID token JWT signature using the JWKS keys.
+// This is exported so the OAuth handler can verify ID tokens received from the
+// token endpoint, preventing token forgery even if TLS is compromised.
+// Returns the parsed jwt.Token with verified claims, or an error.
+func VerifyIDTokenWithJWKS(idToken string, claims jwt.Claims) (*jwt.Token, error) {
+	if jwksManager == nil {
+		return nil, errors.New("JWKS manager not initialized; is Zitadel enabled?")
+	}
+
+	token, err := jwt.ParseWithClaims(idToken, claims, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+
+		kid, ok := token.Header["kid"].(string)
+		if !ok {
+			return nil, errors.New("missing kid in token header")
+		}
+
+		return jwksManager.getKeyWithRefresh(kid)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ID token signature verification failed: %w", err)
+	}
+	if !token.Valid {
+		return nil, errors.New("ID token is not valid")
+	}
+	return token, nil
+}
+
 // jwkToRSAPublicKey converts a JWK to RSA public key
 func jwkToRSAPublicKey(jwk JWK) (*rsa.PublicKey, error) {
 	// Decode modulus (n)

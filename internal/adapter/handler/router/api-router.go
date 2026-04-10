@@ -76,7 +76,7 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/self/search", middleware.UserAuth(), handler.SearchUserLogs)
 		logRoute.Use(middleware.CORS())
 		{
-			logRoute.GET("/token", handler.GetLogByKey)
+			logRoute.GET("/token", middleware.TokenAuth(), handler.GetLogByKey)
 		}
 
 		// -- User's own data/stats --

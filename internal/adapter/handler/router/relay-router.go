@@ -191,8 +191,10 @@ func SetRelayRouter(router *gin.Engine) {
 }
 
 func registerMjRouterGroup(relayMjRouter *gin.RouterGroup) {
-	relayMjRouter.GET("/image/:id", relay.RelayMidjourneyImage)
 	relayMjRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	// Image proxy requires TokenAuth but not Distribute; registered after .Use()
+	// so Gin applies the middleware. Distribute is a no-op for GET-only proxy.
+	relayMjRouter.GET("/image/:id", relay.RelayMidjourneyImage)
 	{
 		relayMjRouter.POST("/submit/action", handler.RelayMidjourney)
 		relayMjRouter.POST("/submit/shorten", handler.RelayMidjourney)

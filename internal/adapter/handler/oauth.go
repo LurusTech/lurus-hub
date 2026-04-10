@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
 	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 
@@ -811,20 +812,16 @@ func generatePKCE() (*PKCEData, error) {
 // ============================================================================
 
 // validateIDToken validates the ID token JWT and returns the claims.
-// Validates: structure, expiration, issuer (exact match), audience (exact match), and nonce.
+// Validates: signature (via JWKS), structure, expiration, issuer (exact match),
+// audience (exact match), and nonce.
 //
-// SECURITY: Token is obtained directly from the issuer's token endpoint over TLS
-// (exchangeCodeForToken → POST issuer/oauth/v2/token). It never passes through the
-// user-agent, so signature forgery requires compromising the TLS channel to the IdP.
-// ParseUnverified is acceptable here; adding JWKS verification is tracked as a
-// future hardening task.
+// SECURITY: The token signature is verified against the IdP's published JWKS keys,
+// preventing token forgery regardless of how the token was obtained.
 func validateIDToken(idToken string, expectedNonce string) (*IDTokenClaims, error) {
-	// Parse the ID token without signature verification.
-	// This is safe because the token was obtained directly from the issuer's
-	// token endpoint over TLS, not from an untrusted client.
-	token, _, err := new(jwt.Parser).ParseUnverified(idToken, &IDTokenClaims{})
+	// Verify the token signature using the Zitadel JWKS public keys.
+	token, err := middleware.VerifyIDTokenWithJWKS(idToken, &IDTokenClaims{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse ID token: %w", err)
+		return nil, fmt.Errorf("failed to verify ID token: %w", err)
 	}
 
 	claims, ok := token.Claims.(*IDTokenClaims)

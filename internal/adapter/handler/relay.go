@@ -24,6 +24,7 @@ import (
 	relayconstant "github.com/QuantumNous/lurus-api/internal/adapter/provider/constant"
 	"github.com/QuantumNous/lurus-api/internal/app/relay/helper"
 	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/QuantumNous/lurus-api/internal/app/hub"
 	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
 	"github.com/QuantumNous/lurus-api/internal/pkg/types"
 
@@ -259,10 +260,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			channelBreakers.RecordSuccess(channel.Id)
+			hub.RecordRelayOutcome(channel.Id, true, relayDuration,
+				c.GetString("tenant_id"),
+				relayInfo.OriginModelName,
+				int64(relayInfo.GetEstimatePromptTokens()), 0,
+				int64(relayInfo.FinalPreConsumedQuota), 0)
 			return
 		}
 
 		channelBreakers.RecordFailure(channel.Id)
+		hub.RecordRelayOutcome(channel.Id, false, relayDuration,
+			c.GetString("tenant_id"),
+			relayInfo.OriginModelName, 0, 0, 0, 0)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
@@ -560,6 +569,15 @@ func RelayTask(c *gin.Context) {
 			taskErr.Message = "当前分组上游负载已饱和，请稍后再试"
 		}
 		c.JSON(taskErr.StatusCode, taskErr)
+	}
+
+	// Record video model health metrics for the video-status endpoint.
+	if isVideoModel(relayInfo.OriginModelName) {
+		if taskErr != nil {
+			RecordVideoModelFailure(relayInfo.OriginModelName, taskErr.Message)
+		} else {
+			RecordVideoModelSuccess(relayInfo.OriginModelName, 0)
+		}
 	}
 }
 

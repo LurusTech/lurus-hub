@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QuantumNous/lurus-api/internal/app/hub"
 	"github.com/QuantumNous/lurus-api/internal/pkg/common"
 	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
 	"github.com/QuantumNous/lurus-api/internal/pkg/pool"
@@ -189,9 +190,27 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 		return nil, errors.New(fmt.Sprintf("no channel found, group: %s, model: %s, priority: %d", group, model, targetPriority))
 	}
 
+	// Hub smart routing: adjust weights based on real-time channel performance scores.
+	// Collect channel IDs and weights for Hub scoring adjustment.
+	channelIDs := make([]int, len(targetChannels))
+	originalWeights := make([]int, len(targetChannels))
+	for i, ch := range targetChannels {
+		channelIDs[i] = ch.Id
+		originalWeights[i] = ch.GetWeight()
+	}
+	adjustedWeights := hub.AdjustWeights(channelIDs, originalWeights)
+
 	// smoothing factor and adjustment
 	smoothingFactor := 1
 	smoothingAdjustment := 0
+
+	// Recalculate sumWeight if Hub adjusted the weights
+	if adjustedWeights != nil {
+		sumWeight = 0
+		for _, w := range adjustedWeights {
+			sumWeight += w
+		}
+	}
 
 	if sumWeight == 0 {
 		// when all channels have weight 0, set sumWeight to the number of channels and set smoothing adjustment to 100
@@ -209,9 +228,13 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 	// Generate a random value in the range [0, totalWeight)
 	randomWeight := rand.Intn(totalWeight)
 
-	// Find a channel based on its weight
-	for _, channel := range targetChannels {
-		randomWeight -= channel.GetWeight()*smoothingFactor + smoothingAdjustment
+	// Find a channel based on its weight (use Hub-adjusted weights if available)
+	for i, channel := range targetChannels {
+		w := channel.GetWeight()
+		if adjustedWeights != nil {
+			w = adjustedWeights[i]
+		}
+		randomWeight -= w*smoothingFactor + smoothingAdjustment
 		if randomWeight < 0 {
 			return channel, nil
 		}

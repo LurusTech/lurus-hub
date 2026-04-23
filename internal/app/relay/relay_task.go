@@ -282,6 +282,7 @@ var fetchRespBuilders = map[int]func(c *gin.Context) (respBody []byte, taskResp 
 	relayconstant.RelayModeSunoFetchByID:  sunoFetchByIDRespBodyBuilder,
 	relayconstant.RelayModeSunoFetch:      sunoFetchRespBodyBuilder,
 	relayconstant.RelayModeVideoFetchByID: videoFetchByIDRespBodyBuilder,
+	relayconstant.RelayModeMusicFetchByID: musicFetchByIDRespBodyBuilder,
 }
 
 func RelayTaskFetch(c *gin.Context, relayMode int) (taskResp *dto.TaskError) {
@@ -492,6 +493,119 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		taskResp = app.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
 	}
 	return
+}
+
+func musicFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *dto.TaskError) {
+	taskId := c.Param("task_id")
+	userId := c.GetInt("id")
+
+	originTask, exist, err := repo.GetByTaskId(userId, taskId)
+	if err != nil {
+		taskResp = app.TaskErrorWrapper(err, "get_task_failed", http.StatusInternalServerError)
+		return
+	}
+	if !exist {
+		taskResp = app.TaskErrorWrapperLocal(errors.New("task_not_exist"), "task_not_exist", http.StatusNotFound)
+		return
+	}
+
+	// Map internal status to standardized music response status.
+	status := "in_progress"
+	progress := 50
+	switch originTask.Status {
+	case repo.TaskStatusSuccess:
+		status = "completed"
+		progress = 100
+	case repo.TaskStatusFailure:
+		status = "failed"
+		progress = 0
+	case repo.TaskStatusQueued, repo.TaskStatusSubmitted, repo.TaskStatusNotStart:
+		status = "queued"
+		progress = 0
+	case repo.TaskStatusInProgress:
+		status = "in_progress"
+		progress = 50
+	}
+
+	// Parse progress from task if available.
+	if originTask.Progress != "" {
+		var pct int
+		if _, err := fmt.Sscanf(originTask.Progress, "%d%%", &pct); err == nil {
+			progress = pct
+		}
+	}
+
+	resp := &dto.MusicFetchResponse{
+		ID:       originTask.TaskID,
+		Status:   status,
+		Progress: progress,
+	}
+
+	// Extract audio URL and title from Suno data if available.
+	if len(originTask.Data) > 0 {
+		var data map[string]any
+		if json.Unmarshal(originTask.Data, &data) == nil {
+			extractMusicDataFromSunoResponse(resp, data)
+		}
+	}
+
+	// FailReason may contain the audio URL (set by ParseTaskResult).
+	if resp.AudioURL == "" && originTask.FailReason != "" && status == "completed" {
+		resp.AudioURL = originTask.FailReason
+	}
+
+	if status == "failed" {
+		msg := originTask.FailReason
+		if msg == "" {
+			msg = "music generation failed"
+		}
+		resp.Error = &struct {
+			Message string `json:"message"`
+		}{Message: msg}
+	}
+
+	respBody, err = json.Marshal(resp)
+	if err != nil {
+		taskResp = app.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
+	return
+}
+
+// extractMusicDataFromSunoResponse tries to pull audio_url, title, duration
+// from the nested Suno task data structure.
+func extractMusicDataFromSunoResponse(resp *dto.MusicFetchResponse, data map[string]any) {
+	// Suno response wraps song data in "data" field, which may be a map or array.
+	innerData, _ := data["data"].(map[string]any)
+	if innerData == nil {
+		// Try array of clips.
+		if clips, ok := data["clips"].(map[string]any); ok {
+			for _, v := range clips {
+				clip, ok := v.(map[string]any)
+				if !ok {
+					continue
+				}
+				if audioURL, ok := clip["audio_url"].(string); ok && audioURL != "" {
+					resp.AudioURL = audioURL
+				}
+				if title, ok := clip["title"].(string); ok {
+					resp.Title = title
+				}
+				if md, ok := clip["metadata"].(map[string]any); ok {
+					if dur, ok := md["duration"].(float64); ok {
+						resp.Duration = dur
+					}
+				}
+				break // Take the first clip.
+			}
+		}
+		return
+	}
+	if audioURL, ok := innerData["audio_url"].(string); ok && audioURL != "" {
+		resp.AudioURL = audioURL
+	}
+	if title, ok := innerData["title"].(string); ok {
+		resp.Title = title
+	}
 }
 
 func TaskModel2Dto(task *repo.Task) *dto.TaskDto {

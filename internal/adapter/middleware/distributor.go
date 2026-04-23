@@ -175,6 +175,24 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			modelRequest.Model = midjourneyModel
 		}
 		c.Set("relay_mode", relayMode)
+	} else if strings.Contains(c.Request.URL.Path, "/v1/audio/music") {
+		relayMode := relayconstant.Path2RelayMusic(c.Request.Method, c.Request.URL.Path)
+		if relayMode == relayconstant.RelayModeMusicFetchByID {
+			shouldSelectChannel = false
+		} else if relayMode == relayconstant.RelayModeMusicSubmit {
+			req, err := getModelFromRequest(c)
+			if err != nil {
+				return nil, false, err
+			}
+			if req != nil {
+				modelRequest.Model = req.Model
+			}
+			if modelRequest.Model == "" {
+				modelRequest.Model = "music_generate"
+			}
+		}
+		c.Set("platform", string(constant.TaskPlatformMusic))
+		c.Set("relay_mode", relayMode)
 	} else if strings.Contains(c.Request.URL.Path, "/suno/") {
 		relayMode := relayconstant.Path2RelaySuno(c.Request.Method, c.Request.URL.Path)
 		if relayMode == relayconstant.RelayModeSunoFetch ||

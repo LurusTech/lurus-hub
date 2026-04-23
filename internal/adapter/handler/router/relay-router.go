@@ -178,6 +178,14 @@ func SetRelayRouter(router *gin.Engine) {
 		relaySunoRouter.GET("/fetch/:id", handler.RelayTask)
 	}
 
+	// OpenAI-compatible music generation routes (used by lurus-creator)
+	relayMusicRouter := router.Group("/v1/audio")
+	relayMusicRouter.Use(middleware.TokenAuth(), middleware.Distribute())
+	{
+		relayMusicRouter.POST("/music", handler.RelayTask)
+		relayMusicRouter.GET("/music/:task_id", handler.RelayTask)
+	}
+
 	relayGeminiRouter := router.Group("/v1beta")
 	relayGeminiRouter.Use(middleware.TokenAuth())
 	relayGeminiRouter.Use(middleware.ModelRequestRateLimit())

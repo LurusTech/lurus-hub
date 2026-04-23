@@ -43,6 +43,9 @@ const (
 	RelayModeVideoFetchByID
 	RelayModeVideoSubmit
 
+	RelayModeMusicSubmit
+	RelayModeMusicFetchByID
+
 	RelayModeRerank
 
 	RelayModeResponses
@@ -131,6 +134,16 @@ func Path2RelayModeMidjourney(path string) int {
 		relayMode = RelayModeMidjourneyTaskFetchByCondition
 	}
 	return relayMode
+}
+
+func Path2RelayMusic(method, path string) int {
+	if method == http.MethodPost && strings.HasSuffix(path, "/audio/music") {
+		return RelayModeMusicSubmit
+	}
+	if method == http.MethodGet && strings.Contains(path, "/audio/music/") {
+		return RelayModeMusicFetchByID
+	}
+	return RelayModeUnknown
 }
 
 func Path2RelaySuno(method, path string) int {

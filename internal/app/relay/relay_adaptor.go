@@ -36,6 +36,7 @@ import (
 	taskjimeng "github.com/QuantumNous/lurus-api/internal/adapter/provider/task/jimeng"
 	"github.com/QuantumNous/lurus-api/internal/adapter/provider/task/kling"
 	tasksora "github.com/QuantumNous/lurus-api/internal/adapter/provider/task/sora"
+	taskmusic "github.com/QuantumNous/lurus-api/internal/adapter/provider/task/music"
 	"github.com/QuantumNous/lurus-api/internal/adapter/provider/task/suno"
 	taskvertex "github.com/QuantumNous/lurus-api/internal/adapter/provider/task/vertex"
 	taskVidu "github.com/QuantumNous/lurus-api/internal/adapter/provider/task/vidu"
@@ -135,6 +136,8 @@ func GetTaskAdaptor(platform constant.TaskPlatform) provider.TaskAdaptor {
 	//	return &aiproxy.Adaptor{}
 	case constant.TaskPlatformSuno:
 		return &suno.TaskAdaptor{}
+	case constant.TaskPlatformMusic:
+		return &taskmusic.TaskAdaptor{}
 	}
 	if channelType, err := strconv.ParseInt(string(platform), 10, 64); err == nil {
 		switch channelType {

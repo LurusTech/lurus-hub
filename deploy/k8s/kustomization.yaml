@@ -14,5 +14,5 @@ commonLabels:
   app.kubernetes.io/managed-by: argocd
 
 images:
-  - name: ghcr.io/lurustech/lurus-api
+  - name: ghcr.io/hanmahong5-arch/lurus-api
     newTag: main

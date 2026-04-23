@@ -3,11 +3,11 @@ package app
 import (
 	"testing"
 
-	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 )
 
 func TestHasCustomModelRatio_DiffersFromDefault_ReturnsTrue(t *testing.T) {

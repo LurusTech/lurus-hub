@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 	"github.com/redis/go-redis/v9"
 )
 

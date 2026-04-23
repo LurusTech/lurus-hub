@@ -3,8 +3,8 @@ package entity
 import (
 	"encoding/json"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
 
 	"gorm.io/gorm"
 )

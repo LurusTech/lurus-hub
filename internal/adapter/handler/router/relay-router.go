@@ -1,11 +1,11 @@
 package router
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/adapter/handler"
-	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
-	"github.com/QuantumNous/lurus-api/internal/app/relay"
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/adapter/handler"
+	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-api/internal/app/relay"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

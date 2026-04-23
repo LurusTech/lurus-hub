@@ -1,6 +1,6 @@
 package dto
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/constant"
+import "github.com/LurusTech/lurus-api/internal/pkg/constant"
 
 // 这里不好动就不动了，本来想独立出来的（
 type OpenAIModels struct {

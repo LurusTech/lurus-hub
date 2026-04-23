@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/QuantumNous/lurus-api/internal/app"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/app"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
 	"github.com/gin-gonic/gin"
 )
 

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
+	"github.com/LurusTech/lurus-api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 )
 

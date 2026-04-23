@@ -1,6 +1,6 @@
 package vertex
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/common"
+import "github.com/LurusTech/lurus-api/internal/pkg/common"
 
 func GetModelRegion(other string, localModelName string) string {
 	// if other is json string

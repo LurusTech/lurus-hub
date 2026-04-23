@@ -1,7 +1,7 @@
 package middleware
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/pkg/config"
+	"github.com/LurusTech/lurus-api/internal/pkg/config"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )

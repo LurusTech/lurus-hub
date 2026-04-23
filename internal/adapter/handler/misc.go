@@ -3,14 +3,14 @@ package handler
 import (
 	"net/http"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/console_setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/system_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/console_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/operation_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
 )

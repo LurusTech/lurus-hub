@@ -95,8 +95,8 @@ GitHub Actions workflow: `.github/workflows/deploy-staging.yml`
 
 ```bash
 # Build and push staging image
-docker build -t ghcr.io/hanmahong5-arch/lurus-api:staging .
-docker push ghcr.io/hanmahong5-arch/lurus-api:staging
+docker build -t ghcr.io/LurusTech/lurus-api:staging .
+docker push ghcr.io/LurusTech/lurus-api:staging
 
 # Deploy
 kubectl apply -k deploy/k8s/staging/

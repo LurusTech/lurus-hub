@@ -3,8 +3,8 @@ package app
 import (
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
 )
 
 func GetUserUsableGroups(userGroup string) map[string]string {

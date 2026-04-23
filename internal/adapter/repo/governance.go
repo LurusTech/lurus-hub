@@ -1,8 +1,8 @@
 package repo
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
 )
 
 // GovernanceChannelStat holds aggregated stats grouped by channel type.

@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/adapter/provider"
-	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
-	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/adapter/provider"
+	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/app"
 
 	"github.com/gin-gonic/gin"
 )

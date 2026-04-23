@@ -11,12 +11,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/app/relay"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/logger"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/app/relay"
 
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"

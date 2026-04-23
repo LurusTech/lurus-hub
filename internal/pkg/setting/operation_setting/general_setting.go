@@ -1,6 +1,6 @@
 package operation_setting
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
+import "github.com/LurusTech/lurus-api/internal/pkg/setting/config"
 
 // 额度展示类型
 const (

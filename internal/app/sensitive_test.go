@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting"
 )
 
 func TestSensitiveWordContains(t *testing.T) {

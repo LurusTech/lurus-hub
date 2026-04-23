@@ -6,13 +6,13 @@ import (
 	"strings"
 	"time"
 
-	entity "github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/system_setting"
+	entity "github.com/LurusTech/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/config"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/operation_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/system_setting"
 )
 
 type Option = entity.Option

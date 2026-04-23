@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

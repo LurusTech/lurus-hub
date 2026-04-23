@@ -3,9 +3,9 @@ package minimax
 import (
 	"fmt"
 
-	channelconstant "github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
-	"github.com/QuantumNous/lurus-api/internal/adapter/provider/constant"
+	channelconstant "github.com/LurusTech/lurus-api/internal/pkg/constant"
+	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/adapter/provider/constant"
 )
 
 func GetRequestURL(info *relaycommon.RelayInfo) (string, error) {

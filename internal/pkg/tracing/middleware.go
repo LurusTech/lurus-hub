@@ -1,7 +1,7 @@
 package tracing
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"

@@ -4,8 +4,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/config"
 )
 
 type PasskeySettings struct {

@@ -33,7 +33,7 @@ jobs:
       - name: Check out lurus-proto-go
         uses: actions/checkout@v4
         with:
-          repository: hanmahong5-arch/lurus-proto-go
+          repository: LurusTech/lurus-proto-go
           path: lurus-proto-go
           fetch-depth: 1
 

@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/adapter/provider/common"
 )
 
 func TestProcessHeaderOverride(t *testing.T) {

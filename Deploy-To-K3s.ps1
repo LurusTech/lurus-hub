@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$REPO = "hanmahong5-arch/lurus-api"
+$REPO = "LurusTech/lurus-api"
 $K3S_MASTER = "root@100.98.57.55"
 $NAMESPACE = "lurus-system"
 $DEPLOYMENT = "lurus-api"

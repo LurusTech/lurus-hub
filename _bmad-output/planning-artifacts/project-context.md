@@ -320,14 +320,14 @@ Developer Push → GitHub
     ↓
 GitHub Actions (build + test + docker build)
     ↓
-GHCR (ghcr.io/hanmahong5-arch/<service>)
+GHCR (ghcr.io/lurustech/<service>)
     ↓
 ArgoCD Sync (auto or manual)
     ↓
 K3s Cluster Deployment (production or staging)
 ```
 
-- Registry: `ghcr.io/hanmahong5-arch/*`
+- Registry: `ghcr.io/lurustech/*`
 - Namespace convention: `lucrum` (lucrum prod), `lucrum-staging` (lucrum staging), `lurus-system` (api), `mail` (webmail)
 - Container base: `scratch` or `alpine` (multi-stage build)
 - Go build flags: `CGO_ENABLED=0 GOOS=linux -ldflags="-s -w" -trimpath`

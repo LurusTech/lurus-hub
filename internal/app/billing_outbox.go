@@ -7,9 +7,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
+	"github.com/LurusTech/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/metrics"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/app/relay/helper"
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/app/relay/helper"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"

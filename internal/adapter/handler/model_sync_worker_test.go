@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
 	"github.com/stretchr/testify/assert"
 )
 

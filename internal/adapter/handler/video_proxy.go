@@ -8,10 +8,10 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/app"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/logger"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/app"
 
 	"github.com/gin-gonic/gin"
 )

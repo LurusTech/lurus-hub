@@ -8,11 +8,11 @@ import (
 	"strings"
 	"sync"
 
-	entity "github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	entity "github.com/LurusTech/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"

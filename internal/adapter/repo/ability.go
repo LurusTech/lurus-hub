@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"

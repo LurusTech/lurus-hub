@@ -1,6 +1,6 @@
 package dify
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/dto"
+import "github.com/LurusTech/lurus-api/internal/pkg/dto"
 
 type DifyChatRequest struct {
 	Inputs           map[string]interface{} `json:"inputs"`

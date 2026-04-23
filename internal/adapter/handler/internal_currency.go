@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/currency"
-	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/currency"
+	"github.com/LurusTech/lurus-api/internal/pkg/logger"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 )
 

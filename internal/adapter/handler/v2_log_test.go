@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
 )
 
 // ============================================================================

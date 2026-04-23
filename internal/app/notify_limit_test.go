@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
 )
 
 func TestStartCleanupTaskWithContext_Cancellation(t *testing.T) {

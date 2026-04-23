@@ -1,6 +1,6 @@
 package xai
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/dto"
+import "github.com/LurusTech/lurus-api/internal/pkg/dto"
 
 // ChatCompletionResponse represents the response from XAI chat completion API
 type ChatCompletionResponse struct {

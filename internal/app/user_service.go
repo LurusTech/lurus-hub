@@ -3,7 +3,7 @@ package app
 import (
 	"errors"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 )
 
 const (

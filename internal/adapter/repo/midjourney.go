@@ -1,7 +1,7 @@
 package repo
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/domain/entity"
 )
 
 // Type aliases pointing to entity package

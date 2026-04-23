@@ -1,6 +1,6 @@
 package system_setting
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
+import "github.com/LurusTech/lurus-api/internal/pkg/setting/config"
 
 type DiscordSettings struct {
 	Enabled      bool   `json:"enabled"`

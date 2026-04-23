@@ -3,7 +3,7 @@ package types
 import (
 	"sync"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 )
 
 type RWMap[K comparable, V any] struct {

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
+	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
 
 	"github.com/gin-gonic/gin"
 )

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 )
 
 func TestCheckPermission_ReturnsNil_WhenActorRoleHigherThanTarget(t *testing.T) {

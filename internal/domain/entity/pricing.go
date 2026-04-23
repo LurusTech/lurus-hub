@@ -1,6 +1,6 @@
 package entity
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/constant"
+import "github.com/LurusTech/lurus-api/internal/pkg/constant"
 
 type Pricing struct {
 	ModelName              string                  `json:"model_name"`

@@ -3,7 +3,7 @@ package model_setting
 import (
 	"net/http"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/config"
 )
 
 //var claudeHeadersSettings = map[string][]string{}

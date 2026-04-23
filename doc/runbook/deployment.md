@@ -12,7 +12,7 @@ Push to `main` triggers GitHub Actions → GHCR → ArgoCD sync.
 
 ```
 main push → .github/workflows/docker-image-main.yml
-           → ghcr.io/hanmahong5-arch/lurus-api:main-YYYYMMDD-<sha>
+           → ghcr.io/LurusTech/lurus-api:main-YYYYMMDD-<sha>
            → ArgoCD detects new image → auto-sync
 ```
 
@@ -62,7 +62,7 @@ ssh root@100.98.57.55 "kubectl get application lurus-api -n argocd -o jsonpath='
 ```bash
 # Update image manually
 ssh root@100.98.57.55 "kubectl set image deployment/lurus-api \
-  lurus-api=ghcr.io/hanmahong5-arch/lurus-api:<tag> \
+  lurus-api=ghcr.io/LurusTech/lurus-api:<tag> \
   -n lurus-system"
 
 # Or restart current deployment
@@ -153,7 +153,7 @@ ssh root@100.98.57.55 "kubectl rollout status deployment/lurus-api -n lurus-syst
 
 ```bash
 ssh root@100.98.57.55 "kubectl set image deployment/lurus-api \
-  lurus-api=ghcr.io/hanmahong5-arch/lurus-api:main-20260201-abc1234 \
+  lurus-api=ghcr.io/LurusTech/lurus-api:main-20260201-abc1234 \
   -n lurus-system"
 ```
 

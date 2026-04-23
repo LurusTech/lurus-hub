@@ -3,10 +3,10 @@ package handler
 import (
 	"net/http"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/app"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/app"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )

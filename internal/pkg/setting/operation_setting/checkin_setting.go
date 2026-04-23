@@ -1,6 +1,6 @@
 package operation_setting
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
+import "github.com/LurusTech/lurus-api/internal/pkg/setting/config"
 
 // CheckinSetting 签到功能配置
 type CheckinSetting struct {

@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
 )
 
 // saveAndRestoreUserUsableGroups saves the current user usable groups

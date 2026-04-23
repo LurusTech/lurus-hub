@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/metrics"
+	"github.com/LurusTech/lurus-api/internal/pkg/metrics"
 )
 
 // billingBreaker is a simple circuit breaker for platform billing calls.

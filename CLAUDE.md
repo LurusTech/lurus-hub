@@ -7,7 +7,7 @@ AI 数据处理枢纽 — Platform 产品组核心成员。在 New API 开源基
 
 - **Module**: `github.com/QuantumNous/lurus-api` (legacy, rename pending)
 - **Namespace / Port**: `lurus-system` / pod:3000, svc:8850
-- **Image**: `ghcr.io/hanmahong5-arch/lurus-api:main` (legacy, rename pending)
+- **Image**: `ghcr.io/LurusTech/lurus-api:main` (legacy, rename pending)
 - **DB**: PostgreSQL (`lurus_api` schema, GORM auto-migrate) + SQLite fallback (dev only), Redis DB 0, Meilisearch (optional)
 - **Auth**: Zitadel OIDC (`auth.lurus.cn`), Passkey, session cookie/Redis
 - **Product Group**: Platform (P0)
@@ -279,8 +279,8 @@ Midjourney/Suno 通过独立 handler 处理（`handler.RelayMidjourney`, `handle
 - **SQLite fallback**: 未设置 `SQL_DSN` 时使用 SQLite (`one-api.db`)，仅用于开发
 - **渠道缓存**: Redis 存在时自动启用内存缓存，`SYNC_FREQUENCY` 控制同步周期
 - **Background tasks**: `lifecycle.Manager` 管理，`TickerTask` 封装定时任务
-- **ProtoImport**: 通过独立模块 `lurus-proto-go` 引用 identity gRPC 契约类型（`github.com/hanmahong5-arch/lurus-proto-go/identity/v1`）
-- **go.mod replace**: `github.com/hanmahong5-arch/lurus-proto-go => ../shared/lurus-proto-go`（本地开发；发布到 GitHub 后移除）
+- **ProtoImport**: 通过独立模块 `lurus-proto-go` 引用 identity gRPC 契约类型（`github.com/LurusTech/lurus-proto-go/identity/v1`）
+- **go.mod replace**: `github.com/LurusTech/lurus-proto-go => ../shared/lurus-proto-go`（本地开发；发布到 GitHub 后移除）
 
 ## BMAD
 

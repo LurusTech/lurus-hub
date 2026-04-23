@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/domain/entity"
 
 	"gorm.io/gorm"
 )

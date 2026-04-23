@@ -3,7 +3,7 @@ package setting
 import (
 	"encoding/json"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 )
 
 var Chats = []map[string]string{

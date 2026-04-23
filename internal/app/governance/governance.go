@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
 
 	"github.com/gin-gonic/gin"
 )

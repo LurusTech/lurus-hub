@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 )
 
 func TestMidjourneyErrorWrapper(t *testing.T) {

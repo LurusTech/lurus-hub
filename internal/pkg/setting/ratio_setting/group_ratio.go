@@ -5,9 +5,9 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/config"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 )
 
 var groupRatio = map[string]float64{

@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/pkg/logger"
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
-	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/logger"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"

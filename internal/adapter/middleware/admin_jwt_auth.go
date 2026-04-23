@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"

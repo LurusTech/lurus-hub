@@ -6,10 +6,10 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/provider"
-	relaycommon "github.com/QuantumNous/lurus-api/internal/adapter/provider/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-api/internal/adapter/provider"
+	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

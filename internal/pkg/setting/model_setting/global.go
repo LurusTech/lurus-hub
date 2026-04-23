@@ -3,7 +3,7 @@ package model_setting
 import (
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/config"
 )
 
 type GlobalSettings struct {

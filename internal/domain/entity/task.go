@@ -4,8 +4,8 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
 )
 
 type TaskStatus string

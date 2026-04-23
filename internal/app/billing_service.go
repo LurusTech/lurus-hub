@@ -1,10 +1,10 @@
 package app
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/currency"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/operation_setting"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/currency"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/operation_setting"
 )
 
 // SubscriptionQuotaInfo holds the computed display amounts for quota information.

@@ -1,6 +1,6 @@
 package system_setting
 
-import "github.com/QuantumNous/lurus-api/internal/pkg/setting/config"
+import "github.com/LurusTech/lurus-api/internal/pkg/setting/config"
 
 type FetchSetting struct {
 	EnableSSRFProtection   bool     `json:"enable_ssrf_protection"` // 是否启用SSRF防护

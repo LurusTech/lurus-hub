@@ -4,8 +4,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting"
 )
 
 func CheckSensitiveMessages(messages []dto.Message) ([]string, error) {

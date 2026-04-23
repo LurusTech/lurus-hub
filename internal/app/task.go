@@ -3,7 +3,7 @@ package app
 import (
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
 )
 
 func CoverTaskActionToModelName(platform constant.TaskPlatform, action string) string {

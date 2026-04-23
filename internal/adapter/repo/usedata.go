@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	entity "github.com/QuantumNous/lurus-api/internal/domain/entity"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	entity "github.com/LurusTech/lurus-api/internal/domain/entity"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 	"gorm.io/gorm"
 )
 

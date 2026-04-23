@@ -3,7 +3,7 @@ package middleware
 import (
 	"fmt"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 	"github.com/gin-gonic/gin"
 )
 

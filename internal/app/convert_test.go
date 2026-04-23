@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
 )
 
 func TestStopReasonOpenAI2Claude(t *testing.T) {

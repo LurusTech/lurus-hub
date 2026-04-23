@@ -3,7 +3,7 @@ package dto
 import (
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-api/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

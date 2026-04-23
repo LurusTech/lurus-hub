@@ -17,5 +17,5 @@ labels:
       app.kubernetes.io/managed-by: argocd
 
 images:
-  - name: ghcr.io/hanmahong5-arch/lurus-api
+  - name: ghcr.io/lurustech/lurus-api
     newTag: staging

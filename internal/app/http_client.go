@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/setting/system_setting"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/setting/system_setting"
 
 	"golang.org/x/net/proxy"
 )

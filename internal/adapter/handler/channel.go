@@ -7,14 +7,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/provider/ollama"
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/app"
-	"github.com/QuantumNous/lurus-api/internal/app/governance"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
-	"github.com/QuantumNous/lurus-api/internal/pkg/constant"
-	"github.com/QuantumNous/lurus-api/internal/pkg/dto"
-	"github.com/QuantumNous/lurus-api/internal/pkg/search"
+	"github.com/LurusTech/lurus-api/internal/adapter/provider/ollama"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/app"
+	"github.com/LurusTech/lurus-api/internal/app/governance"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-api/internal/pkg/search"
 
 	"github.com/gin-gonic/gin"
 )

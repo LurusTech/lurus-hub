@@ -1,8 +1,8 @@
 package router
 
 import (
-	"github.com/QuantumNous/lurus-api/internal/adapter/handler"
-	"github.com/QuantumNous/lurus-api/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-api/internal/adapter/handler"
+	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
 
 	"github.com/gin-gonic/gin"
 )

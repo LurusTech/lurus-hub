@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/QuantumNous/lurus-api/internal/adapter/repo"
-	"github.com/QuantumNous/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-api/internal/pkg/common"
 	"github.com/gin-gonic/gin"
 )
 

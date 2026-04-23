@@ -516,7 +516,7 @@ Code Push → GitHub Actions
   ├── go test ./...
   ├── CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath
   ├── docker build (multi-stage, scratch base)
-  └── docker push ghcr.io/hanmahong5-arch/lurus-api:latest
+  └── docker push ghcr.io/LurusTech/lurus-api:latest
         ↓
 ArgoCD Sync (watches deploy/k8s/)
         ↓

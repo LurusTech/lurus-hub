@@ -1,7 +1,7 @@
 package model_setting
 
 import (
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/config"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/config"
 )
 
 // GeminiSettings defines Gemini model configuration. 注意bool要以enabled结尾才可以生效编辑

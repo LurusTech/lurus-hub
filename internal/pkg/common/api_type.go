@@ -1,6 +1,6 @@
 package common
 
-import "github.com/LurusTech/lurus-api/internal/pkg/constant"
+import "github.com/LurusTech/lurus-hub/internal/pkg/constant"
 
 func ChannelType2APIType(channelType int) (int, bool) {
 	apiType := -1

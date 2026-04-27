@@ -3,7 +3,7 @@ package app
 import (
 	"sync"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/tiktoken-go/tokenizer"
 	"github.com/tiktoken-go/tokenizer/codec"
 )

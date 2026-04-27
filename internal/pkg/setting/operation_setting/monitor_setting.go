@@ -4,7 +4,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/config"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/config"
 )
 
 type MonitorSetting struct {

@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/system_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/system_setting"
 )
 
 // WebhookPayload webhook 通知的负载数据

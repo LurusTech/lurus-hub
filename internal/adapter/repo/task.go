@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"time"
 
-	entity "github.com/LurusTech/lurus-api/internal/domain/entity"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	commonRelay "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
+	entity "github.com/LurusTech/lurus-hub/internal/domain/entity"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	commonRelay "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 )
 
 // Subtypes aliased from the canonical definition in domain/entity/task.go

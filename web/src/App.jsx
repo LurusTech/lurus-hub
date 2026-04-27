@@ -29,6 +29,7 @@ import Setting from './pages/Setting';
 import { StatusContext } from './context/Status';
 
 import Channel from './pages/Channel';
+import OpenRouterSync from './pages/OpenRouterSync';
 import Token from './pages/Token';
 import Redemption from './pages/Redemption';
 import TopUp from './pages/TopUp';
@@ -114,6 +115,14 @@ function App() {
           element={
             <AdminRoute>
               <Channel />
+            </AdminRoute>
+          }
+        />
+        <Route
+          path='/console/openrouter-sync'
+          element={
+            <AdminRoute>
+              <OpenRouterSync />
             </AdminRoute>
           }
         />

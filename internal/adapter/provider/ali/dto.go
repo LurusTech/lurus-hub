@@ -3,9 +3,9 @@ package ali
 import (
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	"github.com/LurusTech/lurus-api/internal/pkg/logger"
-	"github.com/LurusTech/lurus-api/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/gin-gonic/gin"
 )
 

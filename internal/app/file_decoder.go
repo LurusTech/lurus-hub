@@ -12,10 +12,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/logger"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

@@ -1,6 +1,6 @@
 package common
 
-import "github.com/LurusTech/lurus-api/internal/pkg/constant"
+import "github.com/LurusTech/lurus-hub/internal/pkg/constant"
 
 // EndpointInfo 描述单个端点的默认请求信息
 // path: 上游路径

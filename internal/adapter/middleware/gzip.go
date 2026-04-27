@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 )

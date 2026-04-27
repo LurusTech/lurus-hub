@@ -1,12 +1,12 @@
 <div align="center">
 
-![lurus-api](/web/public/logo.png)
+![lurus-hub](/web/public/logo.png)
 
-# Lurus API
+# Lurus Hub
 
-**Enterprise-Grade AI Model API Gateway & Asset Management Platform**
+**AI Data Processing Hub & Multi-Tenant LLM Gateway**
 
-**企业级大模型 API 网关与资产管理平台**
+**AI 数据处理枢纽 · 多租户大模型网关**
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25-blue?logo=go" alt="Go Version">
@@ -22,9 +22,9 @@
 
 ## Overview / 项目简介
 
-**Lurus API** is a multi-tenant AI model gateway and asset management platform. It provides unified API access to all major LLM providers with intelligent routing, real-time search, comprehensive billing, and enterprise-grade observability.
+**Lurus Hub** is an AI data processing hub built on top of a multi-tenant LLM relay. Beyond unified API access to every major model provider, it adds real-time usage analytics, cost optimization, per-product routing, and platform-grade billing integration — turning a relay into a data plane.
 
-基于 [One API](https://github.com/songquanpeng/one-api) 深度定制，集成 Meilisearch 搜索引擎、Zitadel OIDC 多租户认证、Prometheus/OpenTelemetry 可观测性。
+不只是 LLM 中转站，更是数据处理枢纽 — 实时用量分析、成本优化、模型性能监控、按产品个性化路由。基于 [New API](https://github.com/QuantumNous/new-api) / [One API](https://github.com/songquanpeng/one-api) 开源基座深度定制，集成 Meilisearch 搜索、Zitadel OIDC 多租户认证、Prometheus/OpenTelemetry 可观测性，与 lurus-platform 通过 gRPC 完成计费打通。
 
 ---
 
@@ -82,7 +82,7 @@
 
 ```
                           ┌─────────────────────────┐
-                          │      Lurus API Gateway   │
+                          │      Lurus Hub Gateway   │
                           │    (Hexagonal / Go+Gin)  │
                           └────────────┬────────────┘
                                        │

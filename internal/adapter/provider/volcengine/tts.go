@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"

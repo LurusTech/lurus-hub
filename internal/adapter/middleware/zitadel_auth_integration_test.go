@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/adapter/repo"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/golang-jwt/jwt/v5"

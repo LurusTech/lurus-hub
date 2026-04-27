@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 )
 
 func TestValidUsage(t *testing.T) {

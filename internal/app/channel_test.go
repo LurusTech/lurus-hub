@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/operation_setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 )
 
 // saveAndRestoreAutoBanFlags saves and restores the automatic channel disable/enable flags.

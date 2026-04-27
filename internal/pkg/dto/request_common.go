@@ -1,7 +1,7 @@
 package dto
 
 import (
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 	"github.com/gin-gonic/gin"
 )
 

@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	"github.com/LurusTech/lurus-api/internal/pkg/logger"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 )
 
 func MidjourneyErrorWrapper(code int, desc string) *dto.MidjourneyResponse {
@@ -89,6 +89,26 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		return
 	}
 	CloseResponseBodyGracefully(resp)
+
+	// Stash the upstream response signal for downstream consumers (e.g. the
+	// OpenRouter pool cooldown writer reads X-RateLimit-Reset). Header.Clone()
+	// is cheap; the body is capped at 16KB to avoid retaining huge payloads.
+	defer func() {
+		if newApiErr == nil {
+			return
+		}
+		if resp.Header != nil {
+			newApiErr.UpstreamHeader = resp.Header.Clone()
+		}
+		if len(responseBody) > 0 {
+			const maxBodyHint = 16 * 1024
+			if len(responseBody) <= maxBodyHint {
+				newApiErr.UpstreamBodyHint = string(responseBody)
+			} else {
+				newApiErr.UpstreamBodyHint = string(responseBody[:maxBodyHint])
+			}
+		}
+	}()
 	var errResponse dto.GeneralErrorResponse
 	buildErrWithBody := func(message string) error {
 		if message == "" {

@@ -1,8 +1,8 @@
 package router
 
 import (
-	"github.com/LurusTech/lurus-api/internal/adapter/handler"
-	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/adapter/handler"
+	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -153,6 +153,22 @@ func SetApiRouter(router *gin.Engine) {
 			redemptionRoute.PUT("/", handler.UpdateRedemption)
 			redemptionRoute.DELETE("/invalid", handler.DeleteInvalidRedemption)
 			redemptionRoute.DELETE("/:id", handler.DeleteRedemption)
+		}
+
+		// OpenRouter free-model sync admin routes
+		openrouterSyncRoute := apiRouter.Group("/openrouter-sync")
+		openrouterSyncRoute.Use(middleware.AdminAuth())
+		{
+			openrouterSyncRoute.GET("/jobs", handler.ListOpenRouterSyncJobs)
+			openrouterSyncRoute.POST("/jobs", handler.CreateOpenRouterSyncJob)
+			openrouterSyncRoute.PUT("/jobs/:id", handler.UpdateOpenRouterSyncJob)
+			openrouterSyncRoute.DELETE("/jobs/:id", handler.DeleteOpenRouterSyncJob)
+			openrouterSyncRoute.POST("/jobs/:id/run", handler.RunOpenRouterSyncJob)
+			openrouterSyncRoute.POST("/run-all", handler.RunAllOpenRouterSyncJobs)
+			openrouterSyncRoute.GET("/jobs/:id/preview", handler.PreviewOpenRouterSyncJob)
+			openrouterSyncRoute.GET("/categories", handler.ListOpenRouterSyncCategories)
+			openrouterSyncRoute.GET("/last-status", handler.GetOpenRouterSyncLastStatus)
+			openrouterSyncRoute.GET("/api-pool", handler.GetOpenRouterApiPoolStatus)
 		}
 
 		// Admin log routes (view all users' logs)

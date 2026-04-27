@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/adapter/repo"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/console_setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/system_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/console_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
 )

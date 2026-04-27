@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/adapter/repo"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 )
 
 // AutoSyncChannelModelsWithContext periodically fetches upstream model lists

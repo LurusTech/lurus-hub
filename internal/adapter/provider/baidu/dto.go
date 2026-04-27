@@ -3,7 +3,7 @@ package baidu
 import (
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 )
 
 type BaiduMessage struct {

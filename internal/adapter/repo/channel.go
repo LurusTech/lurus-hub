@@ -8,11 +8,11 @@ import (
 	"strings"
 	"sync"
 
-	entity "github.com/LurusTech/lurus-api/internal/domain/entity"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	entity "github.com/LurusTech/lurus-hub/internal/domain/entity"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -57,6 +57,10 @@ type Channel struct {
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
+
+	// OpenRouter free-model sync state — only meaningful when channel is target of an OpenRouter sync job
+	ManagedModelsBySync string `json:"managed_models_by_sync" gorm:"type:text;default:''"` // JSON array of model IDs currently managed by sync
+	LastSyncFetchCount  int    `json:"last_sync_fetch_count" gorm:"default:0"`             // Last successful upstream fetch count (circuit breaker baseline)
 
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
@@ -126,6 +130,32 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 	// properly handle a channel with no available keys (e.g. mark channel disabled).
 	// Returning the first key here caused requests to keep using an already-disabled key.
 	if len(enabledIdx) == 0 {
+		// Distinguish "all keys cooling (auto-recoverable)" from "no available key
+		// (permanent)". The former carries the earliest recovery timestamp so the
+		// relay can emit 503 + Retry-After downstream.
+		cooldowns := channel.ChannelInfo.MultiKeyCooldownUntil
+		if len(cooldowns) > 0 {
+			earliest := int64(0)
+			allCooling := true
+			for i := range keys {
+				if getStatus(i) == common.ChannelStatusEnabled {
+					continue
+				}
+				until, ok := cooldowns[i]
+				if !ok || until <= 0 {
+					allCooling = false
+					break
+				}
+				if earliest == 0 || until < earliest {
+					earliest = until
+				}
+			}
+			if allCooling && earliest > 0 {
+				apiErr := types.NewError(errors.New("all keys cooling"), types.ErrorCodeChannelAllKeysCooling)
+				apiErr.RetryAfterUnix = earliest
+				return "", 0, apiErr
+			}
+		}
 		return "", 0, types.NewError(errors.New("no enabled keys"), types.ErrorCodeChannelNoAvailableKey)
 	}
 
@@ -182,6 +212,32 @@ func (channel *Channel) GetModels() []string {
 		return []string{}
 	}
 	return strings.Split(strings.Trim(channel.Models, ","), ",")
+}
+
+// GetManagedModelsBySync parses the JSON-encoded managed model set.
+func (channel *Channel) GetManagedModelsBySync() []string {
+	if strings.TrimSpace(channel.ManagedModelsBySync) == "" {
+		return []string{}
+	}
+	var arr []string
+	if err := common.Unmarshal([]byte(channel.ManagedModelsBySync), &arr); err != nil {
+		common.SysLog("Channel: failed to unmarshal ManagedModelsBySync: " + err.Error())
+		return []string{}
+	}
+	return arr
+}
+
+// SetManagedModelsBySync serializes the given set into the field.
+func (channel *Channel) SetManagedModelsBySync(models []string) error {
+	if models == nil {
+		models = []string{}
+	}
+	b, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	channel.ManagedModelsBySync = string(b)
+	return nil
 }
 
 func (channel *Channel) GetGroups() []string {
@@ -342,6 +398,29 @@ func GetChannelById(id int, selectAll bool) (*Channel, error) {
 // UpdateChannelModels updates only the models field for a given channel.
 func UpdateChannelModels(channelId int, models string) error {
 	return DB.Model(&Channel{}).Where("id = ?", channelId).Update("models", models).Error
+}
+
+// GetChannelForUpdate fetches a channel within a transaction with row-level lock.
+// On PostgreSQL/MySQL this issues SELECT ... FOR UPDATE; on SQLite it's a no-op
+// but the surrounding transaction still serializes writers.
+func GetChannelForUpdate(tx *gorm.DB, channelId int) (*Channel, error) {
+	var c Channel
+	err := tx.Set("gorm:query_option", "FOR UPDATE").Where("id = ?", channelId).First(&c).Error
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// UpdateChannelSyncState atomically updates the three fields touched by the
+// OpenRouter sync engine: models CSV, managed-by-sync set, and last-fetch baseline.
+// Caller must invoke this inside a transaction (the same one that did GetChannelForUpdate).
+func UpdateChannelSyncState(tx *gorm.DB, channelId int, modelsCSV string, managedJSON string, lastFetchCount int) error {
+	return tx.Model(&Channel{}).Where("id = ?", channelId).Updates(map[string]interface{}{
+		"models":                 modelsCSV,
+		"managed_models_by_sync": managedJSON,
+		"last_sync_fetch_count":  lastFetchCount,
+	}).Error
 }
 
 func BatchInsertChannels(channels []Channel) error {

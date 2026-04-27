@@ -1,6 +1,6 @@
 package console_setting
 
-import "github.com/LurusTech/lurus-api/internal/pkg/setting/config"
+import "github.com/LurusTech/lurus-hub/internal/pkg/setting/config"
 
 type ConsoleSetting struct {
 	ApiInfo              string `json:"api_info"`              // 控制台 API 信息 (JSON 数组字符串)

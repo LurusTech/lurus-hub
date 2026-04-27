@@ -1,6 +1,6 @@
 package perplexity
 
-import "github.com/LurusTech/lurus-api/internal/pkg/dto"
+import "github.com/LurusTech/lurus-hub/internal/pkg/dto"
 
 func requestOpenAI2Perplexity(request dto.GeneralOpenAIRequest) *dto.GeneralOpenAIRequest {
 	messages := make([]dto.Message, 0, len(request.Messages))

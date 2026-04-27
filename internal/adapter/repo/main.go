@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/domain/entity"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/domain/entity"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
@@ -267,6 +267,9 @@ func migrateDB() error {
 		&entity.CurrencyExchange{},
 		// Governance audit trail
 		&entity.AuditEvent{},
+		// OpenRouter free-model sync
+		&entity.OpenRouterSyncJob{},
+		&entity.ModelUsageStat{},
 	)
 	if err != nil {
 		return err
@@ -312,6 +315,9 @@ func migrateDBFast() error {
 		{&entity.DownloadLog{}, "DownloadLog"},
 		// Governance audit trail
 		{&entity.AuditEvent{}, "AuditEvent"},
+		// OpenRouter free-model sync
+		{&entity.OpenRouterSyncJob{}, "OpenRouterSyncJob"},
+		{&entity.ModelUsageStat{}, "ModelUsageStat"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

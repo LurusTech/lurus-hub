@@ -7,26 +7,28 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	"github.com/LurusTech/lurus-api/internal/pkg/logger"
-	"github.com/LurusTech/lurus-api/internal/pkg/metrics"
-	"github.com/LurusTech/lurus-api/internal/pkg/resilience"
-	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
-	"github.com/LurusTech/lurus-api/internal/adapter/repo"
-	"github.com/LurusTech/lurus-api/internal/app/governance"
-	"github.com/LurusTech/lurus-api/internal/app/relay"
-	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
-	relayconstant "github.com/LurusTech/lurus-api/internal/adapter/provider/constant"
-	"github.com/LurusTech/lurus-api/internal/app/relay/helper"
-	"github.com/LurusTech/lurus-api/internal/app"
-	"github.com/LurusTech/lurus-api/internal/app/hub"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
+	"github.com/LurusTech/lurus-hub/internal/pkg/resilience"
+	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/app/relay"
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/hub"
+	"github.com/LurusTech/lurus-hub/internal/app/openrouter_pool"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 
@@ -107,6 +109,26 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", newAPIError.Error()))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+
+			// All-keys-cooling (every key in an OpenRouter pool is rate-limited):
+			// translate to 503 + Retry-After so clients back off intelligently
+			// instead of seeing a misleading 429.
+			if newAPIError.GetErrorCode() == types.ErrorCodeChannelAllKeysCooling && newAPIError.RetryAfterUnix > 0 {
+				secs := newAPIError.RetryAfterUnix - time.Now().Unix()
+				if secs < 1 {
+					secs = 30
+				}
+				c.Header("Retry-After", strconv.FormatInt(secs, 10))
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error": gin.H{
+						"type":    "service_unavailable",
+						"code":    string(types.ErrorCodeChannelAllKeysCooling),
+						"message": fmt.Sprintf("All keys in the OpenRouter pool are rate-limited; retry in ~%ds", secs),
+					},
+				})
+				return
+			}
+
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -412,6 +434,12 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			app.DisableChannel(channelError, err.Error())
 		})
 	}
+
+	// OpenRouter free-key pool: rate-limited keys get a per-key cooldown rather
+	// than being treated as permanently disabled. No-op for non-OpenRouter or non-429.
+	gopool.Go(func() {
+		openrouter_pool.MaybeMarkCooldown(channelError, err)
+	})
 
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
 		// 保存错误日志到mysql中

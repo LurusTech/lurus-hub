@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/console_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/console_setting"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sync/errgroup"

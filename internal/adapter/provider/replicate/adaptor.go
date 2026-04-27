@@ -12,14 +12,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	"github.com/LurusTech/lurus-api/internal/adapter/provider"
-	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
-	relayconstant "github.com/LurusTech/lurus-api/internal/adapter/provider/constant"
-	"github.com/LurusTech/lurus-api/internal/app"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider"
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 // Currency codes for the three-tier monetary system.

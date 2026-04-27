@@ -1,11 +1,11 @@
 package router
 
 import (
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/adapter/handler"
-	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
-	"github.com/LurusTech/lurus-api/internal/app/relay"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/adapter/handler"
+	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/app/relay"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

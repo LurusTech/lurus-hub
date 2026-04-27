@@ -6,9 +6,9 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	relayconstant "github.com/LurusTech/lurus-api/internal/adapter/provider/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
 	"github.com/gin-gonic/gin"
 )
 

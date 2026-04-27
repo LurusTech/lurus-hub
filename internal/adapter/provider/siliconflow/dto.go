@@ -1,6 +1,6 @@
 package siliconflow
 
-import "github.com/LurusTech/lurus-api/internal/pkg/dto"
+import "github.com/LurusTech/lurus-hub/internal/pkg/dto"
 
 type SFTokens struct {
 	InputTokens  int `json:"input_tokens"`

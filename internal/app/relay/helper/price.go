@@ -3,12 +3,12 @@ package helper
 import (
 	"fmt"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/logger"
-	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/operation_setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

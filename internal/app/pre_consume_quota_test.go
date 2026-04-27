@@ -3,8 +3,8 @@ package app
 import (
 	"testing"
 
-	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 func TestPreConsumeQuota_SufficientQuota_TrustedToken_Succeeds(t *testing.T) {

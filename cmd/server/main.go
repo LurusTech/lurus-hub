@@ -13,21 +13,23 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/app"
-	"github.com/LurusTech/lurus-api/internal/app/governance"
-	"github.com/LurusTech/lurus-api/internal/app/hub"
-	"github.com/LurusTech/lurus-api/internal/adapter/repo"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/config"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/logger"
-	"github.com/LurusTech/lurus-api/internal/pkg/search"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/tracing"
-	"github.com/LurusTech/lurus-api/internal/adapter/handler"
-	"github.com/LurusTech/lurus-api/internal/adapter/handler/router"
-	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
-	"github.com/LurusTech/lurus-api/web"
+	"github.com/LurusTech/lurus-hub/internal/adapter/handler"
+	"github.com/LurusTech/lurus-hub/internal/adapter/handler/router"
+	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/app/hub"
+	"github.com/LurusTech/lurus-hub/internal/app/openrouter_pool"
+	openrouter_sync "github.com/LurusTech/lurus-hub/internal/app/openrouter_sync"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/config"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/search"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/tracing"
+	"github.com/LurusTech/lurus-hub/web"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
@@ -160,6 +162,34 @@ func run(ctx context.Context, startTime time.Time) error {
 		}
 		g.Go(func() error {
 			handler.AutoSyncChannelModelsWithContext(ctx, frequency)
+			return nil
+		})
+	}
+
+	// OpenRouter free-model sync — master-only. Disabled when env var is empty.
+	if os.Getenv("OPENROUTER_FREE_SYNC_FREQUENCY") != "" {
+		frequency, err := strconv.Atoi(os.Getenv("OPENROUTER_FREE_SYNC_FREQUENCY"))
+		if err != nil {
+			return fmt.Errorf("failed to parse OPENROUTER_FREE_SYNC_FREQUENCY: %w", err)
+		}
+		g.Go(func() error {
+			openrouter_sync.AutoSyncWithContext(ctx, frequency)
+			return nil
+		})
+	}
+	// Hourly aggregator runs whenever OpenRouter sync is configured (any sync job present
+	// will benefit from ranking data). Kept independent of OPENROUTER_FREE_SYNC_FREQUENCY
+	// so manual triggers still get fresh ranks even when scheduling is disabled.
+	if common.IsMasterNode {
+		g.Go(func() error {
+			openrouter_sync.AutoAggregateWithContext(ctx)
+			return nil
+		})
+		// OpenRouter pool reaper: re-enables keys whose rate-limit cooldown has expired.
+		// Runs even when OPENROUTER_FREE_SYNC_FREQUENCY is unset — pool cooldown is
+		// triggered by live relay traffic, not by the sync feature.
+		g.Go(func() error {
+			openrouter_pool.AutoReapWithContext(ctx)
 			return nil
 		})
 	}

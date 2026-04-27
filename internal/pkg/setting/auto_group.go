@@ -1,7 +1,7 @@
 package setting
 
 import (
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 var autoGroups = []string{

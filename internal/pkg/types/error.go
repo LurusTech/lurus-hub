@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 type OpenAIError struct {
@@ -52,6 +52,7 @@ const (
 
 	// channel error
 	ErrorCodeChannelNoAvailableKey        ErrorCode = "channel:no_available_key"
+	ErrorCodeChannelAllKeysCooling        ErrorCode = "channel:all_keys_cooling"
 	ErrorCodeChannelParamOverrideInvalid  ErrorCode = "channel:param_override_invalid"
 	ErrorCodeChannelHeaderOverrideInvalid ErrorCode = "channel:header_override_invalid"
 	ErrorCodeChannelModelMappedError      ErrorCode = "channel:model_mapped_error"
@@ -95,6 +96,19 @@ type NewAPIError struct {
 	errorCode      ErrorCode
 	StatusCode     int
 	Metadata       json.RawMessage
+
+	// UpstreamHeader is the HTTP response header from the upstream provider, if any.
+	// Populated by RelayErrorHandler so that downstream code (e.g. the OpenRouter
+	// pool cooldown writer) can read X-RateLimit-Reset etc. without re-fetching.
+	UpstreamHeader http.Header
+	// UpstreamBodyHint holds the (truncated) raw response body for the same purpose.
+	// Limited to ~16KB; longer responses are dropped to avoid bloating in-memory error chains.
+	UpstreamBodyHint string
+
+	// RetryAfterUnix carries the earliest recovery timestamp (Unix seconds) when
+	// errorCode == ErrorCodeChannelAllKeysCooling. The relay's final-error path
+	// converts this into the HTTP Retry-After header on the user-facing 503.
+	RetryAfterUnix int64
 }
 
 // Unwrap enables errors.Is / errors.As to work with NewAPIError by exposing the underlying error.

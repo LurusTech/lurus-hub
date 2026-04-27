@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	entity "github.com/LurusTech/lurus-api/internal/domain/entity"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	entity "github.com/LurusTech/lurus-hub/internal/domain/entity"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 type InternalApiKey = entity.InternalApiKey

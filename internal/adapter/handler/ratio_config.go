@@ -3,7 +3,7 @@ package handler
 import (
 	"net/http"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )

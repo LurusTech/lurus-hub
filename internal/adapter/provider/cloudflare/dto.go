@@ -1,6 +1,6 @@
 package cloudflare
 
-import "github.com/LurusTech/lurus-api/internal/pkg/dto"
+import "github.com/LurusTech/lurus-hub/internal/pkg/dto"
 
 type CfRequest struct {
 	Messages    []dto.Message `json:"messages,omitempty"`

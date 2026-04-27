@@ -1,7 +1,7 @@
 package repo
 
 import (
-	entity "github.com/LurusTech/lurus-api/internal/domain/entity"
+	entity "github.com/LurusTech/lurus-hub/internal/domain/entity"
 )
 
 type Setup = entity.Setup

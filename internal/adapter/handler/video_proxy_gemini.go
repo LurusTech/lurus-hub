@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/adapter/repo"
-	"github.com/LurusTech/lurus-api/internal/app/relay"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/relay"
 )
 
 func getGeminiVideoURL(channel *repo.Channel, task *repo.Task, apiKey string) (string, error) {

@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/adapter/handler"
-	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/handler"
+	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-contrib/static"
 	"github.com/gin-gonic/gin"

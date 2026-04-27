@@ -33,6 +33,7 @@ import { Nav, Divider, Button } from '@douyinfe/semi-ui';
 const routerMap = {
   home: '/',
   channel: '/console/channel',
+  'openrouter-sync': '/console/openrouter-sync',
   token: '/console/token',
   redemption: '/console/redemption',
   topup: '/console/topup',
@@ -149,6 +150,12 @@ const SiderBar = ({ onNavigate = () => {} }) => {
         text: t('渠道管理'),
         itemKey: 'channel',
         to: '/channel',
+        className: isAdmin() ? '' : 'tableHiddle',
+      },
+      {
+        text: t('OpenRouter 同步'),
+        itemKey: 'openrouter-sync',
+        to: '/openrouter-sync',
         className: isAdmin() ? '' : 'tableHiddle',
       },
       {

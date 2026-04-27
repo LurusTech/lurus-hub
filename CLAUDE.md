@@ -5,9 +5,9 @@ AI 数据处理枢纽 — Platform 产品组核心成员。在 New API 开源基
 **产品定位**: 不只是 LLM 中转站，更是数据处理枢纽 — 实时用量分析、成本优化、模型性能监控、按产品个性化路由。
 **与 NewAPI 的关系**: lurus-newapi 是稳定开源中转基座（定期同步上游），Hub 在其上增加数据处理能力和公司定制逻辑。
 
-- **Module**: `github.com/QuantumNous/lurus-api` (legacy, rename pending)
+- **Module**: `github.com/LurusTech/lurus-hub`
 - **Namespace / Port**: `lurus-system` / pod:3000, svc:8850
-- **Image**: `ghcr.io/LurusTech/lurus-api:main` (legacy, rename pending)
+- **Image**: `ghcr.io/LurusTech/lurus-api:main` (runtime resource name preserved)
 - **DB**: PostgreSQL (`lurus_api` schema, GORM auto-migrate) + SQLite fallback (dev only), Redis DB 0, Meilisearch (optional)
 - **Auth**: Zitadel OIDC (`auth.lurus.cn`), Passkey, session cookie/Redis
 - **Product Group**: Platform (P0)
@@ -63,7 +63,7 @@ go run ./cmd/server                         # 后端 port 3000
 cd web && bun install && bun run dev        # 前端 port 5173 (代理到 3000)
 
 # --- Build (production) ---
-CGO_ENABLED=0 go build -ldflags "-s -w -X 'github.com/QuantumNous/lurus-api/internal/pkg/common.Version=$(cat VERSION)'" -o lurus-api ./cmd/server
+CGO_ENABLED=0 go build -ldflags "-s -w -X 'github.com/LurusTech/lurus-hub/internal/pkg/common.Version=$(cat VERSION)'" -o lurus-api ./cmd/server
 
 # --- Frontend ---
 cd web && bun run typecheck

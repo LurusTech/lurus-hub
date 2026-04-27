@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	relayconstant "github.com/LurusTech/lurus-api/internal/adapter/provider/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting"
 
 	"github.com/gin-gonic/gin"
 )

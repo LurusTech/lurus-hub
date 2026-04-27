@@ -7,12 +7,12 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/LurusTech/lurus-api/internal/adapter/provider"
-	"github.com/LurusTech/lurus-api/internal/adapter/provider/openai"
-	relaycommon "github.com/LurusTech/lurus-api/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-api/internal/adapter/provider/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider/openai"
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 )

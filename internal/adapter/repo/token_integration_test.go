@@ -3,7 +3,7 @@ package repo
 import (
 	"testing"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 func TestToken_Insert_GeneratesKey(t *testing.T) {

@@ -3,7 +3,7 @@ package zhipu_4v
 import (
 	"strings"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 )
 
 func requestOpenAI2Zhipu(request dto.GeneralOpenAIRequest) *dto.GeneralOpenAIRequest {

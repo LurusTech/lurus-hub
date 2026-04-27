@@ -1,4 +1,4 @@
-module github.com/LurusTech/lurus-api
+module github.com/LurusTech/lurus-hub
 
 // +heroku goVersion go1.18
 go 1.25.1

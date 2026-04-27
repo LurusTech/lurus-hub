@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 // ConfigManager 统一管理所有配置

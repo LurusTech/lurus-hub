@@ -3,8 +3,8 @@ package dto
 import (
 	"encoding/json"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 )
 
 //type OpenAIError struct {

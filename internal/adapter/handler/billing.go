@@ -3,11 +3,11 @@ package handler
 import (
 	"net/http"
 
-	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
-	"github.com/LurusTech/lurus-api/internal/adapter/repo"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/operation_setting"
-	"github.com/LurusTech/lurus-api/internal/pkg/types"
+	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )

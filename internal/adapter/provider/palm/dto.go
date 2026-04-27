@@ -1,6 +1,6 @@
 package palm
 
-import "github.com/LurusTech/lurus-api/internal/pkg/dto"
+import "github.com/LurusTech/lurus-hub/internal/pkg/dto"
 
 type PaLMChatMessage struct {
 	Author  string `json:"author"`

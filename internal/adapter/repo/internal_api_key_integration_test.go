@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 func TestApiKey_Create_SHA256Hash(t *testing.T) {

@@ -1,7 +1,7 @@
 package vertex
 
 import (
-	"github.com/LurusTech/lurus-api/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 )
 
 type VertexAIClaudeRequest struct {

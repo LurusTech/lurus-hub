@@ -6,8 +6,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 )

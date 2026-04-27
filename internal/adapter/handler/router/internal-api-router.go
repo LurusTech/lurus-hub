@@ -1,9 +1,9 @@
 package router
 
 import (
-	"github.com/LurusTech/lurus-api/internal/adapter/handler"
-	"github.com/LurusTech/lurus-api/internal/adapter/middleware"
-	"github.com/LurusTech/lurus-api/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/adapter/handler"
+	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 
 	"github.com/gin-gonic/gin"
 )

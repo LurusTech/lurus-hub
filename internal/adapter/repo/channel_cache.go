@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LurusTech/lurus-api/internal/app/hub"
-	"github.com/LurusTech/lurus-api/internal/pkg/common"
-	"github.com/LurusTech/lurus-api/internal/pkg/constant"
-	"github.com/LurusTech/lurus-api/internal/pkg/pool"
-	"github.com/LurusTech/lurus-api/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-hub/internal/app/hub"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/pool"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 )
 
 var group2model2channels map[string]map[string][]int // enabled channel

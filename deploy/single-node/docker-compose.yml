@@ -1,0 +1,161 @@
+# Single-node Docker Compose for a 32-core / 32GB host.
+# Stack: lurus-api + PostgreSQL 15 + Redis 7. Auth is delegated to an external
+# Zitadel (e.g. https://auth.lurus.cn). No HTTPS terminator — expose IP:3000.
+#
+# Usage:
+#   1. cp .env.example .env  &&  fill it in
+#   2. ./build.sh            # builds the lurus-hub:local image from local source
+#   3. docker compose up -d
+#   4. open http://<server-ip>:3000
+
+name: lurus-hub
+
+services:
+  lurus-api:
+    image: lurus-hub:local
+    container_name: lurus-api
+    restart: unless-stopped
+    command: ["--log-dir", "/app/logs"]
+    ports:
+      - "${PUBLIC_PORT:-3000}:3000"
+    volumes:
+      - lurus_data:/data
+      - lurus_logs:/app/logs
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+
+      SQL_DSN: "postgresql://lurus:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lurus_hub}?sslmode=disable"
+      REDIS_CONN_STRING: "redis://redis:6379"
+
+      SESSION_SECRET: ${SESSION_SECRET}
+      ERROR_LOG_ENABLED: "true"
+      BATCH_UPDATE_ENABLED: "true"
+
+      # Zitadel — reuses the production auth instance by default.
+      ZITADEL_ENABLED: ${ZITADEL_ENABLED:-true}
+      ZITADEL_FALLBACK_TO_LEGACY: ${ZITADEL_FALLBACK_TO_LEGACY:-true}
+      ZITADEL_ISSUER: ${ZITADEL_ISSUER}
+      ZITADEL_CLIENT_ID: ${ZITADEL_CLIENT_ID}
+      ZITADEL_CLIENT_SECRET: ${ZITADEL_CLIENT_SECRET}
+      ZITADEL_REDIRECT_URI: ${ZITADEL_REDIRECT_URI}
+      ZITADEL_POST_LOGOUT_REDIRECT_URI: ${ZITADEL_POST_LOGOUT_REDIRECT_URI}
+      ZITADEL_JWKS_URI: ${ZITADEL_JWKS_URI}
+      ZITADEL_AUTHORIZATION_ENDPOINT: ${ZITADEL_AUTHORIZATION_ENDPOINT}
+      ZITADEL_TOKEN_ENDPOINT: ${ZITADEL_TOKEN_ENDPOINT}
+      ZITADEL_USERINFO_ENDPOINT: ${ZITADEL_USERINFO_ENDPOINT}
+      ZITADEL_END_SESSION_ENDPOINT: ${ZITADEL_END_SESSION_ENDPOINT}
+      ZITADEL_INTROSPECTION_ENDPOINT: ${ZITADEL_INTROSPECTION_ENDPOINT}
+      ZITADEL_DEFAULT_ORG_ID: ${ZITADEL_DEFAULT_ORG_ID}
+      ZITADEL_DEFAULT_ORG_NAME: ${ZITADEL_DEFAULT_ORG_NAME:-Lurus Platform}
+      ZITADEL_DEFAULT_ORG_DOMAIN: ${ZITADEL_DEFAULT_ORG_DOMAIN:-lurus}
+      ZITADEL_OAUTH_SCOPES: ${ZITADEL_OAUTH_SCOPES:-openid email profile offline_access}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks: [lurus-net]
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 8G
+        reservations:
+          cpus: "2"
+          memory: 1G
+
+  postgres:
+    image: postgres:15
+    container_name: lurus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lurus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-lurus_hub}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    # PG tuned for 12 GB RAM, 6 logical CPUs, SSD storage.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=4GB
+      - -c
+      - effective_cache_size=9GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=1GB
+      - -c
+      - max_connections=200
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - max_worker_processes=6
+      - -c
+      - max_parallel_workers=6
+      - -c
+      - max_parallel_workers_per_gather=3
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - min_wal_size=1GB
+      - -c
+      - max_wal_size=4GB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lurus -d ${POSTGRES_DB:-lurus_hub}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks: [lurus-net]
+    deploy:
+      resources:
+        limits:
+          cpus: "6"
+          memory: 12G
+        reservations:
+          cpus: "1"
+          memory: 4G
+
+  redis:
+    image: redis:7-alpine
+    container_name: lurus-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "1500mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [lurus-net]
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+networks:
+  lurus-net:
+    driver: bridge
+
+volumes:
+  pg_data:
+  redis_data:
+  lurus_data:
+  lurus_logs:

@@ -99,8 +99,12 @@ func PostSetup(c *gin.Context) {
 			DisplayName: "Root User",
 			AccessToken: nil,
 			Quota:       100000000,
+			TenantId:    "default",
 		}
-		err = repo.DB.Create(&rootUser).Error
+		// Setup runs before any tenant context exists, so wrap the DB to inject
+		// the default tenant — the tenant_plugin's beforeCreate hook rejects
+		// inserts on tenant-scoped tables when no tenant ID is in context.
+		err = repo.WithTenantID(repo.DB, "default").Create(&rootUser).Error
 		if err != nil {
 			c.JSON(200, gin.H{
 				"success": false,

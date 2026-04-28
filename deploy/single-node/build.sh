@@ -44,7 +44,8 @@ else
 fi
 touch "${STAMP}"
 
-VERSION="$(cat "${HUB_ROOT}/VERSION" 2>/dev/null || echo dev)"
+VERSION="$(cat "${HUB_ROOT}/VERSION" 2>/dev/null)"
+[[ -z "${VERSION}" ]] && VERSION="dev"
 
 echo "==> docker build (this can take 5-10 min on first run)"
 cd "${HUB_ROOT}"

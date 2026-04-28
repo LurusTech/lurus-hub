@@ -116,6 +116,27 @@ need different sizing.
 You ran `docker build` directly instead of `./build.sh`. Use the script — it
 stages the proto repo into the build context.
 
+**`go: ... proxy.golang.org ... i/o timeout`** (typical on servers in China)
+The default Go module proxy is unreachable. Edit `Dockerfile` and add right
+after `ENV GOEXPERIMENT=greenteagc`:
+
+```dockerfile
+ENV GOPROXY=https://goproxy.cn,direct
+ENV GOSUMDB=off
+```
+
+then re-run `./build.sh`. The two env lines are local-only — don't commit
+them upstream because CI has unblocked access.
+
+**`apt-get update` very slow (10+ minutes)**
+`deb.debian.org` is throttled from your region. Lasts only on first build
+(layer is cached afterwards). If you can't wait, switch to a mirror:
+
+```dockerfile
+RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends ...
+```
+
 **`pq: password authentication failed`**
 You changed `POSTGRES_PASSWORD` in `.env` after the first boot. The PG volume
 already has the user with the old password. Either:

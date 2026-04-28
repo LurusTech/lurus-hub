@@ -26,21 +26,18 @@ import {
   Typography,
   Select,
 } from '@douyinfe/semi-ui';
-import CompactModeToggle from '../../common/ui/CompactModeToggle';
 
+// Most row-level and global actions migrated to ChannelsActionRail (left rail).
+// This area now only hosts settings toggles (sort/tag-mode/status filter) and
+// the rarely-used maintenance dropdown.
 const ChannelsActions = ({
-  enableBatchDelete,
-  batchDeleteChannels,
   setShowBatchSetTag,
-  testAllChannels,
+  enableBatchDelete,
   fixChannelsAbilities,
   updateAllChannelsBalance,
   deleteAllDisabledChannels,
-  compactMode,
-  setCompactMode,
   idSort,
   setIdSort,
-  setEnableBatchDelete,
   enableTagMode,
   setEnableTagMode,
   statusFilter,
@@ -56,26 +53,8 @@ const ChannelsActions = ({
 }) => {
   return (
     <div className='flex flex-col gap-2'>
-      {/* 第一行：批量操作按钮 + 设置开关 */}
       <div className='flex flex-col md:flex-row justify-between gap-2'>
-        {/* 左侧：批量操作按钮 */}
         <div className='flex flex-wrap md:flex-nowrap items-center gap-2 w-full md:w-auto order-2 md:order-1'>
-          <Button
-            size='small'
-            disabled={!enableBatchDelete}
-            type='danger'
-            className='w-full md:w-auto'
-            onClick={() => {
-              Modal.confirm({
-                title: t('确定是否要删除所选通道？'),
-                content: t('此修改将不可逆'),
-                onOk: () => batchDeleteChannels(),
-              });
-            }}
-          >
-            {t('删除所选通道')}
-          </Button>
-
           <Button
             size='small'
             disabled={!enableBatchDelete}
@@ -91,24 +70,6 @@ const ChannelsActions = ({
             trigger='click'
             render={
               <Dropdown.Menu>
-                <Dropdown.Item>
-                  <Button
-                    size='small'
-                    type='tertiary'
-                    className='w-full'
-                    onClick={() => {
-                      Modal.confirm({
-                        title: t('确定？'),
-                        content: t('确定要测试所有通道吗？'),
-                        onOk: () => testAllChannels(),
-                        size: 'small',
-                        centered: true,
-                      });
-                    }}
-                  >
-                    {t('测试所有通道')}
-                  </Button>
-                </Dropdown.Item>
                 <Dropdown.Item>
                   <Button
                     size='small'
@@ -173,18 +134,11 @@ const ChannelsActions = ({
               type='tertiary'
               className='w-full md:w-auto'
             >
-              {t('批量操作')}
+              {t('维护操作')}
             </Button>
           </Dropdown>
-
-          <CompactModeToggle
-            compactMode={compactMode}
-            setCompactMode={setCompactMode}
-            t={t}
-          />
         </div>
 
-        {/* 右侧：设置开关区域 */}
         <div className='flex flex-col md:flex-row items-start md:items-center gap-2 w-full md:w-auto order-1 md:order-2'>
           <div className='flex items-center justify-between w-full md:w-auto'>
             <Typography.Text strong className='mr-2'>
@@ -214,20 +168,6 @@ const ChannelsActions = ({
                     v,
                   );
                 }
-              }}
-            />
-          </div>
-
-          <div className='flex items-center justify-between w-full md:w-auto'>
-            <Typography.Text strong className='mr-2'>
-              {t('开启批量操作')}
-            </Typography.Text>
-            <Switch
-              size='small'
-              checked={enableBatchDelete}
-              onChange={(v) => {
-                localStorage.setItem('enable-batch-delete', v + '');
-                setEnableBatchDelete(v);
               }}
             />
           </div>

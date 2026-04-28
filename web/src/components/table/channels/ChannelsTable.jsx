@@ -25,6 +25,7 @@ import {
   IllustrationNoResultDark,
 } from '@douyinfe/semi-illustrations';
 import { getChannelsColumns } from './ChannelsColumnDefs';
+import ChannelModelsSubTable from './ChannelModelsSubTable';
 
 const ChannelsTable = (channelsData) => {
   const {
@@ -61,6 +62,11 @@ const ChannelsTable = (channelsData) => {
     // Multi-key management
     setShowMultiKeyManageModal,
     setCurrentMultiKeyChannel,
+    // model expand + selection
+    selectedModels,
+    setChannelModelSelection,
+    expandedRowKeys,
+    setExpandedRowKeys,
   } = channelsData;
 
   // Get all columns
@@ -125,6 +131,22 @@ const ChannelsTable = (channelsData) => {
       : visibleColumnsList;
   }, [compactMode, visibleColumnsList]);
 
+  // Channel rows that have models attached are expandable. Tag-aggregation
+  // rows (record.children !== undefined) and rows with no models are not.
+  const expandedRowRender = (record) => (
+    <ChannelModelsSubTable
+      channel={record}
+      selectedModels={selectedModels}
+      setChannelModelSelection={setChannelModelSelection}
+      t={t}
+    />
+  );
+
+  const rowExpandable = (record) =>
+    record.children === undefined &&
+    typeof record.models === 'string' &&
+    record.models.trim().length > 0;
+
   return (
     <CardTable
       columns={tableColumns}
@@ -142,6 +164,17 @@ const ChannelsTable = (channelsData) => {
       hidePagination={true}
       expandAllRows={false}
       onRow={handleRow}
+      expandedRowRender={expandedRowRender}
+      rowExpandable={rowExpandable}
+      expandedRowKeys={expandedRowKeys}
+      onExpandedRowsChange={(rows) => {
+        // Semi gives us the row records currently expanded; we need their keys.
+        const ids = (rows || [])
+          .map((r) => (typeof r === 'object' ? r.id : r))
+          .filter((v) => v !== undefined && v !== null);
+        setExpandedRowKeys(ids);
+      }}
+      rowKey='id'
       rowSelection={
         enableBatchDelete
           ? {

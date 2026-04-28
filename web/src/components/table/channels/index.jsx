@@ -23,6 +23,7 @@ import { IconAlertTriangle } from '@douyinfe/semi-icons';
 import CardPro from '../../common/ui/CardPro';
 import ChannelsTable from './ChannelsTable';
 import ChannelsActions from './ChannelsActions';
+import ChannelsActionRail from './ChannelsActionRail';
 import ChannelsFilters from './ChannelsFilters';
 import ChannelsTabs from './ChannelsTabs';
 import { useChannelsData } from '../../../hooks/channels/useChannelsData';
@@ -81,24 +82,29 @@ const ChannelsPage = () => {
           style={{ marginBottom: 12 }}
         />
       ) : null}
-      <CardPro
-        type='type3'
-        tabsArea={<ChannelsTabs {...channelsData} />}
-        actionsArea={<ChannelsActions {...channelsData} />}
-        searchArea={<ChannelsFilters {...channelsData} />}
-        paginationArea={createCardProPagination({
-          currentPage: channelsData.activePage,
-          pageSize: channelsData.pageSize,
-          total: channelsData.channelCount,
-          onPageChange: channelsData.handlePageChange,
-          onPageSizeChange: channelsData.handlePageSizeChange,
-          isMobile: isMobile,
-          t: channelsData.t,
-        })}
-        t={channelsData.t}
-      >
-        <ChannelsTable {...channelsData} />
-      </CardPro>
+      <div className='flex gap-2 items-stretch'>
+        <ChannelsActionRail {...channelsData} />
+        <div className='flex-1 min-w-0'>
+          <CardPro
+            type='type3'
+            tabsArea={<ChannelsTabs {...channelsData} />}
+            actionsArea={<ChannelsActions {...channelsData} />}
+            searchArea={<ChannelsFilters {...channelsData} />}
+            paginationArea={createCardProPagination({
+              currentPage: channelsData.activePage,
+              pageSize: channelsData.pageSize,
+              total: channelsData.channelCount,
+              onPageChange: channelsData.handlePageChange,
+              onPageSizeChange: channelsData.handlePageSizeChange,
+              isMobile: isMobile,
+              t: channelsData.t,
+            })}
+            t={channelsData.t}
+          >
+            <ChannelsTable {...channelsData} />
+          </CardPro>
+        </div>
+      </div>
     </>
   );
 };

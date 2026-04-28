@@ -20,11 +20,9 @@ For commercial licensing, please contact support@quantumnous.com
 import React from 'react';
 import {
   Button,
-  Dropdown,
   InputNumber,
   Modal,
   Space,
-  SplitButtonGroup,
   Tag,
   Tooltip,
   Typography,
@@ -41,7 +39,6 @@ import {
 import { CHANNEL_OPTIONS } from '../../../constants';
 import {
   IconTreeTriangleDown,
-  IconMore,
   IconAlertTriangle,
 } from '@douyinfe/semi-icons';
 import { FaRandom } from 'react-icons/fa';
@@ -574,188 +571,6 @@ export const getChannelsColumns = ({
               min={-999}
               size='small'
             />
-          );
-        }
-      },
-    },
-    {
-      key: COLUMN_KEYS.OPERATE,
-      title: '',
-      dataIndex: 'operate',
-      fixed: 'right',
-      render: (text, record, index) => {
-        if (record.children === undefined) {
-          const moreMenuItems = [
-            {
-              node: 'item',
-              name: t('删除'),
-              type: 'danger',
-              onClick: () => {
-                Modal.confirm({
-                  title: t('确定是否要删除此渠道？'),
-                  content: t('此修改将不可逆'),
-                  onOk: () => {
-                    (async () => {
-                      await manageChannel(record.id, 'delete', record);
-                      await refresh();
-                      setTimeout(() => {
-                        if (channels.length === 0 && activePage > 1) {
-                          refresh(activePage - 1);
-                        }
-                      }, 100);
-                    })();
-                  },
-                });
-              },
-            },
-            {
-              node: 'item',
-              name: t('复制'),
-              type: 'tertiary',
-              onClick: () => {
-                Modal.confirm({
-                  title: t('确定是否要复制此渠道？'),
-                  content: t('复制渠道的所有信息'),
-                  onOk: () => copySelectedChannel(record),
-                });
-              },
-            },
-          ];
-
-          if (record.type === 4) {
-            moreMenuItems.unshift({
-              node: 'item',
-              name: t('测活'),
-              type: 'tertiary',
-              onClick: () => checkOllamaVersion(record),
-            });
-          }
-
-          return (
-            <Space wrap>
-              <SplitButtonGroup
-                className='overflow-hidden'
-                aria-label={t('测试单个渠道操作项目组')}
-              >
-                <Button
-                  size='small'
-                  type='tertiary'
-                  onClick={() => testChannel(record, '')}
-                >
-                  {t('测试')}
-                </Button>
-                <Button
-                  size='small'
-                  type='tertiary'
-                  icon={<IconTreeTriangleDown />}
-                  onClick={() => {
-                    setCurrentTestChannel(record);
-                    setShowModelTestModal(true);
-                  }}
-                />
-              </SplitButtonGroup>
-
-              {record.status === 1 ? (
-                <Button
-                  type='danger'
-                  size='small'
-                  onClick={() => manageChannel(record.id, 'disable', record)}
-                >
-                  {t('禁用')}
-                </Button>
-              ) : (
-                <Button
-                  size='small'
-                  onClick={() => manageChannel(record.id, 'enable', record)}
-                >
-                  {t('启用')}
-                </Button>
-              )}
-
-              {record.channel_info?.is_multi_key ? (
-                <SplitButtonGroup aria-label={t('多密钥渠道操作项目组')}>
-                  <Button
-                    type='tertiary'
-                    size='small'
-                    onClick={() => {
-                      setEditingChannel(record);
-                      setShowEdit(true);
-                    }}
-                  >
-                    {t('编辑')}
-                  </Button>
-                  <Dropdown
-                    trigger='click'
-                    position='bottomRight'
-                    menu={[
-                      {
-                        node: 'item',
-                        name: t('多密钥管理'),
-                        onClick: () => {
-                          setCurrentMultiKeyChannel(record);
-                          setShowMultiKeyManageModal(true);
-                        },
-                      },
-                    ]}
-                  >
-                    <Button
-                      type='tertiary'
-                      size='small'
-                      icon={<IconTreeTriangleDown />}
-                    />
-                  </Dropdown>
-                </SplitButtonGroup>
-              ) : (
-                <Button
-                  type='tertiary'
-                  size='small'
-                  onClick={() => {
-                    setEditingChannel(record);
-                    setShowEdit(true);
-                  }}
-                >
-                  {t('编辑')}
-                </Button>
-              )}
-
-              <Dropdown
-                trigger='click'
-                position='bottomRight'
-                menu={moreMenuItems}
-              >
-                <Button icon={<IconMore />} type='tertiary' size='small' />
-              </Dropdown>
-            </Space>
-          );
-        } else {
-          // 标签操作按钮
-          return (
-            <Space wrap>
-              <Button
-                type='tertiary'
-                size='small'
-                onClick={() => manageTag(record.key, 'enable')}
-              >
-                {t('启用全部')}
-              </Button>
-              <Button
-                type='tertiary'
-                size='small'
-                onClick={() => manageTag(record.key, 'disable')}
-              >
-                {t('禁用全部')}
-              </Button>
-              <Button
-                type='tertiary'
-                size='small'
-                onClick={() => {
-                  setShowEditTag(true);
-                  setEditingTag(record.key);
-                }}
-              >
-                {t('编辑')}
-              </Button>
-            </Space>
           );
         }
       },

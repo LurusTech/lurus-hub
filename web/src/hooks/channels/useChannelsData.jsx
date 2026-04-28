@@ -53,11 +53,19 @@ export const useChannelsData = () => {
 
   // UI states
   const [showEdit, setShowEdit] = useState(false);
-  const [enableBatchDelete, setEnableBatchDelete] = useState(false);
+  // Checkboxes are always visible because the left ChannelsActionRail relies
+  // on row selection to drive every per-row action.
+  const [enableBatchDelete, setEnableBatchDelete] = useState(true);
   const [editingChannel, setEditingChannel] = useState({ id: undefined });
   const [showEditTag, setShowEditTag] = useState(false);
   const [editingTag, setEditingTag] = useState('');
   const [selectedChannels, setSelectedChannels] = useState([]);
+  // Cross-channel model selection. Each entry: { channelId, channel, modelName }.
+  // Each expanded sub-table writes/reads only the slice for its own channel.
+  const [selectedModels, setSelectedModels] = useState([]);
+  // Channels whose model sub-table is currently expanded — controlled so the
+  // expand chevron in column headers can mass-toggle.
+  const [expandedRowKeys, setExpandedRowKeys] = useState([]);
   const [enableTagMode, setEnableTagMode] = useState(false);
   const [showBatchSetTag, setShowBatchSetTag] = useState(false);
   const [batchSetTagValue, setBatchSetTagValue] = useState('');
@@ -136,7 +144,6 @@ export const useChannelsData = () => {
     BALANCE: 'balance',
     PRIORITY: 'priority',
     WEIGHT: 'weight',
-    OPERATE: 'operate',
   };
 
   // Initialize from localStorage
@@ -146,13 +153,11 @@ export const useChannelsData = () => {
       parseInt(localStorage.getItem('page-size')) || ITEMS_PER_PAGE;
     const localEnableTagMode =
       localStorage.getItem('enable-tag-mode') === 'true';
-    const localEnableBatchDelete =
-      localStorage.getItem('enable-batch-delete') === 'true';
 
     setIdSort(localIdSort);
     setPageSize(localPageSize);
     setEnableTagMode(localEnableTagMode);
-    setEnableBatchDelete(localEnableBatchDelete);
+    setEnableBatchDelete(true);
 
     loadChannels(1, localPageSize, localIdSort, localEnableTagMode)
       .then()
@@ -176,7 +181,6 @@ export const useChannelsData = () => {
       [COLUMN_KEYS.BALANCE]: true,
       [COLUMN_KEYS.PRIORITY]: true,
       [COLUMN_KEYS.WEIGHT]: true,
-      [COLUMN_KEYS.OPERATE]: true,
     };
   };
 
@@ -604,6 +608,87 @@ export const useChannelsData = () => {
     if (updated) {
       setChannels(newChannels);
     }
+  };
+
+  // Replace this channel's selected-model slice with the given list of names.
+  // The rail consumes the flattened union across all channels.
+  const setChannelModelSelection = (channelId, modelNames) => {
+    setSelectedModels((prev) => {
+      const filtered = prev.filter((m) => m.channelId !== channelId);
+      const channel = findChannelById(channelId);
+      if (!channel) return filtered;
+      const added = modelNames.map((name) => ({
+        channelId,
+        channel,
+        modelName: name,
+      }));
+      return [...filtered, ...added];
+    });
+  };
+
+  const findChannelById = (id) => {
+    for (const ch of channels) {
+      if (ch.children !== undefined) {
+        const hit = ch.children.find((c) => c.id === id);
+        if (hit) return hit;
+      } else if (ch.id === id) {
+        return ch;
+      }
+    }
+    return null;
+  };
+
+  // Remove a list of model names from a single channel's models string and
+  // ModelMapping JSON, then PUT the updated channel.
+  const removeModelsFromChannel = async (channelId, modelNames) => {
+    const channel = findChannelById(channelId);
+    if (!channel) {
+      showError(t('未找到对应渠道'));
+      return false;
+    }
+    const remove = new Set(modelNames);
+    const remaining = (channel.models || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s && !remove.has(s));
+
+    let mappingObj = {};
+    if (channel.model_mapping) {
+      try {
+        mappingObj = JSON.parse(channel.model_mapping) || {};
+      } catch (e) {
+        mappingObj = {};
+      }
+    }
+    const newMapping = { ...mappingObj };
+    modelNames.forEach((m) => delete newMapping[m]);
+
+    const data = {
+      id: channelId,
+      models: remaining.join(','),
+      model_mapping: Object.keys(newMapping).length
+        ? JSON.stringify(newMapping)
+        : '',
+    };
+
+    try {
+      const res = await API.put('/api/channel/', data);
+      if (res?.data?.success) {
+        showSuccess(t('已移除 ${n} 个模型').replace('${n}', modelNames.length));
+        // Clear selection for this channel and refresh.
+        setSelectedModels((prev) =>
+          prev.filter(
+            (m) => !(m.channelId === channelId && remove.has(m.modelName)),
+          ),
+        );
+        await refresh();
+        return true;
+      }
+      showError(res?.data?.message || t('更新失败'));
+    } catch (e) {
+      showError(e);
+    }
+    return false;
   };
 
   // Tag edit
@@ -1122,6 +1207,12 @@ export const useChannelsData = () => {
     setEditingTag,
     selectedChannels,
     setSelectedChannels,
+    selectedModels,
+    setSelectedModels,
+    setChannelModelSelection,
+    removeModelsFromChannel,
+    expandedRowKeys,
+    setExpandedRowKeys,
     showBatchSetTag,
     setShowBatchSetTag,
     batchSetTagValue,

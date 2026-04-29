@@ -28,6 +28,9 @@ services:
       REDIS_CONN_STRING: "redis://redis:6379"
 
       SESSION_SECRET: ${SESSION_SECRET}
+      # Empty by default — single-node deploys via IP/custom domain need a
+      # host-only cookie. lurus.cn deploys override to ".lurus.cn" for SSO.
+      SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-}
       ERROR_LOG_ENABLED: "true"
       BATCH_UPDATE_ENABLED: "true"
 

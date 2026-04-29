@@ -283,13 +283,22 @@ func run(ctx context.Context, startTime time.Time) error {
 	if envSecure := os.Getenv("SESSION_SECURE"); envSecure != "" {
 		sessionSecure = envSecure == "true"
 	}
+	// Default to ".lurus.cn" so the lurus.cn deployments share session cookies
+	// across subdomains. Standalone deployments under a single host (especially
+	// when accessed via IP, where browsers reject mismatched Domain attributes
+	// and silently drop the cookie) should set SESSION_COOKIE_DOMAIN="" to opt
+	// into a host-only cookie.
+	cookieDomain := ".lurus.cn"
+	if d, ok := os.LookupEnv("SESSION_COOKIE_DOMAIN"); ok {
+		cookieDomain = d
+	}
 	sessionOpts := sessions.Options{
 		Path:     "/",
 		MaxAge:   7776000, // 90 days
 		HttpOnly: true,
 		Secure:   sessionSecure,
 		SameSite: http.SameSiteLaxMode,
-		Domain:   ".lurus.cn", // Enable cross-subdomain SSO
+		Domain:   cookieDomain,
 	}
 	var store sessions.Store
 	if redisURL := os.Getenv("REDIS_CONN_STRING"); redisURL != "" {

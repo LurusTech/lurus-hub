@@ -150,13 +150,15 @@ export function showError(error) {
     if (error.name === 'AxiosError') {
       switch (error.response.status) {
         case 401:
-          // Clear user state and redirect to appropriate login page
+          // Clear user state and redirect to OAuth login. The fallback used
+          // to be /login/password (a legacy route), but now React Router
+          // parses it as tenantSlug="password" and the API rejects with
+          // "tenant not found". Send the user through ZitadelRedirect
+          // (/login) which falls back to DEFAULT_TENANT.
           localStorage.removeItem('user');
-          if (localStorage.getItem('tenant_slug')) {
-            const slug = localStorage.getItem('tenant_slug');
+          {
+            const slug = localStorage.getItem('tenant_slug') || 'lurus';
             window.location.href = `/api/v2/${slug}/auth/login?redirect_url=/oauth/zitadel`;
-          } else {
-            window.location.href = '/login/password';
           }
           break;
         case 429:

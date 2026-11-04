@@ -5,7 +5,9 @@
 # - PG in `database` namespace
 # - lurus-system + lurus-platform (Redis, platform-core gRPC/HTTP)
 # - lurus-grok2api (chenyme/grok2api OpenAI-compat upstream; see deploy/k8s/r6-grok2api/)
-# - public 80/443 (egress to internet, excluding RFC1918)
+# - public 80/443/8800 (egress to internet, excluding RFC1918)
+#   8800 is interim for host-network grok2api on R1 (43.226.46.164) until
+#   deploy/k8s/r6-grok2api/ is live in ns lurus-grok2api (rule 4 already covers it).
 #
 # RELAY EGRESS MODEL (measured from a live pod 2026-08-24 — read before adding
 # an HTTP_PROXY env, it is deliberately absent):
@@ -91,4 +93,6 @@ spec:
         - port: 443
           protocol: TCP
         - port: 80
+          protocol: TCP
+        - port: 8800
           protocol: TCP

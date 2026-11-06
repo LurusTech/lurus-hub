@@ -62,6 +62,12 @@ curl -s https://hub.lurus.cn/api/health
 
 # migration 漂移信号
 curl -s https://hub.lurus.cn/metrics | grep schema_migrations
+
+# CatalogSync (mig 056) — UAT first, ticker off until doctor is live
+# curl expect 401/403 (route present) not 404
+curl -s -o /dev/null -w "%{http_code}\n" https://test-newhub.lurus.cn/api/catalog-sync/stale
+FLEETCTL_NEWHUB_BASE=https://test-newhub.lurus.cn fleetctl doctor
+# then set CATALOG_SYNC_FREQUENCY on r6-uat (minutes); promote to r6-stage only after UAT green
 ```
 
 ## 相关文档

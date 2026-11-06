@@ -267,6 +267,11 @@ spec:
             # (2026-09-29: 3 of its 40 ":free" models were still free).
             - name: OPENROUTER_FREE_SYNC_FREQUENCY
               value: "60"
+            # Multi-provider CatalogSync (mig 056). Keep empty until UAT
+            # (test-newhub.lurus.cn) is green with fleetctl doctor + models sync.
+            # Routes ship with the image via AutoMigrate; ticker stays off.
+            - name: CATALOG_SYNC_FREQUENCY
+              value: ""
             # Cycle-13 pool ceiling, sized against a MEASURED server budget
             # (2026-09-20, R6 ns database, pod lurus-pg-0):
             # max_connections = 100, 38 in use -- newhub 13, zitadel 8,

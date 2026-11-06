@@ -566,6 +566,10 @@ func migrateDB() error {
 		&ChannelTemplateApplication{},
 		// Reseller team-asset bundle store (migration 055) - dual-creation like 040.
 		&entity.SwitchTeamPack{},
+		// Multi-provider catalog sync (migration 056) — dual-creation like 010.
+		&entity.CatalogSyncRun{},
+		&entity.CatalogStalePending{},
+		&entity.CatalogPriceProposal{},
 	)
 	if err != nil {
 		return err

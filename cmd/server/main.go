@@ -21,6 +21,7 @@ import (
 	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/app/hub"
 	"github.com/LurusTech/lurus-hub/internal/app/openrouter_pool"
+	catalog_sync "github.com/LurusTech/lurus-hub/internal/app/catalog_sync"
 	openrouter_sync "github.com/LurusTech/lurus-hub/internal/app/openrouter_sync"
 	"github.com/LurusTech/lurus-hub/internal/app/planquota"
 	"github.com/LurusTech/lurus-hub/internal/app/relay/bifrosteng"
@@ -254,6 +255,17 @@ func run(ctx context.Context, startTime time.Time) error {
 		}
 		goSupervised(g, ctx, "openrouter-sync", func(ctx context.Context) {
 			openrouter_sync.AutoSyncWithContext(ctx, frequency)
+		})
+	}
+	// Multi-provider catalog inventory + gated price proposals. Disabled when
+	// CATALOG_SYNC_FREQUENCY is empty/unset (default off until STAGE green).
+	if os.Getenv("CATALOG_SYNC_FREQUENCY") != "" {
+		frequency, err := strconv.Atoi(os.Getenv("CATALOG_SYNC_FREQUENCY"))
+		if err != nil {
+			return fmt.Errorf("failed to parse CATALOG_SYNC_FREQUENCY: %w", err)
+		}
+		goSupervised(g, ctx, "catalog-sync", func(ctx context.Context) {
+			catalog_sync.AutoCatalogSyncWithContext(ctx, frequency)
 		})
 	}
 	// Hourly aggregator runs whenever OpenRouter sync is configured (any sync job present

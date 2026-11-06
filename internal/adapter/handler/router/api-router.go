@@ -204,6 +204,20 @@ func SetApiRouter(router *gin.Engine) {
 			redemptionRoute.DELETE("/:id", handler.DeleteRedemption)
 		}
 
+		// Multi-provider catalog sync (inventory + gated price proposals).
+		// Process-global like openrouter-sync — root-only.
+		catalogSyncRoute := apiRouter.Group("/catalog-sync")
+		catalogSyncRoute.Use(middleware.RootAuth())
+		{
+			catalogSyncRoute.POST("/run", handler.RunCatalogSync)
+			catalogSyncRoute.GET("/runs", handler.ListCatalogSyncRuns)
+			catalogSyncRoute.GET("/stale", handler.ListCatalogStale)
+			catalogSyncRoute.POST("/stale/confirm", handler.ConfirmCatalogStale)
+			catalogSyncRoute.GET("/price-proposals", handler.ListCatalogPriceProposals)
+			catalogSyncRoute.POST("/price-proposals/apply", handler.ApplyCatalogPriceProposals)
+			catalogSyncRoute.POST("/price-proposals/dismiss", handler.DismissCatalogPriceProposals)
+		}
+
 		// OpenRouter free-model sync admin routes
 		openrouterSyncRoute := apiRouter.Group("/openrouter-sync")
 		openrouterSyncRoute.Use(middleware.AdminAuth())

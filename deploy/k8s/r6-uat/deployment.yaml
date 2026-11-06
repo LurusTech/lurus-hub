@@ -222,12 +222,11 @@ spec:
               value: "master"
             - name: SYNC_FREQUENCY
               value: "60"
-            # Multi-provider CatalogSync (mig 056). Empty = HTTP routes present
-            # after image ship, ticker off. Set minutes (e.g. "1440") only after
-            # `FLEETCTL_NEWHUB_BASE=https://test-newhub.lurus.cn fleetctl doctor`
-            # reports catalog_sync.status=live.
+            # Multi-provider CatalogSync (mig 056). Doctor live on UAT/hub
+            # 2026-11-06 (fleetctl catalog_sync.status=live). Ticker on for UAT
+            # soak; promote the same value to r6-stage only after UAT green.
             - name: CATALOG_SYNC_FREQUENCY
-              value: ""
+              value: "1440"
             # Circuit breaker: a run of upstream failures only trips a channel
             # if the failures fall within 5 minutes of each other; older ones
             # are forgotten (resilience.Config.FailureWindow, default off).

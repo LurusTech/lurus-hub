@@ -518,11 +518,7 @@ func SetApiV2Router(router *gin.Engine) {
 			// RedemptionRateLimit (5/60s/IP, "RD" bucket) guards code-guessing
 			// here too (cycle-8 L1).
 			switchGroup.POST("/user/topup", middleware.RedemptionRateLimit(), handler.SwitchUserTopup)
-			// CN-survivable self-update mirror: latest Switch desktop release
-			// (admin-published via switch_app.* options; 404 = unpublished,
-			// client falls back to GitHub Releases). When lurus-switch is in
-			// RELEASE_GATED_PRODUCTS, anonymous callers get 401 — do not leak
-			// the Hub-hosted download_url (GitHub fallback is a separate bypass).
+			// Switch self-update mirror (options-driven; 404→GitHub). Gate when RELEASE_GATED_PRODUCTS includes lurus-switch.
 			switchGroup.GET("/app/releases/latest", middleware.FixedProductDownloadGate("lurus-switch"), handler.GetSwitchAppRelease)
 		}
 

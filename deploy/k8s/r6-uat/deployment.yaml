@@ -179,6 +179,9 @@ spec:
               value: "false"
             - name: CREDIT_POOL_REQUIRED
               value: "enforce"
+            # Same paid-SKU download gate as r6-stage (Switch mirror + Release artifacts).
+            - name: RELEASE_GATED_PRODUCTS
+              value: "lurus-switch"
             - name: LLM_QUOTA_NATS_ENABLED
               value: "false"
             # L7 per-device session registry: on in UAT this cycle for the

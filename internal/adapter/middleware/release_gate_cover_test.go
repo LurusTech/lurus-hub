@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -122,6 +123,29 @@ func TestParseGatedProducts_ExtraCases(t *testing.T) {
 	}
 	if len(parseGatedProducts("")) != 0 {
 		t.Errorf("empty string must yield empty set")
+	}
+}
+
+func TestFixedProductDownloadGate_OffWhenNotListed(t *testing.T) {
+	_ = os.Unsetenv("RELEASE_GATED_PRODUCTS")
+	r := gin.New()
+	r.GET("/latest", FixedProductDownloadGate("lurus-switch"), func(c *gin.Context) { c.Status(http.StatusOK) })
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/latest", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 when product not gated", w.Code)
+	}
+}
+
+func TestFixedProductDownloadGate_Anonymous401(t *testing.T) {
+	_ = os.Setenv("RELEASE_GATED_PRODUCTS", "lurus-switch")
+	defer func() { _ = os.Unsetenv("RELEASE_GATED_PRODUCTS") }()
+	r := gin.New()
+	r.GET("/latest", FixedProductDownloadGate("lurus-switch"), func(c *gin.Context) { c.Status(http.StatusOK) })
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/latest", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401 for anonymous gated switch mirror", w.Code)
 	}
 }
 

@@ -49,14 +49,17 @@ import (
 // Tokens without a tenant, tenants without a pool row, and unlimited pools
 // all skip the debit (pool gate semantics: no pool = unlimited).
 //
-// Returns whether a debit was actually RECORDED (outcome 1 or 2). The caller
-// needs that to decide whether there is anything to hand back when a later
-// phase fails: crediting a pool that was skipped — or whose debit was lost to
-// a DB error — would invent balance the tenant never spent.
-func debitTenantPool(relayInfo *relaycommon.RelayInfo, quota int) bool {
+// Returns whether a debit was actually RECORDED (outcome 1 or 2), and whether
+// a real non-unlimited pool's debit was LOST (outcome 3). recorded is what the
+// refund path keys compensation off: crediting a pool that was skipped — or
+// whose debit was lost — would invent balance the tenant never spent. lost is
+// what the wallet leg keys off: settling after outcome 3 would charge the
+// customer for a draw the pool ledger does not contain. Skips (no tenant, no
+// pool row, unlimited) are recorded=false, lost=false.
+func debitTenantPool(relayInfo *relaycommon.RelayInfo, quota int) (recorded bool, lost bool) {
 	tok, terr := repo.GetTokenById(relayInfo.TokenId)
 	if terr != nil || tok == nil || tok.TenantId == "" {
-		return false
+		return false, false
 	}
 	pool, perr := repo.GetTenantCreditPool(tok.TenantId)
 	if perr != nil {
@@ -70,7 +73,7 @@ func debitTenantPool(relayInfo *relaycommon.RelayInfo, quota int) bool {
 			common.SysLog(fmt.Sprintf(
 				`{"event":"pool_lookup_miss","who":"tenant:%s","what":"post-consume debit %d skipped: no credit pool row (token %d)","result":"treated as unlimited, verify tenant-id is not drifted"}`,
 				tok.TenantId, quota, relayInfo.TokenId))
-			return false
+			return false, false
 		}
 		// Hard DB error resolving the pool row — same severity as a lost debit,
 		// since we can't even tell whether this tenant is pool-gated.
@@ -78,10 +81,10 @@ func debitTenantPool(relayInfo *relaycommon.RelayInfo, quota int) bool {
 		common.SysError(fmt.Sprintf(
 			`{"event":"pool_lookup_error","who":"tenant:%s","what":"post-consume debit %d: credit pool lookup failed (token %d)","result":"debit skipped, conservation broken: %s"}`,
 			tok.TenantId, quota, relayInfo.TokenId, perr.Error()))
-		return false
+		return false, false
 	}
 	if pool == nil || pool.IsUnlimited() {
-		return false
+		return false, false
 	}
 
 	derr := repo.DebitPool(pool.ID, tok.TenantId, int64(quota), relayInfo.TokenId, 0)
@@ -94,7 +97,7 @@ func debitTenantPool(relayInfo *relaycommon.RelayInfo, quota int) bool {
 			governance.ActionBillingDebit, governance.ResourceTenant, int(pool.ID),
 			fmt.Sprintf(`{"quota":%d,"pool_id":%d,"token_id":%d}`, quota, pool.ID, relayInfo.TokenId)))
 		maybeAlertPoolThreshold(pool, after)
-		return true
+		return true, false
 	}
 
 	if errors.Is(derr, repo.ErrPoolExhausted) {
@@ -106,7 +109,7 @@ func debitTenantPool(relayInfo *relaycommon.RelayInfo, quota int) bool {
 				`{"event":"pool_overdraft","who":"tenant:%s","what":"post-consume debit %d on exhausted pool %d (token %d)","result":"recorded as relay_overdraft, new_balance=%d"}`,
 				tok.TenantId, quota, pool.ID, relayInfo.TokenId, newBalance))
 			maybeAlertPoolThreshold(pool, newBalance)
-			return true
+			return true, false
 		}
 		derr = oerr
 	}
@@ -117,7 +120,7 @@ func debitTenantPool(relayInfo *relaycommon.RelayInfo, quota int) bool {
 	common.SysError(fmt.Sprintf(
 		`{"event":"pool_debit_lost","who":"tenant:%s","what":"post-consume debit %d on pool %d (token %d) failed","result":"debit NOT recorded, conservation broken: %s"}`,
 		tok.TenantId, quota, pool.ID, relayInfo.TokenId, derr.Error()))
-	return false
+	return false, true
 }
 
 // creditTenantPool hands a recorded pool debit back, for the one caller that

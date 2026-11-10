@@ -25,7 +25,9 @@ import (
 // when there is not, release a hold the request turned out not to need.
 // localQuotaConsistent/advisory decide whether a request whose local ledger
 // write failed may still be charged — see PostConsumeQuota's Phase 3.
-func settlePlatformWallet(relayInfo *relaycommon.RelayInfo, totalQuota, preConsumedQuota int, localQuotaConsistent, advisory bool) {
+// poolDebitLost skips the charge even under advisory: a real limited pool
+// missed its debit, and the wallet must not bill a draw that was not recorded.
+func settlePlatformWallet(relayInfo *relaycommon.RelayInfo, totalQuota, preConsumedQuota int, localQuotaConsistent, advisory, poolDebitLost bool) {
 	if relayInfo.IdentityAccountID > 0 && totalQuota > 0 {
 		accountID := relayInfo.IdentityAccountID
 		amountLB := currency.QuotaToCNY(totalQuota)
@@ -34,10 +36,16 @@ func settlePlatformWallet(relayInfo *relaycommon.RelayInfo, totalQuota, preConsu
 		if relayInfo.PlatformPreAuthID > 0 {
 			preAuthID := relayInfo.PlatformPreAuthID
 			charged := false
-			if !localQuotaConsistent && !advisory {
-				// Local quota is inconsistent — release pre-auth instead of settling,
-				// to avoid charging the wallet for a request that wasn't properly recorded locally.
-				abandonPreAuth(relayInfo, "local quota inconsistent")
+			if poolDebitLost || (!localQuotaConsistent && !advisory) {
+				// Release the hold instead of settling. Local inconsistency matches
+				// the previous gate. A lost debit on a real limited pool releases
+				// even under advisory: charging would bill a draw the pool ledger
+				// does not contain. Phase 2.5 never fails the caller.
+				reason := "local quota inconsistent"
+				if poolDebitLost {
+					reason = "tenant pool debit lost"
+				}
+				abandonPreAuth(relayInfo, reason)
 			} else {
 				// Advisory mode settles even when the local shadow write was
 				// inconsistent: the platform wallet is the ledger of record and
@@ -75,9 +83,15 @@ func settlePlatformWallet(relayInfo *relaycommon.RelayInfo, totalQuota, preConsu
 			// refuses to charge WAS charged for any account that happened to
 			// have no pre-auth (flag-off windows, high-balance skip, degraded
 			// admit) — the same double-debit risk, inconsistently applied.
-			charge := localQuotaConsistent || advisory
+			// poolDebitLost overrides advisory. Same rule as the pre-auth branch:
+			// there is no hold to release here, so the corrective action is to
+			// not debit.
+			charge := (localQuotaConsistent || advisory) && !poolDebitLost
 			if charge {
 				relayInfo.WalletChargeCNY4 = currency.CNYToUnits4(amountLB)
+			} else if poolDebitLost {
+				common.SysLog(fmt.Sprintf("legacy wallet debit skipped, tenant pool debit lost: accountID=%d, amount=%.4f LB, userId=%d",
+					accountID, amountLB, relayInfo.UserId))
 			} else {
 				// Same severity/shape as the local-inconsistency logs above
 				// (common.SysLog) so the skipped revenue is observable rather

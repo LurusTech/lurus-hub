@@ -529,8 +529,6 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 		if ChargeableInputNonZero(relayInfo.PriceData.UsePrice, modelPrice, modelRatio) && quota == 0 {
 			quota = 1
 		}
-		repo.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		repo.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	quotaDelta := quota - relayInfo.FinalPreConsumedQuota
@@ -555,6 +553,7 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	// expire and release paid-for revenue. PostConsumeQuota handles quota == 0
 	// safely (the +0 local writes are no-ops; pool + settle key on totalQuota).
 	settleErr := SettleConsume(ctx, relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, "claude")
+	CommitUsedQuota(relayInfo, quota, settleErr, totalTokens != 0)
 
 	other := GenerateClaudeOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio,
 		cacheTokens, cacheRatio,
@@ -720,9 +719,6 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		logContent += fmt.Sprintf("（可能是上游超时）")
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, "+
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, relayInfo.OriginModelName, relayInfo.FinalPreConsumedQuota))
-	} else {
-		repo.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		repo.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	quotaDelta := quota - relayInfo.FinalPreConsumedQuota
@@ -745,6 +741,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	// note in PostClaudeConsumeQuota. Skipping a zero delta skipped the pool
 	// debit and the platform pre-auth settlement.
 	settleErr := SettleConsume(ctx, relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, "audio")
+	CommitUsedQuota(relayInfo, quota, settleErr, totalTokens != 0)
 
 	logModel := relayInfo.OriginModelName
 	if extraContent != "" {
@@ -914,9 +911,9 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 	// request by the pre-consumed amount and dropped the debit entirely when
 	// the estimate met or exceeded the actual cost (quota <= 0).
 	poolDebit := quota + preConsumedQuota
-	poolDebited := false
+	poolDebited, poolDebitLost := false, false
 	if poolDebit > 0 && relayInfo.TokenId > 0 {
-		poolDebited = debitTenantPool(relayInfo, poolDebit)
+		poolDebited, poolDebitLost = debitTenantPool(relayInfo, poolDebit)
 	}
 
 	// PHASE B SEAM (project budget enforcement / chargeback) — NOT IMPLEMENTED.
@@ -1048,7 +1045,7 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 
 	// Phase 5: the platform wallet leg (settle/release the hold, or the
 	// no-pre-auth debit) lives in quota_settle.go.
-	settlePlatformWallet(relayInfo, totalQuota, preConsumedQuota, localQuotaConsistent, advisory)
+	settlePlatformWallet(relayInfo, totalQuota, preConsumedQuota, localQuotaConsistent, advisory, poolDebitLost)
 
 	// Return the original token quota error if local state was inconsistent
 	// (advisory mode already counted it as shadow meter loss and settled).

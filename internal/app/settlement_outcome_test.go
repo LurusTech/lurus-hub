@@ -162,6 +162,14 @@ func TestPostClaudeConsumeQuota_SettlementFailureFlagsLogRow(t *testing.T) {
 
 	PostClaudeConsumeQuota(c, relayInfo, usage)
 
+	var refreshed repo.User
+	if err := db.First(&refreshed, userId).Error; err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if refreshed.UsedQuota != 0 || refreshed.RequestCount != 0 {
+		t.Errorf("user used_quota=%d request_count=%d, want 0/0 after a failed settle", refreshed.UsedQuota, refreshed.RequestCount)
+	}
+
 	other := readLastLogOther(t, userId, model)
 	if other["settlement"] != "failed" {
 		t.Errorf(`log row other["settlement"] = %v, want "failed"`, other["settlement"])
@@ -215,6 +223,14 @@ func TestPostAudioConsumeQuota_SettlementFailureFlagsLogRow(t *testing.T) {
 	}
 
 	PostAudioConsumeQuota(c, relayInfo, usage, "extra")
+
+	var refreshed repo.User
+	if err := db.First(&refreshed, userId).Error; err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if refreshed.UsedQuota != 0 || refreshed.RequestCount != 0 {
+		t.Errorf("user used_quota=%d request_count=%d, want 0/0 after a failed settle", refreshed.UsedQuota, refreshed.RequestCount)
+	}
 
 	other := readLastLogOther(t, userId, model)
 	if other["settlement"] != "failed" {

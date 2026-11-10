@@ -19,6 +19,7 @@ import (
 	"context"
 
 	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
 	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 )
@@ -58,4 +59,16 @@ func FlagSettlementOutcome(other map[string]interface{}, settleErr error) {
 	if settleErr != nil {
 		other["settlement"] = "failed"
 	}
+}
+
+// CommitUsedQuota writes the user and channel spend counters only after
+// SettleConsume succeeded. hadUsage is the site's "upstream returned something
+// billable" flag (tokens, or a search-unit price). A failed settlement must
+// not count the request as spent.
+func CommitUsedQuota(info *relaycommon.RelayInfo, quota int, settleErr error, hadUsage bool) {
+	if settleErr != nil || !hadUsage {
+		return
+	}
+	repo.UpdateUserUsedQuotaAndRequestCount(info.UserId, quota)
+	repo.UpdateChannelUsedQuota(info.ChannelId, quota)
 }

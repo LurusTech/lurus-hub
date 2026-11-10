@@ -494,8 +494,6 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		if app.ChargeableInputNonZero(relayInfo.PriceData.UsePrice, modelPrice, modelRatio) && quota == 0 {
 			quota = 1
 		}
-		repo.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		repo.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	quotaDelta := quota - relayInfo.FinalPreConsumedQuota
@@ -521,6 +519,7 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	// call on a zero delta also skipped the tenant-pool debit and the platform
 	// pre-auth settlement, letting the pre-auth TTL expire and release revenue.
 	settleErr := app.SettleConsume(ctx, relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, "text")
+	app.CommitUsedQuota(relayInfo, quota, settleErr, totalTokens != 0 || searchUnitMode)
 
 	logModel := modelName
 	if strings.HasPrefix(logModel, "gpt-4-gizmo") {

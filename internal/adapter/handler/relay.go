@@ -754,7 +754,7 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return true
 	}
 	if openaiErr.StatusCode == http.StatusBadRequest {
-		return false
+		return isProviderContentRefusal(openaiErr)
 	}
 	if openaiErr.StatusCode == 408 {
 		// azure处理超时不重试

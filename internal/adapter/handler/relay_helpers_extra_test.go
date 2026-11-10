@@ -25,6 +25,10 @@ func errWithStatus(status int) *types.NewAPIError {
 	return types.NewErrorWithStatusCode(errors.New("boom"), types.ErrorCodeBadResponseStatusCode, status)
 }
 
+func errWithStatusMsg(status int, msg string) *types.NewAPIError {
+	return types.NewErrorWithStatusCode(errors.New(msg), types.ErrorCodeBadResponseStatusCode, status)
+}
+
 func TestShouldRetry_TableDriven(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -44,6 +48,8 @@ func TestShouldRetry_TableDriven(t *testing.T) {
 		{name: "gateway_timeout_504_no_retry", err: errWithStatus(504), retryTimes: 3, want: false},
 		{name: "cf_524_no_retry", err: errWithStatus(524), retryTimes: 3, want: false},
 		{name: "bad_request_400", err: errWithStatus(http.StatusBadRequest), retryTimes: 3, want: false},
+		{name: "content_policy_400_failover", err: errWithStatusMsg(http.StatusBadRequest, "content_policy_violation"), retryTimes: 3, want: true},
+		{name: "malformed_400_no_failover", err: errWithStatusMsg(http.StatusBadRequest, "invalid json schema"), retryTimes: 3, want: false},
 		{name: "request_timeout_408", err: errWithStatus(408), retryTimes: 3, want: false},
 		{name: "success_2xx", err: errWithStatus(200), retryTimes: 3, want: false},
 		{name: "other_4xx_default_retry", err: errWithStatus(http.StatusForbidden), retryTimes: 3, want: true},

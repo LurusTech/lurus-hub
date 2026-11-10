@@ -120,6 +120,54 @@ func ReleaseDownloadGate() gin.HandlerFunc {
 	})
 }
 
+// FixedProductDownloadGate fails closed for a single product_id when that id
+// appears in RELEASE_GATED_PRODUCTS. Used on routes with no :id release param
+// (e.g. GET /api/v2/switch/app/releases/latest). Cannot reuse
+// ReleaseDownloadGateWith — that helper treats a missing :id as "defer to
+// handler" and would silently bypass. No-op when the product is not gated.
+func FixedProductDownloadGate(productID string) gin.HandlerFunc {
+	productID = strings.TrimSpace(productID)
+	gated := parseGatedProducts(os.Getenv("RELEASE_GATED_PRODUCTS"))
+	if productID == "" || !gated[productID] {
+		return func(c *gin.Context) { c.Next() }
+	}
+	cfg := ReleaseGateConfig{
+		GatedProducts:  map[string]bool{productID: true},
+		ResolveAccount: resolveOIDCAccountID,
+		CheckEntitled:  checkProductEntitlement,
+	}
+	return func(c *gin.Context) {
+		accountID, ok := cfg.ResolveAccount(c)
+		if !ok || accountID <= 0 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"success":    false,
+				"message":    "This download requires a signed-in account with an active entitlement.",
+				"error_code": "DOWNLOAD_AUTH_REQUIRED",
+			})
+			return
+		}
+		allowed, err := cfg.CheckEntitled(c.Request.Context(), accountID, productID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"success":    false,
+				"message":    "Could not verify your entitlement for this product. Please try again later.",
+				"error_code": "ENTITLEMENT_CHECK_FAILED",
+			})
+			return
+		}
+		if !allowed {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"success":     false,
+				"message":     "Your account does not have an active entitlement to download this product.",
+				"error_code":  "NO_ENTITLEMENT",
+				"upgrade_url": common.IdentityPublicURL + "/pricing",
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
 // parseGatedProducts turns "lurus-switch, lurus-creator" into a set.
 func parseGatedProducts(raw string) map[string]bool {
 	out := map[string]bool{}

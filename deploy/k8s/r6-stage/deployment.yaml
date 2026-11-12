@@ -67,8 +67,8 @@ spec:
           # ArgoCD sync / apply -k). Hand-edit only for an emergency pin, and
           # expect the next build to overwrite it.
           # GHCR repository name follows the GitHub repo name (hanmahong5-arch/lurus-newhub).
-          # pin: main-20261110-3401e45 run=42744486467 (manual: Trivy blocked auto-pin)
-          image: ghcr.io/hanmahong5-arch/lurus-newhub@sha256:2179a1992afe25dec3456364770a9a5b40c22720a587a7440261ca1b0975fa7e
+          # pin: main-20261112-f09fd66 run=43198943972
+          image: ghcr.io/hanmahong5-arch/lurus-newhub@sha256:2776f865948098cea5054aa7a23d113ec6c60fe5a8c4424e6270663078d891f7
           imagePullPolicy: IfNotPresent
           # --log-dir= (empty): file-based logging is a no-op here
           # (internal/pkg/logger/logger.go's SetupLogger gates on

@@ -168,26 +168,14 @@ func resolveSessionIdentity(c *gin.Context, minRole int) bool {
 			return false
 		}
 
-		// Try lurus-platform session token first (HS256, zero network overhead).
+		// Platform HS256 session, then a first-party desktop OIDC access token.
 		bearerToken := accessToken
 		if strings.HasPrefix(bearerToken, "Bearer ") || strings.HasPrefix(bearerToken, "bearer ") {
 			bearerToken = strings.TrimSpace(bearerToken[7:])
 		}
-		if accountID, err := common.ValidateIdentitySessionToken(bearerToken); err == nil && accountID > 0 {
-			// Identity session token validated — resolve to local user via identity account lookup.
-			idMapping, _ := common.GetAccountByZitadelSub_ByAccountID(c.Request.Context(), accountID)
-			if idMapping != nil && idMapping.ZitadelSub != "" {
-				user, _, userErr := repo.GetUserByIDPSubjectAnyTenant(idMapping.ZitadelSub)
-				if userErr == nil && user != nil {
-					username = user.Username
-					role = user.Role
-					id = user.Id
-					status = user.Status
-					useAccessToken = true
-					// Carry identity account ID for wallet bridging.
-					c.Set("identity_account_id", accountID)
-				}
-			}
+		if u, r, i, st, ok := fillFromPlatformOrDesktopBearer(c, bearerToken); ok {
+			username, role, id, status = u, r, i, st
+			useAccessToken = true
 		}
 
 		// Fall back to lurus-api access token if identity session token didn't match.

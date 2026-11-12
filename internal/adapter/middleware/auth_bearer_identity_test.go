@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -97,5 +98,30 @@ func TestRootAuth_DesktopOIDCTokenRejectsWrongAudience(t *testing.T) {
 	w := serveRole(r, map[string]string{"Authorization": "Bearer aaa.bbb.ccc"})
 	if strings.Contains(w.Body.String(), `"ok":true`) {
 		t.Fatalf("wrong audience reached handler; body=%s", w.Body.String())
+	}
+}
+
+func TestRootAuth_DesktopOIDCTokenMatchesBoundAccount(t *testing.T) {
+	_, cleanup := setupCoverDB(t)
+	defer cleanup()
+	withDesktopOIDC(t, "sub-bound")
+	prev := accountByIDPSubject
+	accountByIDPSubject = func(context.Context, string) (*common.IdentityMapping, error) {
+		return &common.IdentityMapping{ID: 42}, nil
+	}
+	t.Cleanup(func() { accountByIDPSubject = prev })
+	acct := int64(42)
+	user := &repo.User{
+		Username: "boundroot", Role: common.RoleRootUser, Status: common.UserStatusEnabled,
+		Email: "bound@local", TenantId: "default", LurusAccountID: &acct,
+	}
+	if err := repo.DB.Create(user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	r := buildRoleRouter(map[string]interface{}{}, RootAuth)
+	w := serveRole(r, map[string]string{"Authorization": "Bearer aaa.bbb.ccc"})
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 }

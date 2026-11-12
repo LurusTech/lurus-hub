@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -43,15 +44,21 @@ func fillFromPlatformOrDesktopBearer(c *gin.Context, bearerToken string) (userna
 			}
 		}
 	}
-	if user := userFromFirstPartyOIDCToken(bearerToken); user != nil {
+	if user := userFromFirstPartyOIDCToken(c.Request.Context(), bearerToken); user != nil {
 		return user.Username, user.Role, user.Id, user.Status, true
 	}
 	return "", 0, 0, 0, false
 }
 
+// accountByIDPSubject resolves a platform account from an OIDC subject.
+// Tests replace it so the fallback does not dial identity.
+var accountByIDPSubject = common.GetAccountByZitadelSub
+
 // userFromFirstPartyOIDCToken maps a verified desktop (or newhub-audience)
 // access token onto an existing local user. It does not create users.
-func userFromFirstPartyOIDCToken(tokenString string) *repo.User {
+// A subject with no identity-mapping row still matches a user already bound
+// to that platform account.
+func userFromFirstPartyOIDCToken(ctx context.Context, tokenString string) *repo.User {
 	if !oidcEnabled || strings.Count(tokenString, ".") != 2 {
 		return nil
 	}
@@ -62,7 +69,14 @@ func userFromFirstPartyOIDCToken(tokenString string) *repo.User {
 	if !issuerAccepted(claims.Issuer) || !desktopAudienceOK(claims.Audience) {
 		return nil
 	}
-	user, _, err := repo.GetUserByIDPSubjectAnyTenant(claims.Subject)
+	if user, _, err := repo.GetUserByIDPSubjectAnyTenant(claims.Subject); err == nil && user != nil {
+		return user
+	}
+	im, _ := accountByIDPSubject(ctx, claims.Subject)
+	if im == nil || im.ID <= 0 {
+		return nil
+	}
+	user, err := repo.GetUserByLurusAccountID(im.ID)
 	if err != nil || user == nil {
 		return nil
 	}

@@ -2,19 +2,29 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 )
 
 func GetAllRedemptions(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	redemptions, total, err := repo.GetAllRedemptions(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	var redemptions []*repo.Redemption
+	var total int64
+	var err error
+	// Non-root callers see only their own tenant's redemption codes.
+	if c.GetInt("role") >= common.RoleRootUser {
+		redemptions, total, err = repo.GetAllRedemptions(pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	} else {
+		redemptions, total, err = repo.GetRedemptionsByTenant(c.GetString("tenant_id"), pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -28,7 +38,14 @@ func GetAllRedemptions(c *gin.Context) {
 func SearchRedemptions(c *gin.Context) {
 	keyword := c.Query("keyword")
 	pageInfo := common.GetPageQuery(c)
-	redemptions, total, err := repo.SearchRedemptions(keyword, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	var redemptions []*repo.Redemption
+	var total int64
+	var err error
+	if c.GetInt("role") >= common.RoleRootUser {
+		redemptions, total, err = repo.SearchRedemptions(keyword, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	} else {
+		redemptions, total, err = repo.SearchRedemptionsByTenant(c.GetString("tenant_id"), keyword, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -48,6 +65,9 @@ func GetRedemption(c *gin.Context) {
 	redemption, err := repo.GetRedemptionById(id)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if enforceTenantScope(c, redemption.TenantId) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -119,6 +139,9 @@ func AddRedemption(c *gin.Context) {
 		}
 		keys = append(keys, key)
 	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionRedemptionCreated, governance.ResourceRedemption, 0,
+		fmt.Sprintf(`{"name":%q,"count":%d,"quota":%d}`, redemption.Name, redemption.Count, redemption.Quota)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -129,11 +152,21 @@ func AddRedemption(c *gin.Context) {
 
 func DeleteRedemption(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	err := repo.DeleteRedemptionById(id)
+	existing, err := repo.GetRedemptionById(id)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	if enforceTenantScope(c, existing.TenantId) {
+		return
+	}
+	err = repo.DeleteRedemptionById(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionRedemptionDeleted, governance.ResourceRedemption, id, ""))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -154,6 +187,9 @@ func UpdateRedemption(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if enforceTenantScope(c, cleanRedemption.TenantId) {
+		return
+	}
 	if statusOnly == "" {
 		if err := validateExpiredTime(redemption.ExpiredTime); err != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
@@ -165,6 +201,28 @@ func UpdateRedemption(c *gin.Context) {
 		cleanRedemption.ExpiredTime = redemption.ExpiredTime
 	}
 	if statusOnly != "" {
+		// A used code is terminal. RedemptionUpdate persists the status column
+		// (repo/redemption.go Select list) and Redeem()'s only gate is
+		// Status == Enabled, so letting status be reset here would let a
+		// tenant admin replay an already-redeemed code to mint quota in a
+		// loop.
+		if cleanRedemption.Status == common.RedemptionCodeStatusUsed {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "已使用的兑换码状态不可修改",
+			})
+			return
+		}
+		// Only enabled/disabled are settable here; reject unknown values so a
+		// code can never be forced into an out-of-band state.
+		if redemption.Status != common.RedemptionCodeStatusEnabled &&
+			redemption.Status != common.RedemptionCodeStatusDisabled {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "无效的兑换码状态",
+			})
+			return
+		}
 		cleanRedemption.Status = redemption.Status
 	}
 	err = repo.RedemptionUpdate(cleanRedemption)
@@ -172,6 +230,9 @@ func UpdateRedemption(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionRedemptionUpdated, governance.ResourceRedemption, cleanRedemption.Id,
+		fmt.Sprintf(`{"status_only":%q,"name":%q,"status":%d}`, statusOnly, cleanRedemption.Name, cleanRedemption.Status)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -181,11 +242,23 @@ func UpdateRedemption(c *gin.Context) {
 }
 
 func DeleteInvalidRedemption(c *gin.Context) {
-	rows, err := repo.DeleteInvalidRedemptions()
+	// AdminAuth is satisfied by a per-tenant admin too, so a non-root prune must
+	// stay inside the caller's tenant; root keeps the global sweep. Without this
+	// split a role-10 tenant admin purged every tenant's spent/expired codes.
+	var rows int64
+	var err error
+	if c.GetInt("role") >= common.RoleRootUser {
+		rows, err = repo.DeleteInvalidRedemptions()
+	} else {
+		rows, err = repo.DeleteInvalidRedemptionsByTenant(c.GetString("tenant_id"))
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionRedemptionInvalidDeleted, governance.ResourceRedemption, 0,
+		fmt.Sprintf(`{"rows":%d}`, rows)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

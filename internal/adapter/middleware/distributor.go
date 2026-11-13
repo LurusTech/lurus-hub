@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,12 +10,15 @@ import (
 	"strings"
 	"time"
 
+	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/tenantpolicy"
+	"github.com/LurusTech/lurus-hub/internal/domain/entity"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
-	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
-	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
-	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
@@ -24,31 +28,156 @@ import (
 type ModelRequest struct {
 	Model string `json:"model"`
 	Group string `json:"group,omitempty"`
+	// Conversation ids the session-affinity key can be derived from before the
+	// typed request body exists (see app.DeriveSessionAffinityKey for the
+	// precedence and the reasons these two fields).
+	PromptCacheKey json.RawMessage `json:"prompt_cache_key,omitempty"`
+	Metadata       *struct {
+		UserId string `json:"user_id"`
+	} `json:"metadata,omitempty"`
+	// Provider is the caller's routing constraint (L8, modelled on the
+	// OpenRouter `provider` object): region pins selection to channels whose
+	// setting.region matches, data_collection "deny" to channels declared
+	// zero-retention. Other keys of the object are ignored here; the typed
+	// re-encode drops the object, so it only reaches the upstream under
+	// pass-through.
+	Provider *struct {
+		Region         string `json:"region"`
+		DataCollection string `json:"data_collection"`
+	} `json:"provider,omitempty"`
+}
+
+// providerFilter is the normalised, context-ready form of Provider; zero when
+// the request sent no constraint (no object, or an object with neither key).
+func (m *ModelRequest) providerFilter() dto.ProviderFilter {
+	if m == nil || m.Provider == nil {
+		return dto.ProviderFilter{}
+	}
+	return dto.NormalizeProviderFilter(m.Provider.Region, m.Provider.DataCollection)
+}
+
+// sessionAffinityRawID mirrors the source precedence of
+// app.DeriveSessionAffinityKey on the light model request the distributor
+// parses: X-Session-Id header, then prompt_cache_key (accepted only as a JSON
+// string, like the typed Responses request), then metadata.user_id.
+func sessionAffinityRawID(c *gin.Context, m *ModelRequest) string {
+	if raw := strings.TrimSpace(c.GetHeader("X-Session-Id")); raw != "" {
+		return raw
+	}
+	if m == nil {
+		return ""
+	}
+	if len(m.PromptCacheKey) > 0 {
+		var s string
+		if json.Unmarshal(m.PromptCacheKey, &s) == nil {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
+	}
+	if m.Metadata != nil {
+		return strings.TrimSpace(m.Metadata.UserId)
+	}
+	return ""
 }
 
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *repo.Channel
+		// Resolve the relay mode once, here, so every selection attempt of
+		// this request (first draw and relay retries) filters by the same
+		// modality requirement.
+		c.Set(string(constant.ContextKeyRelayMode), relayconstant.Path2RelayMode(c.Request.URL.Path))
 		channelId, ok := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId)
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {
-			abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid request, "+err.Error())
+			abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid request, "+err.Error(), string(types.ErrorCodeInvalidRequest))
 			return
+		}
+		// Publish the requested model before channel selection, not after:
+		// every abort below (model-not-allowed, no-channel 404/503) records an
+		// error log, and without this the row's model column would be empty —
+		// SetupContextForSelectedChannel sets the same key to the same value,
+		// but only on the success path.
+		if modelRequest != nil && modelRequest.Model != "" {
+			c.Set("original_model", modelRequest.Model)
+		}
+		// Per-tenant model allow-list (internal/app/tenantpolicy). Sits before
+		// the pinned-vs-selection branch so BOTH the sk-<key>-<channelId>
+		// override below and the ordinary weighted-selection path further
+		// down are covered by one check. configured=false (no row, or a read
+		// failure downgraded to fail-open) means unrestricted — this must
+		// never turn a read fault into an outage.
+		if tc, terr := GetTenantContext(c); terr == nil && tc != nil && tc.TenantID != "" && modelRequest != nil && modelRequest.Model != "" {
+			allowlist, configured, aerr := tenantpolicy.LoadModelAllowlist(tc.TenantID)
+			if aerr != nil {
+				common.SysLog("tenant model allow-list read failed for tenant " + tc.TenantID + ", failing open: " + aerr.Error())
+			} else if configured && !tenantpolicy.ModelAllowed(allowlist, modelRequest.Model) {
+				if tenantpolicy.Mode() == tenantpolicy.ModeEnforce {
+					metrics.RecordTenantModelDenied(tc.TenantID, "enforced")
+					abortWithOpenAiMessage(c, http.StatusForbidden, "Model "+modelRequest.Model+" is not allowed for this tenant", string(types.ErrorCodeModelBlocked))
+					return
+				}
+				metrics.RecordTenantModelDenied(tc.TenantID, "observed")
+				common.SysLog("tenant model allow-list would deny model " + modelRequest.Model + " for tenant " + tc.TenantID + " (observe mode)")
+			}
+		}
+		// Tenant-admin self-narrowing (tenantpolicy.SelectionConfigKey): always
+		// enforced (it is the tenant's own explicit choice, so the platform's
+		// observe-first rollout mode does not apply) and ANDed with the
+		// platform list above, so it can only shrink access. Read faults fail
+		// open, same as the platform list.
+		if tc, terr := GetTenantContext(c); terr == nil && tc != nil && tc.TenantID != "" && modelRequest != nil && modelRequest.Model != "" {
+			selected, sconfigured, serr := tenantpolicy.LoadSelection(tc.TenantID)
+			if serr != nil {
+				common.SysLog("tenant model selection read failed for tenant " + tc.TenantID + ", failing open: " + serr.Error())
+			} else if sconfigured && !tenantpolicy.ModelAllowed(selected, modelRequest.Model) {
+				metrics.RecordTenantModelDenied(tc.TenantID, "enforced")
+				abortWithOpenAiMessage(c, http.StatusForbidden, "Model "+modelRequest.Model+" is not allowed for this tenant", string(types.ErrorCodeModelBlocked))
+				return
+			}
 		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
-				abortWithOpenAiMessage(c, http.StatusBadRequest, "无效的渠道 Id")
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid channel id", string(types.ErrorCodeInvalidRequest))
 				return
 			}
 			channel, err = repo.GetChannelById(id, true)
 			if err != nil {
-				abortWithOpenAiMessage(c, http.StatusBadRequest, "无效的渠道 Id")
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid channel id", string(types.ErrorCodeInvalidRequest))
 				return
 			}
 			if channel.Status != common.ChannelStatusEnabled {
-				abortWithOpenAiMessage(c, http.StatusForbidden, "该渠道已被禁用")
+				abortWithOpenAiMessage(c, http.StatusForbidden, "This channel is disabled", string(types.ErrorCodeChannelSpecifyForbidden))
 				return
+			}
+			// TI (round-3 #1): the sk-<key>-<channelId> override lets an admin pin
+			// ANY channel by id — GetChannelById above is intentionally un-scoped.
+			// Without an ownership check that lets a tenant-admin relay through,
+			// and exfiltrate the upstream key/base_url of, a channel owned by
+			// another tenant. Confine the pinned channel to the caller's tenant; a
+			// root operator (flag set in SetupContextForToken) keeps the
+			// cross-tenant override. TokenAuth always injects tenant_context on
+			// the normal relay path (round-3 #3), so a resolution failure here
+			// means the caller's tenant is genuinely unknown — fail CLOSED (403)
+			// rather than silently skipping the ownership check, otherwise an
+			// unresolvable tenant context becomes a free pass to pin any tenant's
+			// channel.
+			if !common.GetContextKeyBool(c, constant.ContextKeyTokenSpecificChannelRootOverride) {
+				callerTenant, terr := GetTenantContext(c)
+				if terr != nil || callerTenant == nil || callerTenant.TenantID == "" {
+					abortWithOpenAiMessage(c, http.StatusForbidden, "Cannot determine caller tenant, denying channel binding", string(types.ErrorCodeChannelSpecifyForbidden))
+					return
+				}
+				channelTenant := channel.TenantId
+				if channelTenant == "" {
+					channelTenant = "default"
+				}
+				if channelTenant != callerTenant.TenantID {
+					abortWithOpenAiMessage(c, http.StatusForbidden, "Not authorized to use another tenant's channel", string(types.ErrorCodeChannelSpecifyForbidden))
+					return
+				}
 			}
 		} else {
 			// Select a channel for the user
@@ -58,7 +187,7 @@ func Distribute() func(c *gin.Context) {
 				s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 				if !ok {
 					// token model limit is empty, all models are not allowed
-					abortWithOpenAiMessage(c, http.StatusForbidden, "该令牌无权访问任何模型")
+					abortWithOpenAiMessage(c, http.StatusForbidden, "This token is not authorized to access any model", string(types.ErrorCodeModelBlocked))
 					return
 				}
 				var tokenModelLimit map[string]bool
@@ -68,14 +197,24 @@ func Distribute() func(c *gin.Context) {
 				}
 				matchName := ratio_setting.FormatMatchingModelName(modelRequest.Model) // match gpts & thinking-*
 				if _, ok := tokenModelLimit[matchName]; !ok {
-					abortWithOpenAiMessage(c, http.StatusForbidden, "该令牌无权访问模型 "+modelRequest.Model)
+					abortWithOpenAiMessage(c, http.StatusForbidden, "This token is not authorized to access model "+modelRequest.Model, string(types.ErrorCodeModelBlocked))
 					return
+				}
+			}
+
+			// Opt-in decision-model routing (cycle 22, migration 054): one
+			// evaluation per request, after the allow-list and token model limit
+			// passed for the requested model and before channel selection sees
+			// the (possibly rewritten) model. No enabled policy = one map miss.
+			if shouldSelectChannel && modelRequest != nil {
+				if tc, terr := GetTenantContext(c); terr == nil && tc != nil {
+					ApplyDecisionRouting(c, modelRequest, tc.TenantID)
 				}
 			}
 
 			if shouldSelectChannel {
 				if modelRequest.Model == "" {
-					abortWithOpenAiMessage(c, http.StatusBadRequest, "未指定模型名称，模型名称不能为空")
+					abortWithOpenAiMessage(c, http.StatusBadRequest, "Model name not specified, model name cannot be empty", string(types.ErrorCodeInvalidRequest))
 					return
 				}
 				var selectGroup string
@@ -85,22 +224,62 @@ func Distribute() func(c *gin.Context) {
 					playgroundRequest := &dto.PlayGroundRequest{}
 					err = common.UnmarshalBodyReusable(c, playgroundRequest)
 					if err != nil {
-						abortWithOpenAiMessage(c, http.StatusBadRequest, "无效的playground请求, "+err.Error())
+						abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid playground request, "+err.Error(), string(types.ErrorCodeInvalidRequest))
 						return
 					}
 					if playgroundRequest.Group != "" {
 						if !app.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group) && playgroundRequest.Group != usingGroup {
-							abortWithOpenAiMessage(c, http.StatusForbidden, "无权访问该分组")
+							abortWithOpenAiMessage(c, http.StatusForbidden, "Not authorized to access this group", string(types.ErrorCodeGroupNotAllowed))
 							return
 						}
 						usingGroup = playgroundRequest.Group
 						common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 					}
 				}
+				// Caller tenant, when resolvable, scopes selection to
+				// platform-shared channels plus the caller's own (TI round-3
+				// #1 covered the sk-<key>-<channelId> PIN above; this is the
+				// same defect on the ordinary weighted-selection path every
+				// non-pinned relay request takes). Both authenticators that
+				// sit in front of Distribute() in production — TokenAuth (the
+				// bearer relay path) and PlaygroundAuth (the session-based
+				// playground) — now inject tenant_context, so this resolves
+				// for every current production mount of Distribute()
+				// (relay-router.go's relayV1Router/relayMjRouter/
+				// relaySunoRouter/relayMusicRouter/relayGeminiRouter/
+				// playgroundRouter and video-router.go's video groups all sit
+				// behind one of the two). If a future caller reaches Distribute
+				// without either — the fallback below is for THAT case, not a
+				// currently-live gap — selection stays tenant-blind rather
+				// than failing closed; unlike the channel PIN above, this
+				// path can only ever land on a channel already eligible for
+				// (group, model), which is a much narrower capability than
+				// naming an arbitrary channel id.
+				callerTenantID := ""
+				if tc, terr := GetTenantContext(c); terr == nil && tc != nil {
+					callerTenantID = tc.TenantID
+				}
+				// Session affinity is consulted inside this first selection
+				// (retry > 0 skips the lookup), so the conversation key must be
+				// on the context before the call. The relay handler derives the
+				// same key again after parsing the typed body; without this
+				// derivation the pin was neither looked up nor stored on the
+				// live path — only the header was emitted
+				// (TestDistribute_SessionAffinity_FirstSelectionUsesPin).
+				if key := app.DeriveSessionAffinityKeyFromRaw(c, sessionAffinityRawID(c, modelRequest)); key != "" {
+					common.SetContextKey(c, constant.ContextKeySessionAffinity, key)
+				}
+				// Same reason as the affinity key above: the filter must be on
+				// the context before the first selection, and the relay
+				// handler's retries read the same key.
+				if filter := modelRequest.providerFilter(); !filter.IsZero() {
+					common.SetContextKey(c, constant.ContextKeyProviderFilter, filter)
+				}
 				channel, selectGroup, err = app.CacheGetRandomSatisfiedChannel(&app.RetryParam{
 					Ctx:        c,
 					ModelName:  modelRequest.Model,
 					TokenGroup: usingGroup,
+					TenantID:   callerTenantID,
 					Retry:      common.GetPointer(0),
 				})
 				if err != nil {
@@ -108,7 +287,30 @@ func Distribute() func(c *gin.Context) {
 					if usingGroup == "auto" {
 						showGroup = fmt.Sprintf("auto(%s)", selectGroup)
 					}
-					message := fmt.Sprintf("获取分组 %s 下模型 %s 的可用渠道失败（distributor）: %s", showGroup, modelRequest.Model, err.Error())
+					// "(distributor)" used to be part of this sentence. It names
+					// an internal component, which tells a customer nothing and
+					// tells an attacker something; it stays in the log line
+					// below instead — see the 404/503 site further down.
+					message := fmt.Sprintf("failed to select an available channel for model %s in group %s: %s", modelRequest.Model, showGroup, err.Error())
+					common.SysLog("distributor: " + message)
+					// Every candidate cooling after upstream 429s is a "back off"
+					// answer, not a model-not-found: own code, and a Retry-After
+					// the client can honour.
+					if errors.Is(err, app.ErrAllChannelsCooling) {
+						secs := app.CoolingRetryAfterSeconds(err)
+						c.Header("Retry-After", strconv.FormatInt(secs, 10))
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable,
+							fmt.Sprintf("all channels for model %s in group %s are rate-limited upstream; retry in ~%ds", modelRequest.Model, showGroup, secs),
+							string(types.ErrorCodeAllChannelsCooling))
+						return
+					}
+					// Every candidate route is the wrong kind for this request
+					// (modality filter, enforce mode). Not a missing model and
+					// not an outage: 501, nothing was sent upstream.
+					if errors.Is(err, repo.ErrNoChannelSupportsModality) {
+						abortWithModalityMiss(c, modelRequest.Model, err)
+						return
+					}
 					// 如果错误，但是渠道不为空，说明是数据库一致性问题
 					//if channel != nil {
 					//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
@@ -118,15 +320,97 @@ func Distribute() func(c *gin.Context) {
 					return
 				}
 				if channel == nil {
-					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("分组 %s 下模型 %s 无可用渠道（distributor）", usingGroup, modelRequest.Model), string(types.ErrorCodeModelNotFound))
+					// err == nil but no channel: could mean (a) this (group, model)
+					// was never configured at all — a client error — or (b) it was
+					// configured but every backing channel is currently disabled —
+					// a genuine, possibly-transient outage. Both selection paths
+					// above only ever look at enabled=true rows, so they can't tell
+					// the two apart; do one extra existence probe (ignoring
+					// enabled) to pick the status code. 503 is the default and is
+					// only narrowed to 404 on a positive answer, so an unanswerable
+					// probe leaves the outage reading intact.
+					statusCode := http.StatusServiceUnavailable
+					if modelNeverConfigured(c, usingGroup, modelRequest.Model) {
+						statusCode = http.StatusNotFound
+					}
+					// The wire sentence carries only what the caller can act on
+					// (which model, which group). Which internal component
+					// refused — "(distributor)", as opposed to the relay
+					// handler's own "(retry)" sibling in handler/relay.go — is
+					// an operator's question, so it is logged rather than sent.
+					message := fmt.Sprintf("no available channel for model %s in group %s", modelRequest.Model, usingGroup)
+					common.SysLog(fmt.Sprintf("distributor: %s (status %d)", message, statusCode))
+					abortWithOpenAiMessage(c, statusCode, message, string(types.ErrorCodeModelNotFound))
 					return
+				}
+				// Defence in depth: CacheGetRandomSatisfiedChannel already
+				// filtered by callerTenantID above, so this should never
+				// trip. Assert it anyway so a future change to the selection
+				// path (a new fallback, a cache bug) can't silently regress
+				// into cross-tenant relay — fail the same way "no available
+				// channel" already does, not with a different error shape
+				// that would leak the existence of another tenant's channel.
+				if callerTenantID != "" {
+					owner := channel.TenantId
+					if owner != "" && owner != "default" && owner != callerTenantID {
+						// Same sentence as the no-channel branch above, on
+						// purpose (see the comment block above this if): the
+						// caller must not be able to tell this apart from an
+						// ordinary "no channel". The log line is where the two
+						// are distinguishable.
+						common.SysLog(fmt.Sprintf("distributor: cross-tenant channel %d (owner %s) selected for caller tenant %s, refusing", channel.Id, owner, callerTenantID))
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("no available channel for model %s in group %s", modelRequest.Model, usingGroup), string(types.ErrorCodeModelNotFound))
+						return
+					}
 				}
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		if newAPIError := SetupContextForSelectedChannel(c, channel, modelRequest.Model); newAPIError != nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, newAPIError.Error(), string(newAPIError.GetErrorCode()))
+			return
+		}
 		c.Next()
 	}
+}
+
+// modelNeverConfigured reports whether (group, model) can be POSITIVELY shown
+// to have no ability row at all — regardless of enabled/channel-status — so
+// the caller can tell "never configured" (a client error) apart from
+// "configured but every backing channel is currently disabled" (a real
+// outage). abilities are never stored under the literal group "auto", so
+// "auto" is expanded to its concrete member groups first.
+//
+// It answers false whenever the question can't be answered: an empty group, an
+// "auto" that resolves to no concrete groups, or a failed query. The direction
+// is deliberate and is the whole point of the phrasing — the caller starts at
+// 503 and only narrows to 404 on a true, so an unanswerable probe keeps the
+// outage reading. Answering true on uncertainty would tell clients to stop
+// retrying a service that is merely down, which is the more expensive mistake.
+func modelNeverConfigured(c *gin.Context, group, model string) bool {
+	if group == "" {
+		return false
+	}
+	groups := []string{group}
+	if group == "auto" {
+		userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+		groups = app.GetUserAutoGroup(userGroup)
+		if len(groups) == 0 {
+			return false
+		}
+	}
+	normalizedModel := ratio_setting.FormatMatchingModelName(model)
+	var count int64
+	query := repo.DB.Model(&entity.Ability{}).Where(`"group" IN ?`, groups)
+	if normalizedModel != model {
+		query = query.Where("model = ? OR model = ?", model, normalizedModel)
+	} else {
+		query = query.Where("model = ?", model)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return false
+	}
+	return count == 0
 }
 
 // getModelFromRequest 从请求中读取模型信息
@@ -138,7 +422,12 @@ func getModelFromRequest(c *gin.Context) (*ModelRequest, error) {
 	var modelRequest ModelRequest
 	err := common.UnmarshalBodyReusable(c, &modelRequest)
 	if err != nil {
-		return nil, errors.New("无效的请求, " + err.Error())
+		// NO "invalid request, " prefix here: every path out of this function
+		// reaches Distribute's single error exit, which already prefixes
+		// "Invalid request, ". Prefixing again is what produced the doubled
+		// sentence a customer was reading off the wire —
+		//   Invalid request, invalid request, unexpected end of JSON input
+		return nil, err
 	}
 	return &modelRequest, nil
 }
@@ -158,7 +447,9 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			midjourneyRequest := dto.MidjourneyRequest{}
 			err = common.UnmarshalBodyReusable(c, &midjourneyRequest)
 			if err != nil {
-				return nil, false, errors.New("无效的midjourney请求, " + err.Error())
+				// Same doubled-prefix reasoning as getModelFromRequest above:
+				// Distribute adds "Invalid request, " to whatever comes back.
+				return nil, false, errors.New("unable to parse the midjourney request: " + err.Error())
 			}
 			midjourneyModel, mjErr, success := app.GetMjRequestModel(relayMode, &midjourneyRequest)
 			if mjErr != nil {
@@ -166,7 +457,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			}
 			if midjourneyModel == "" {
 				if !success {
-					return nil, false, fmt.Errorf("无效的请求, 无法解析模型")
+					return nil, false, fmt.Errorf("unable to resolve the model from the request")
 				} else {
 					// task fetch, task fetch by condition, notify
 					shouldSelectChannel = false
@@ -258,7 +549,12 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		if err != nil {
 			return nil, false, err
 		}
-		modelRequest.Model = req.Model
+		// The whole parsed body, not just Model: this is the branch every
+		// chat/messages/responses request takes, and Provider (and the
+		// body-sourced affinity ids) live on the same struct. Copying one
+		// field here used to drop them on the live path while the unit
+		// tests, which build ModelRequest by hand, stayed green.
+		modelRequest = *req
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/realtime") {
 		//wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01
@@ -341,13 +637,14 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *repo.Channel, model
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKey()
+	key, index, newAPIError := app.SelectKeyWithAffinity(c.Request.Context(), channel, common.GetContextKeyString(c, constant.ContextKeySessionAffinity))
 	if newAPIError != nil {
 		return newAPIError
 	}
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)
+		applyKeyProxyOverride(c, channel, index)
 	} else {
 		// 必须设置为 false，否则在重试到单个 key 的时候会导致日志显示错误
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, false)
@@ -406,4 +703,34 @@ func extractModelNameFromGeminiPath(path string) string {
 
 	// 返回模型名部分
 	return path[startIndex : startIndex+colonIndex]
+}
+
+// abortWithModalityMiss answers 501 provider_capability_not_supported with a
+// structured error.details so a client can tell "this model cannot do that
+// operation here" from "model not found". The reasons carry causes and counts
+// only: never a channel id, name, upstream URL or key.
+func abortWithModalityMiss(c *gin.Context, model string, err error) {
+	reasons := []gin.H{}
+	var miss *app.ModalityMissError
+	if errors.As(err, &miss) {
+		for _, r := range miss.Reasons() {
+			reasons = append(reasons, gin.H{"code": r.Code, "message": r.Message, "route_count": r.RouteCount})
+		}
+	}
+	message := fmt.Sprintf("model %s has no route that supports this operation", model)
+	if miss != nil {
+		message = fmt.Sprintf("model %s has no route that supports %s requests", model, miss.RelayMode)
+	}
+	apiErr := types.NewErrorWithStatusCode(
+		errors.New(common.MessageWithRequestId(message, c.GetString(common.RequestIdKey))),
+		types.ErrorCodeProviderCapabilityNotSupported,
+		http.StatusNotImplemented,
+	)
+	renderRejection(c, apiErr, gin.H{"details": gin.H{
+		"stage":              "route_selection",
+		"upstream_attempted": false,
+		"reasons":            reasons,
+	}})
+	c.Abort()
+	recordMiddlewareErrorLog(c, http.StatusNotImplemented, message, string(types.ErrorCodeProviderCapabilityNotSupported))
 }

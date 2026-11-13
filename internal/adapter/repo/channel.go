@@ -16,6 +16,7 @@ import (
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ChannelInfo is aliased from the canonical definition in domain/entity/channel.go
@@ -162,16 +163,15 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 	switch channel.ChannelInfo.MultiKeyMode {
 	case constant.MultiKeyModeRandom:
 		// Randomly pick one enabled key
-		selectedIdx := enabledIdx[rand.Intn(len(enabledIdx))]
+		selectedIdx := enabledIdx[rand.Intn(len(enabledIdx))] // #nosec G404 — random key selection for load-balancing; math/rand is sufficient.
 		return keys[selectedIdx], selectedIdx, nil
+	case constant.MultiKeyModeWeighted:
+		return pickWeightedKey(channel, keys, enabledIdx)
 	case constant.MultiKeyModePolling:
-		// Use channel-specific lock to ensure thread-safe polling
-
 		channelInfo, err := CacheGetChannelInfo(channel.Id)
 		if err != nil {
 			return "", 0, types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 		}
-		//println("before polling index:", channel.ChannelInfo.MultiKeyPollingIndex)
 		defer func() {
 			if common.DebugEnabled {
 				println(fmt.Sprintf("channel %d polling index: %d", channel.Id, channel.ChannelInfo.MultiKeyPollingIndex))
@@ -316,12 +316,27 @@ func GetAllChannels(startIdx int, num int, selectAll bool, idSort bool) ([]*Chan
 }
 
 func GetChannelsByTag(tag string, idSort bool, selectAll bool) ([]*Channel, error) {
+	return getChannelsByTagScoped("", tag, idSort, selectAll)
+}
+
+// GetChannelsByTagAndTenant is the tenant-scoped sibling of GetChannelsByTag.
+// The explicit tenant_id filter is the security boundary for the v2 console:
+// repo callers use the bare DB handle (no GORM tenant-context), so the
+// TenantPlugin auto-filter does not fire here. Mirrors GetRedemptionsByTenant.
+func GetChannelsByTagAndTenant(tenantID string, tag string, idSort bool) ([]*Channel, error) {
+	return getChannelsByTagScoped(tenantID, tag, idSort, false)
+}
+
+func getChannelsByTagScoped(tenantID string, tag string, idSort bool, selectAll bool) ([]*Channel, error) {
 	var channels []*Channel
 	order := "priority desc"
 	if idSort {
 		order = "id desc"
 	}
 	query := DB.Where("tag = ?", tag).Order(order)
+	if tenantID != "" {
+		query = query.Where("tenant_id = ?", tenantID)
+	}
 	if !selectAll {
 		query = query.Omit("key")
 	}
@@ -329,20 +344,36 @@ func GetChannelsByTag(tag string, idSort bool, selectAll bool) ([]*Channel, erro
 	return channels, err
 }
 
-func SearchChannels(keyword string, group string, model string, idSort bool) ([]*Channel, error) {
+// GetChannelsByTenant lists channels for a single tenant with pagination. The
+// explicit tenant_id filter is the security boundary: repo callers use the bare
+// DB handle, so the TenantPlugin auto-filter does not fire. key column omitted.
+func GetChannelsByTenant(tenantID string, startIdx int, num int, idSort bool) ([]*Channel, error) {
 	var channels []*Channel
-	modelsCol := "`models`"
-
-	// 如果是 PostgreSQL，使用双引号
-	if common.UsingPostgreSQL {
-		modelsCol = `"models"`
+	order := "priority desc"
+	if idSort {
+		order = "id desc"
 	}
+	err := DB.Where("tenant_id = ?", tenantID).Order(order).Limit(num).Offset(startIdx).Omit("key").Find(&channels).Error
+	return channels, err
+}
 
-	baseURLCol := "`base_url`"
-	// 如果是 PostgreSQL，使用双引号
-	if common.UsingPostgreSQL {
-		baseURLCol = `"base_url"`
-	}
+func SearchChannels(keyword string, group string, model string, idSort bool) ([]*Channel, error) {
+	return searchChannelsScoped("", keyword, group, model, idSort)
+}
+
+// SearchChannelsByTenant is the tenant-scoped sibling of SearchChannels. Used by
+// the v2 console so a tenant admin's keyword/group/model search never matches
+// another tenant's channels.
+func SearchChannelsByTenant(tenantID string, keyword string, group string, model string, idSort bool) ([]*Channel, error) {
+	return searchChannelsScoped(tenantID, keyword, group, model, idSort)
+}
+
+func searchChannelsScoped(tenantID string, keyword string, group string, model string, idSort bool) ([]*Channel, error) {
+	var channels []*Channel
+	// UPSTREAM-MERGE NOTE: new-api branches on MySQL backtick quoting here;
+	// newhub is PG-only (2026-06), keep the double-quoted identifiers.
+	modelsCol := `"models"`
+	baseURLCol := `"base_url"`
 
 	order := "priority desc"
 	if idSort {
@@ -351,18 +382,16 @@ func SearchChannels(keyword string, group string, model string, idSort bool) ([]
 
 	// 构造基础查询
 	baseQuery := DB.Model(&Channel{}).Omit("key")
+	if tenantID != "" {
+		baseQuery = baseQuery.Where("tenant_id = ?", tenantID)
+	}
 
 	// 构造WHERE子句
 	var whereClause string
 	var args []interface{}
 	if group != "" && group != "null" {
-		var groupCondition string
-		if common.UsingMySQL {
-			groupCondition = `CONCAT(',', ` + commonGroupCol + `, ',') LIKE ?`
-		} else {
-			// sqlite, PostgreSQL
-			groupCondition = `(',' || ` + commonGroupCol + ` || ',') LIKE ?`
-		}
+		// `||` concat works on both PostgreSQL (runtime) and the SQLite test tier.
+		groupCondition := `(',' || ` + commonGroupCol + ` || ',') LIKE ?`
 		whereClause = "(id = ? OR name LIKE ? OR " + commonKeyCol + " = ? OR " + baseURLCol + " LIKE ?) AND " + modelsCol + ` LIKE ? AND ` + groupCondition
 		args = append(args, common.String2Int(keyword), "%"+keyword+"%", keyword, "%"+keyword+"%", "%"+model+"%", "%,"+group+",%")
 	} else {
@@ -380,7 +409,7 @@ func SearchChannels(keyword string, group string, model string, idSort bool) ([]
 
 func GetChannelById(id int, selectAll bool) (*Channel, error) {
 	channel := &Channel{Id: id}
-	var err error = nil
+	var err error
 	if selectAll {
 		err = DB.First(channel, "id = ?", id).Error
 	} else {
@@ -401,11 +430,13 @@ func UpdateChannelModels(channelId int, models string) error {
 }
 
 // GetChannelForUpdate fetches a channel within a transaction with row-level lock.
-// On PostgreSQL/MySQL this issues SELECT ... FOR UPDATE; on SQLite it's a no-op
-// but the surrounding transaction still serializes writers.
+// On PostgreSQL this issues SELECT ... FOR UPDATE via clause.Locking (the GORM v2
+// idiom); on SQLite (hermetic test tier) it's a no-op but the surrounding
+// transaction still serializes writers. The legacy tx.Set("gorm:query_option",
+// "FOR UPDATE") form is a silent no-op in GORM v2 and must not be reintroduced.
 func GetChannelForUpdate(tx *gorm.DB, channelId int) (*Channel, error) {
 	var c Channel
-	err := tx.Set("gorm:query_option", "FOR UPDATE").Where("id = ?", channelId).First(&c).Error
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", channelId).First(&c).Error
 	if err != nil {
 		return nil, err
 	}
@@ -765,6 +796,34 @@ func DisableChannelByTag(tag string) error {
 	return err
 }
 
+// EnableChannelByTagAndTenant is the tenant-scoped sibling of EnableChannelByTag.
+// A tenant admin's bulk enable must never touch another tenant's channels even
+// when both tenants reuse the same tag string. The abilities table carries no
+// tenant_id column, so it is scoped by the channel ids that belong to
+// (tenant, tag) rather than by the tag alone.
+func EnableChannelByTagAndTenant(tenantID string, tag string) error {
+	return setChannelStatusByTagAndTenant(tenantID, tag, common.ChannelStatusEnabled, true)
+}
+
+// DisableChannelByTagAndTenant is the tenant-scoped sibling of DisableChannelByTag.
+func DisableChannelByTagAndTenant(tenantID string, tag string) error {
+	return setChannelStatusByTagAndTenant(tenantID, tag, common.ChannelStatusManuallyDisabled, false)
+}
+
+func setChannelStatusByTagAndTenant(tenantID string, tag string, status int, abilityEnabled bool) error {
+	var ids []int
+	if err := DB.Model(&Channel{}).Where("tag = ? AND tenant_id = ?", tag, tenantID).Pluck("id", &ids).Error; err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := DB.Model(&Channel{}).Where("id in (?)", ids).Update("status", status).Error; err != nil {
+		return err
+	}
+	return DB.Model(&Ability{}).Where("channel_id in (?)", ids).Select("enabled").Update("enabled", abilityEnabled).Error
+}
+
 func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {
 	updateData := Channel{}
 	shouldReCreateAbilities := false
@@ -821,6 +880,69 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 	return nil
 }
 
+// EditChannelByTagAndTenant is the tenant-scoped sibling of EditChannelByTag.
+// Both the channel update and the abilities update are confined to the channel
+// ids belonging to (tenant, tag); the abilities table has no tenant_id column,
+// so channel_id is the only safe boundary when two tenants share a tag string.
+func EditChannelByTagAndTenant(tenantID string, tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {
+	// Pin the tenant's channel ids for this tag up-front so both the channel
+	// update and the abilities update stay scoped, regardless of the tag rename.
+	var ids []int
+	if err := DB.Model(&Channel{}).Where("tag = ? AND tenant_id = ?", tag, tenantID).Pluck("id", &ids).Error; err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	updateData := Channel{}
+	shouldReCreateAbilities := false
+	updatedTag := tag
+	if newTag != nil && *newTag != tag {
+		updateData.Tag = newTag
+		updatedTag = *newTag
+	}
+	if modelMapping != nil && *modelMapping != "" {
+		updateData.ModelMapping = modelMapping
+	}
+	if models != nil && *models != "" {
+		shouldReCreateAbilities = true
+		updateData.Models = *models
+	}
+	if group != nil && *group != "" {
+		shouldReCreateAbilities = true
+		updateData.Group = *group
+	}
+	if priority != nil {
+		updateData.Priority = priority
+	}
+	if weight != nil {
+		updateData.Weight = weight
+	}
+	if paramOverride != nil {
+		updateData.ParamOverride = paramOverride
+	}
+	if headerOverride != nil {
+		updateData.HeaderOverride = headerOverride
+	}
+
+	if err := DB.Model(&Channel{}).Where("id in (?)", ids).Updates(updateData).Error; err != nil {
+		return err
+	}
+	if shouldReCreateAbilities {
+		channels, err := GetChannelsByTagAndTenant(tenantID, updatedTag, false)
+		if err == nil {
+			for _, channel := range channels {
+				if err = channel.UpdateAbilities(nil); err != nil {
+					common.SysLog(fmt.Sprintf("failed to update abilities: channel_id=%d, tag=%s, error=%v", channel.Id, channel.GetTag(), err))
+				}
+			}
+		}
+		return nil
+	}
+	return UpdateAbilityByChannelIds(ids, newTag, priority, weight)
+}
+
 func UpdateChannelUsedQuota(id int, quota int) {
 	if common.BatchUpdateEnabled {
 		addNewRecord(BatchUpdateTypeChannelUsedQuota, id, quota)
@@ -846,26 +968,41 @@ func DeleteDisabledChannel() (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+// DeleteDisabledChannelByTenant is the tenant-scoped sibling of
+// DeleteDisabledChannel: a tenant admin's prune only removes its own disabled
+// channels. Mirrors the original by not touching the abilities table.
+func DeleteDisabledChannelByTenant(tenantID string) (int64, error) {
+	result := DB.Where("(status = ? or status = ?) AND tenant_id = ?",
+		common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled, tenantID).Delete(&Channel{})
+	return result.RowsAffected, result.Error
+}
+
 func GetPaginatedTags(offset int, limit int) ([]*string, error) {
 	var tags []*string
 	err := DB.Model(&Channel{}).Select("DISTINCT tag").Where("tag != ''").Offset(offset).Limit(limit).Find(&tags).Error
 	return tags, err
 }
 
+// GetPaginatedTagsByTenant is GetPaginatedTags restricted to one tenant's
+// channels. The tag-grouped channel list (handler GetAllChannels, tag_mode)
+// pages over tags, not over rows: an unscoped page hands a tenant admin other
+// tenants' tag names and leaves the page mostly empty once the rows are
+// filtered. The tenant_id predicate is an exact match, matching the row
+// filter that list applies, rather than abilityTenantScope's shared union.
+func GetPaginatedTagsByTenant(tenantID string, offset int, limit int) ([]*string, error) {
+	var tags []*string
+	err := DB.Model(&Channel{}).Select("DISTINCT tag").
+		Where("tag != '' AND tenant_id = ?", tenantID).
+		Offset(offset).Limit(limit).Find(&tags).Error
+	return tags, err
+}
+
 func SearchTags(keyword string, group string, model string, idSort bool) ([]*string, error) {
 	var tags []*string
-	modelsCol := "`models`"
-
-	// 如果是 PostgreSQL，使用双引号
-	if common.UsingPostgreSQL {
-		modelsCol = `"models"`
-	}
-
-	baseURLCol := "`base_url`"
-	// 如果是 PostgreSQL，使用双引号
-	if common.UsingPostgreSQL {
-		baseURLCol = `"base_url"`
-	}
+	// UPSTREAM-MERGE NOTE: new-api branches on MySQL backtick quoting here;
+	// newhub is PG-only (2026-06), keep the double-quoted identifiers.
+	modelsCol := `"models"`
+	baseURLCol := `"base_url"`
 
 	order := "priority desc"
 	if idSort {
@@ -879,13 +1016,8 @@ func SearchTags(keyword string, group string, model string, idSort bool) ([]*str
 	var whereClause string
 	var args []interface{}
 	if group != "" && group != "null" {
-		var groupCondition string
-		if common.UsingMySQL {
-			groupCondition = `CONCAT(',', ` + commonGroupCol + `, ',') LIKE ?`
-		} else {
-			// sqlite, PostgreSQL
-			groupCondition = `(',' || ` + commonGroupCol + ` || ',') LIKE ?`
-		}
+		// `||` concat works on both PostgreSQL (runtime) and the SQLite test tier.
+		groupCondition := `(',' || ` + commonGroupCol + ` || ',') LIKE ?`
 		whereClause = "(id = ? OR name LIKE ? OR " + commonKeyCol + " = ? OR " + baseURLCol + " LIKE ?) AND " + modelsCol + ` LIKE ? AND ` + groupCondition
 		args = append(args, common.String2Int(keyword), "%"+keyword+"%", keyword, "%"+keyword+"%", "%"+model+"%", "%,"+group+",%")
 	} else {
@@ -927,7 +1059,9 @@ func (channel *Channel) GetSetting() dto.ChannelSettings {
 		if err != nil {
 			common.SysLog(fmt.Sprintf("failed to unmarshal setting: channel_id=%d, error=%v", channel.Id, err))
 			channel.Setting = nil // 清空设置以避免后续错误
-			_ = channel.Save()    // 保存修改
+			if saveErr := channel.Save(); saveErr != nil {
+				common.SysError(fmt.Sprintf("failed to self-heal corrupted setting: channel_id=%d, error=%v", channel.Id, saveErr))
+			}
 		}
 	}
 	return setting
@@ -949,7 +1083,9 @@ func (channel *Channel) GetOtherSettings() dto.ChannelOtherSettings {
 		if err != nil {
 			common.SysLog(fmt.Sprintf("failed to unmarshal setting: channel_id=%d, error=%v", channel.Id, err))
 			channel.OtherSettings = "{}" // 清空设置以避免后续错误
-			_ = channel.Save()           // 保存修改
+			if saveErr := channel.Save(); saveErr != nil {
+				common.SysError(fmt.Sprintf("failed to self-heal corrupted other_settings: channel_id=%d, error=%v", channel.Id, saveErr))
+			}
 		}
 	}
 	return setting
@@ -1006,9 +1142,12 @@ func BatchSetChannelTag(ids []int, tag *string) error {
 		return err
 	}
 
-	// update ability status
-	channels, err := GetChannelsByIds(ids)
-	if err != nil {
+	// update ability status — read through the tx (not the global DB handle) so
+	// the query runs on the transaction's own connection. A global-handle read
+	// while this write tx is open deadlocks the single-writer SQLite test tier,
+	// and in production it would read stale, pre-update rows (wrong ability tag).
+	var channels []*Channel
+	if err = tx.Where("id in (?)", ids).Find(&channels).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -1036,6 +1175,16 @@ func CountAllChannels() (int64, error) {
 func CountAllTags() (int64, error) {
 	var total int64
 	err := DB.Model(&Channel{}).Where("tag is not null AND tag != ''").Distinct("tag").Count(&total).Error
+	return total, err
+}
+
+// CountAllTagsByTenant is CountAllTags for one tenant's channels — the total
+// that goes with GetPaginatedTagsByTenant's page.
+func CountAllTagsByTenant(tenantID string) (int64, error) {
+	var total int64
+	err := DB.Model(&Channel{}).
+		Where("tag is not null AND tag != '' AND tenant_id = ?", tenantID).
+		Distinct("tag").Count(&total).Error
 	return total, err
 }
 

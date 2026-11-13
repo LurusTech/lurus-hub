@@ -1,13 +1,17 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -310,6 +314,105 @@ func TestGetTopUpsV2_UserIsolation(t *testing.T) {
 }
 
 // ============================================================================
+// billingView — ForbiddenFields + CrossTenantIsolation
+// ============================================================================
+
+// TestGetTopUpsV2_ForbiddenFields asserts that the topup history endpoint
+// never exposes payment_method_id, raw provider transaction IDs, or internal
+// tenant-scoped billing counters in the response items. The response shape is
+// a gin.H literal (not a raw entity) so this test verifies the literal keys.
+func TestGetTopUpsV2_ForbiddenFields(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Seed one topup log.
+	log := &repo.Log{
+		UserId:    ctx.UserID,
+		TenantId:  ctx.TenantID,
+		Type:      repo.LogTypeTopup,
+		Content:   "Wallet transfer: 5.00 CNY -> quota. [IK:testik]",
+		Quota:     25000,
+		CreatedAt: common.GetTimestamp(),
+	}
+	ctx.DB.Create(log)
+
+	w := V2RequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v2/%s/billing/topups", ctx.TenantID), nil)
+
+	AssertV2Status(t, w, http.StatusOK)
+	resp := AssertV2Success(t, w)
+	data := resp["data"].(map[string]interface{})
+	items := data["items"].([]interface{})
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	item := items[0].(map[string]interface{})
+
+	// These fields must not appear in the response.
+	for _, forbidden := range []string{
+		"payment_method_id", "stripe_id", "alipay_id", "wechat_id",
+		"tenant_id", "user_id", "internal_counter",
+	} {
+		if _, ok := item[forbidden]; ok {
+			t.Errorf("forbidden field %q leaked through billing topup response", forbidden)
+		}
+	}
+
+	// Whitelisted fields must be present.
+	for _, required := range []string{"id", "content", "quota", "created_at"} {
+		if _, ok := item[required]; !ok {
+			t.Errorf("expected field %q in billing topup response, not found", required)
+		}
+	}
+}
+
+// TestGetTopUpsV2_CrossTenantIsolation seeds logs for two different tenants
+// and verifies the endpoint only returns the caller's own tenant data.
+func TestGetTopUpsV2_CrossTenantIsolation(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Seed 2 topup logs for the test tenant user.
+	for i := 0; i < 2; i++ {
+		l := &repo.Log{
+			UserId:    ctx.UserID,
+			TenantId:  ctx.TenantID,
+			Type:      repo.LogTypeTopup,
+			Content:   fmt.Sprintf("Own-tenant transfer #%d", i+1),
+			CreatedAt: common.GetTimestamp() + int64(i),
+		}
+		ctx.DB.Create(l)
+	}
+
+	// Seed 3 topup logs for a different tenant (same user_id to maximise leak
+	// surface — any query without tenant filter would return 5 instead of 2).
+	for i := 0; i < 3; i++ {
+		l := &repo.Log{
+			UserId:    ctx.UserID,
+			TenantId:  "other-tenant-billing",
+			Type:      repo.LogTypeTopup,
+			Content:   fmt.Sprintf("Cross-tenant transfer #%d", i+1),
+			CreatedAt: common.GetTimestamp() + int64(i+10),
+		}
+		ctx.DB.Create(l)
+	}
+
+	w := V2RequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v2/%s/billing/topups", ctx.TenantID), nil)
+
+	AssertV2Status(t, w, http.StatusOK)
+	resp := AssertV2Success(t, w)
+	data := resp["data"].(map[string]interface{})
+	items := data["items"].([]interface{})
+	if len(items) != 2 {
+		t.Errorf("expected 2 items (own-tenant only), got %d — possible cross-tenant leak", len(items))
+	}
+	if total := data["total"].(float64); total != 2 {
+		t.Errorf("expected total=2, got %v — cross-tenant rows must not be counted", total)
+	}
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -322,7 +425,7 @@ func setupNoAccountRouter(t *testing.T, ctx *V2TestContext) *gin.Engine {
 		tenantCtx := &middleware.TenantContext{
 			TenantID:      ctx.TenantID,
 			UserID:        ctx.UserID,
-			ZitadelUserID: "zitadel_test_user",
+			IDPSubject: "zitadel_test_user",
 			Email:         "test@test.local",
 			Username:      "testuser",
 		}
@@ -340,4 +443,106 @@ func setupNoAccountRouter(t *testing.T, ctx *V2TestContext) *gin.Engine {
 	}
 
 	return router
+}
+
+// ============================================================================
+// TopUpV2 — product-id SSOT (L4 / PRODUCT-ID-SSOT): the wallet debit — and
+// the rollback credit on a mid-flight failure — must be filed under
+// ratio_setting.DefaultSourceProduct ("llm-api"), not the retired "lurus-api"
+// literal. A platform reading the wallet ledger by product_id must see the
+// SAME id newhub's own entitlement gate asks about.
+// ============================================================================
+
+func TestTopUpV2_DebitRecordsDefaultSourceProduct(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	var gotProductIDs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ProductID string `json:"product_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotProductIDs = append(gotProductIDs, body.ProductID)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":       true,
+			"balance_after": 990.0,
+		})
+	}))
+	defer srv.Close()
+
+	prevURL := common.IdentityServiceURL
+	common.IdentityServiceURL = srv.URL
+	defer func() { common.IdentityServiceURL = prevURL }()
+
+	body := map[string]interface{}{"amount_cny": 10.0}
+	headers := map[string]string{
+		"X-Test-Tenant-ID":  ctx.TenantID,
+		"X-Test-User-ID":    fmt.Sprintf("%d", ctx.UserID),
+		"X-Idempotency-Key": "test-ik-product-debit",
+	}
+	w := V2Request(ctx.Router, http.MethodPost,
+		fmt.Sprintf("/api/v2/%s/billing/topup", ctx.TenantID), body, headers)
+
+	AssertV2Status(t, w, http.StatusOK)
+	if len(gotProductIDs) != 1 {
+		t.Fatalf("identity server hit %d times, want 1 (debit only); product_ids=%v", len(gotProductIDs), gotProductIDs)
+	}
+	if gotProductIDs[0] != ratio_setting.DefaultSourceProduct {
+		t.Errorf("debit product_id = %q, want %q", gotProductIDs[0], ratio_setting.DefaultSourceProduct)
+	}
+}
+
+func TestTopUpV2_RollbackCreditRecordsDefaultSourceProduct(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	var gotProductIDs []string
+	var gotPaths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ProductID string `json:"product_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotProductIDs = append(gotProductIDs, body.ProductID)
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":       true,
+			"balance_after": 990.0,
+		})
+	}))
+	defer srv.Close()
+
+	prevURL := common.IdentityServiceURL
+	common.IdentityServiceURL = srv.URL
+	defer func() { common.IdentityServiceURL = prevURL }()
+
+	// Force repo.IncreaseUserQuota to fail deterministically (quotaAmount goes
+	// negative) so TopUpV2 takes the rollback branch without touching DB
+	// integrity — increaseUserQuota rejects a negative quota outright.
+	prevRatio := common.QuotaPerUnit
+	common.QuotaPerUnit = -1
+	defer func() { common.QuotaPerUnit = prevRatio }()
+
+	body := map[string]interface{}{"amount_cny": 10.0}
+	headers := map[string]string{
+		"X-Test-Tenant-ID":  ctx.TenantID,
+		"X-Test-User-ID":    fmt.Sprintf("%d", ctx.UserID),
+		"X-Idempotency-Key": "test-ik-product-rollback",
+	}
+	w := V2Request(ctx.Router, http.MethodPost,
+		fmt.Sprintf("/api/v2/%s/billing/topup", ctx.TenantID), body, headers)
+
+	AssertV2Error(t, w, http.StatusInternalServerError)
+	if len(gotProductIDs) != 2 {
+		t.Fatalf("identity server hit %d times, want 2 (debit + rollback credit); paths=%v", len(gotProductIDs), gotPaths)
+	}
+	if gotPaths[1] == "" || !strings.HasSuffix(gotPaths[1], "/wallet/credit") {
+		t.Fatalf("second call path = %q, want the wallet/credit rollback endpoint", gotPaths[1])
+	}
+	if gotProductIDs[1] != ratio_setting.DefaultSourceProduct {
+		t.Errorf("rollback credit product_id = %q, want %q", gotProductIDs[1], ratio_setting.DefaultSourceProduct)
+	}
 }

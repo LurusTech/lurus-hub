@@ -10,14 +10,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider/openai"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
-	"github.com/LurusTech/lurus-hub/internal/adapter/provider/openai"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
-	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/model_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/reasoning"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
@@ -515,6 +515,12 @@ func CovertOpenAI2Gemini(c *gin.Context, textRequest dto.GeneralOpenAIRequest, i
 				if !hasMarkdownImage {
 					parts = append(parts, dto.GeminiPart{
 						Text: part.Text,
+					})
+				} else if text != "" {
+					// 最后一张图片之后的尾部文本（或提前 break 时未处理的剩余文本）
+					// 必须保留，否则会静默截断用户提示词
+					parts = append(parts, dto.GeminiPart{
+						Text: text,
 					})
 				}
 			} else if part.Type == dto.ContentTypeImageURL {
@@ -1067,9 +1073,18 @@ func handleFinalStream(c *gin.Context, info *relaycommon.RelayInfo, resp *dto.Ch
 	return nil
 }
 
-func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, callback func(data string, geminiResponse *dto.GeminiChatResponse) bool) (*dto.Usage, *types.NewAPIError) {
+// geminiStreamHandler drives the scanner and returns the billed usage plus
+// whether the upstream finished the answer: a Gemini stream ends with a chunk
+// carrying finishReason (STOP, MAX_TOKENS, SAFETY, …); a stream that stops
+// without one was abandoned (idle timeout, reset, EOF). The partial output is
+// still billed from the last cumulative usageMetadata — the caller received
+// it — but the caller must be told (helper.StreamError), not handed a normal
+// end.
+func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, callback func(data string, geminiResponse *dto.GeminiChatResponse) bool) (*dto.Usage, bool, *types.NewAPIError) {
 	var usage = &dto.Usage{}
 	var imageCount int
+	var streamErr *types.NewAPIError
+	var sawFinish bool
 	responseText := strings.Builder{}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
@@ -1077,11 +1092,17 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		err := common.UnmarshalJsonStr(data, &geminiResponse)
 		if err != nil {
 			logger.LogError(c, "error unmarshalling stream response: "+err.Error())
+			// 与 Claude/Ollama 一致：解析失败作为真错误向上传播，
+			// 让 circuit breaker/failover 生效，而非当作正常流结束静默丢弃
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
 			return false
 		}
 
 		// 统计图片数量
 		for _, candidate := range geminiResponse.Candidates {
+			if candidate.FinishReason != nil && *candidate.FinishReason != "" {
+				sawFinish = true
+			}
 			for _, part := range candidate.Content.Parts {
 				if part.InlineData != nil && part.InlineData.MimeType != "" {
 					imageCount++
@@ -1094,16 +1115,19 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 		// 更新使用量统计
 		if geminiResponse.UsageMetadata.TotalTokenCount != 0 {
-			built := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
-			usage.PromptTokens = built.PromptTokens
-			usage.CompletionTokens = built.CompletionTokens
-			usage.CompletionTokenDetails = built.CompletionTokenDetails
-			usage.TotalTokens = built.TotalTokens
-			usage.PromptTokensDetails = built.PromptTokensDetails
+			// Whole-value assignment on purpose: this used to copy five named
+			// fields and silently dropped whatever the builder learned to fill
+			// later (the wire-semantics flag would have been the next casualty).
+			// `usage` has no state of its own before this point.
+			*usage = buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
 		}
 
 		return callback(data, &geminiResponse)
 	})
+
+	if streamErr != nil {
+		return nil, false, streamErr
+	}
 
 	if imageCount != 0 {
 		if usage.CompletionTokens == 0 {
@@ -1112,9 +1136,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 
 	usage.PromptTokensDetails.TextTokens = usage.PromptTokens
-	if usage.TotalTokens > 0 {
-		usage.CompletionTokens = usage.TotalTokens - usage.PromptTokens
-	}
+	usage.CompletionTokens = geminiCompletionTokens(*usage)
 
 	if usage.CompletionTokens <= 0 {
 		str := responseText.String()
@@ -1125,7 +1147,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 	}
 
-	return usage, nil
+	return usage, sawFinish, nil
 }
 
 func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -1133,7 +1155,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	createAt := common.GetTimestamp()
 	finishReason := constant.FinishReasonStop
 
-	usage, err := geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
+	usage, complete, err := geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
 		response, isStop := streamResponseGeminiChat2OpenAI(geminiResponse)
 
 		response.Id = id
@@ -1186,6 +1208,30 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 		return usage, err
 	}
 
+	// Incomplete and nothing delivered yet: fail over (retryable error, zero
+	// usage, nothing written) instead of the in-band frame below, whose nil
+	// return would be recorded as breaker success.
+	if !complete {
+		if apiErr := helper.FailoverIncompleteStream(c, info); apiErr != nil {
+			return &dto.Usage{}, apiErr
+		}
+	}
+
+	// No finishReason ever arrived: the upstream stopped mid-answer. Every
+	// chunk already went out through handleStream, so the caller gets its
+	// wire's error frame instead of the usage frame + [DONE] / Claude-wire
+	// message_stop that would dress the partial answer up as a complete one.
+	// When the caller itself hung up there is nobody left to tell.
+	if !complete && helper.ClientListening(c, info) {
+		apiErr := helper.SurfaceIncompleteStream(c, info.RelayFormat, info)
+		if info.ClaudeConvertInfo != nil {
+			info.Done = true
+		}
+		// Error return: the relay loop records a breaker failure and releases the
+		// pre-consumed quota instead of billing the partial output.
+		return &dto.Usage{}, apiErr
+	}
+
 	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, *usage)
 	handleErr := handleFinalStream(c, info, response)
 	if handleErr != nil {
@@ -1209,17 +1255,15 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	if len(geminiResponse.Candidates) == 0 {
-		//return nil, types.NewOpenAIError(errors.New("no candidates returned"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-		//if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
-		//	return nil, types.NewOpenAIError(errors.New("request blocked by Gemini API: "+*geminiResponse.PromptFeedback.BlockReason), types.ErrorCodePromptBlocked, http.StatusBadRequest)
-		//} else {
-		//	return nil, types.NewOpenAIError(errors.New("empty response from Gemini API"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
-		//}
+		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
+			return nil, types.NewOpenAIError(errors.New("request blocked by Gemini API: "+*geminiResponse.PromptFeedback.BlockReason), types.ErrorCodePromptBlocked, http.StatusBadRequest)
+		}
+		return nil, types.NewOpenAIError(errors.New("empty response from Gemini API"), types.ErrorCodeEmptyResponse, http.StatusInternalServerError)
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(c, &geminiResponse)
 	fullTextResponse.Model = info.UpstreamModelName
 	usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
-	usage.CompletionTokens = usage.TotalTokens - usage.PromptTokens
+	usage.CompletionTokens = geminiCompletionTokens(usage)
 
 	fullTextResponse.Usage = usage
 
@@ -1268,7 +1312,7 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	for i, embedding := range geminiResponse.Embeddings {
 		openAIResponse.Data = append(openAIResponse.Data, dto.OpenAIEmbeddingResponseItem{
 			Object:    "embedding",
-			Embedding: embedding.Values,
+			Embedding: dto.RawEmbedding(embedding.Values),
 			Index:     i,
 		})
 	}
@@ -1344,6 +1388,27 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	return usage, nil
 }
 
+// geminiCompletionTokens is the completion figure settlement and the caller
+// see. The builder already has it right (candidatesTokenCount +
+// thoughtsTokenCount). Both handlers used to overwrite it with
+// totalTokenCount - PromptTokens, but PromptTokens carries
+// toolUsePromptTokenCount while totalTokenCount does not ("prompt + thoughts +
+// response candidates", ai.google.dev/api/generate-content, read 2026-09-02):
+// every grounded / tool-use call was under-counted by the tool-use prompt and
+// went negative once that exceeded the answer, and the non-streaming handler
+// fed the negative figure straight to the charge. The subtraction survives only
+// as a fallback for an upstream that reports a total but no candidate count,
+// and never below zero (the stream handler then estimates from the text).
+func geminiCompletionTokens(u dto.Usage) int {
+	if u.CompletionTokens > 0 {
+		return u.CompletionTokens
+	}
+	if derived := u.TotalTokens - u.PromptTokens; derived > 0 {
+		return derived
+	}
+	return 0
+}
+
 // buildUsageFromGeminiMetadata converts Gemini's UsageMetadata to dto.Usage.
 // It includes ToolUsePromptTokenCount in PromptTokens for accurate function-calling billing.
 func buildUsageFromGeminiMetadata(metadata dto.GeminiUsageMetadata) dto.Usage {
@@ -1353,11 +1418,20 @@ func buildUsageFromGeminiMetadata(metadata dto.GeminiUsageMetadata) dto.Usage {
 		TotalTokens:      metadata.TotalTokenCount,
 	}
 	usage.CompletionTokenDetails.ReasoningTokens = metadata.ThoughtsTokenCount
+	// Gemini reports the cached slice INSIDE promptTokenCount (same wire
+	// semantics as OpenAI's prompt_tokens/cached_tokens), so the billing base
+	// must subtract it once — stamp the flag the settlement paths key on
+	// (dto.Usage.PromptTokensIncludeCached). Until 2026-09-01 the field was not
+	// even parsed: cache hits were billed at full input price and the caller
+	// never saw a cached_tokens figure to reconcile against.
+	usage.PromptTokensDetails.CachedTokens = metadata.CachedContentTokenCount
+	usage.PromptTokensIncludeCached = true
 	for _, detail := range metadata.PromptTokensDetails {
-		if detail.Modality == "AUDIO" {
-			usage.PromptTokensDetails.AudioTokens = detail.TokenCount
-		} else if detail.Modality == "TEXT" {
-			usage.PromptTokensDetails.TextTokens = detail.TokenCount
+		switch detail.Modality {
+		case "AUDIO":
+			usage.PromptTokensDetails.AudioTokens += detail.TokenCount
+		case "TEXT":
+			usage.PromptTokensDetails.TextTokens += detail.TokenCount
 		}
 	}
 	return usage

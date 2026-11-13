@@ -1,0 +1,419 @@
+package handler
+
+import (
+	"fmt"
+	"net/http"
+	"strconv"
+
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/domain/entity"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+
+	"github.com/gin-gonic/gin"
+)
+
+// ============================================================================
+// V2 Platform Admin — User Management
+// Registered under adminRoute (RootJWTAuth, session-fallback). Platform-scoped:
+// these list/update/delete users across all tenants.
+// ============================================================================
+
+// adminUserView is the field-whitelisted projection returned by the admin user
+// endpoints. It deliberately excludes the access_token (a bearer secret),
+// setting blob, remark, tenant linkage and soft-delete columns — only the
+// curated, safe-to-surface fields appear. Mirrors tokenView/channelView/logView.
+// (Note: the User entity has no created-time column — auth/timestamps live in
+// the OIDC provider — so none is projected here rather than fabricating one.)
+type adminUserView struct {
+	Id           int    `json:"id"`
+	Username     string `json:"username"`
+	DisplayName  string `json:"display_name"`
+	Email        string `json:"email"`
+	Role         int    `json:"role"`
+	Status       int    `json:"status"`
+	Group        string `json:"group"`
+	Quota        int    `json:"quota"`
+	UsedQuota    int    `json:"used_quota"`
+	RequestCount int    `json:"request_count"`
+	Remark       string `json:"remark,omitempty"`
+}
+
+func toAdminUserViews(users []*repo.User) []adminUserView {
+	items := make([]adminUserView, 0, len(users))
+	for _, u := range users {
+		items = append(items, adminUserView{
+			Id:           u.Id,
+			Username:     u.Username,
+			DisplayName:  u.DisplayName,
+			Email:        u.Email,
+			Role:         u.Role,
+			Status:       u.Status,
+			Group:        u.Group,
+			Quota:        u.Quota,
+			UsedQuota:    u.UsedQuota,
+			RequestCount: u.RequestCount,
+			Remark:       u.Remark,
+		})
+	}
+	return items
+}
+
+// requireRoot is the shared platform-admin gate. Returns the caller's role and
+// whether the request may proceed; on rejection it has already written the 403.
+//
+// The refusal carries error_code PERMISSION_DENIED — the same code
+// middleware.RootJWTAuth's session branch now answers with for the same
+// refusal class on this same route group (cycle-12 L4). A consumer that
+// branches on error_code must not have to special-case the /users/* routes
+// because their 403 happened to be the one without a code.
+func requireRoot(c *gin.Context) (int, bool) {
+	role := c.GetInt("role")
+	if role < common.RoleRootUser {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success":    false,
+			"message":    "Platform admin role required",
+			"error_code": "PERMISSION_DENIED",
+		})
+		return role, false
+	}
+	return role, true
+}
+
+// GetAdminUserV2 returns one user by id for the admin edit drawer.
+// Route: GET /api/v2/admin/users/:id
+func GetAdminUserV2(c *gin.Context) {
+	if _, ok := requireRoot(c); !ok {
+		return
+	}
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid user ID"})
+		return
+	}
+	user, err := repo.GetUserById(userID, false)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "User not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    toAdminUserViews([]*repo.User{user})[0],
+	})
+}
+
+// ListAdminGroupsV2 returns group-ratio table names for admin filters /
+// ops-channels pickers. Route: GET /api/v2/admin/groups (AdminJWTAuth).
+// Auth matches v1 GET /api/group/ (any platform admin), not root-only.
+func ListAdminGroupsV2(c *gin.Context) {
+	GetGroups(c)
+}
+
+// ListAdminUsersV2 lists users with keyword/group/status filters + pagination.
+// Route: GET /api/v2/admin/users
+func ListAdminUsersV2(c *gin.Context) {
+	if _, ok := requireRoot(c); !ok {
+		return
+	}
+
+	keyword := c.Query("keyword")
+	group := c.Query("group")
+	status := 0
+	if s := c.Query("status"); s != "" {
+		status, _ = strconv.Atoi(s)
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	offset := (page - 1) * pageSize
+
+	users, total, err := repo.AdminListUsers(keyword, group, status, offset, pageSize)
+	if err != nil {
+		common.SysError("Failed to list users: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to retrieve users",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"users":     toAdminUserViews(users),
+			"total":     total,
+			"page":      page,
+			"page_size": pageSize,
+		},
+	})
+}
+
+// UpdateAdminUserV2 updates a user's role / status / quota / group only.
+// Route: PUT /api/v2/admin/users/:id
+func UpdateAdminUserV2(c *gin.Context) {
+	myRole, ok := requireRoot(c)
+	if !ok {
+		return
+	}
+
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid user ID"})
+		return
+	}
+
+	origin, err := repo.GetUserById(userID, false)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "User not found"})
+		return
+	}
+
+	// nil = leave unchanged. Role/status/quota/group plus console profile fields.
+	var req struct {
+		Role        *int    `json:"role"`
+		Status      *int    `json:"status"`
+		Quota       *int    `json:"quota"`
+		Group       *string `json:"group"`
+		DisplayName *string `json:"display_name"`
+		Remark      *string `json:"remark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid request parameters", "error": err.Error()})
+		return
+	}
+
+	// Cannot operate on a same-or-higher-privilege user (root is exempt).
+	if err := app.CheckPermission(myRole, origin.Role); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+
+	newRole := origin.Role
+	if req.Role != nil {
+		if !common.IsValidateRole(*req.Role) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid role"})
+			return
+		}
+		// Cannot promote a user to a role at or above the caller's own (root exempt).
+		if err := app.CheckRolePromotion(myRole, *req.Role); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		// Self-demotion locks the actor out of admin (root is NOT exempt).
+		// Only checked when a role change is actually requested (req.Role != nil).
+		if err := app.CheckSelfDemotion(c.GetInt("id"), userID, myRole, *req.Role); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		newRole = *req.Role
+	}
+
+	newStatus := origin.Status
+	if req.Status != nil {
+		if *req.Status != common.UserStatusEnabled && *req.Status != common.UserStatusDisabled {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid status"})
+			return
+		}
+		newStatus = *req.Status
+	}
+
+	newQuota := origin.Quota
+	if req.Quota != nil {
+		if *req.Quota < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Quota value cannot be negative"})
+			return
+		}
+		newQuota = *req.Quota
+	}
+
+	newGroup := origin.Group
+	if req.Group != nil && *req.Group != "" {
+		newGroup = *req.Group
+	}
+
+	updated, err := repo.AdminUpdateUser(userID, newRole, newStatus, newQuota, newGroup)
+	if err != nil {
+		common.SysError("Failed to update user: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to update user"})
+		return
+	}
+	if req.DisplayName != nil || req.Remark != nil {
+		profile := map[string]any{}
+		if req.DisplayName != nil {
+			profile["display_name"] = *req.DisplayName
+		}
+		if req.Remark != nil {
+			profile["remark"] = *req.Remark
+		}
+		if err := repo.AdminPatchUserProfile(userID, profile); err != nil {
+			common.SysError("Failed to update user profile: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to update user profile"})
+			return
+		}
+		refreshed, getErr := repo.GetUserById(userID, false)
+		if getErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to reload user"})
+			return
+		}
+		updated = refreshed
+	}
+
+	// Audit: role changes and quota adjustments are separately attributable.
+	if origin.Role != updated.Role {
+		governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+			governance.ActionUserRoleChanged, governance.ResourceUser, userID,
+			fmt.Sprintf(`{"old_role":%d,"new_role":%d}`, origin.Role, updated.Role)))
+
+		// A role demotion below RoleAdminUser must not leave a delegated
+		// permission grant (L4, admin_permission_grants) active: otherwise
+		// re-promoting the same user id would silently restore whatever
+		// narrow root-gated access they held before the demotion (cycle-8
+		// L4 repair round, B-F5). No-op (and no extra audit noise) when the
+		// user still holds RoleAdminUser or above, or held no grant.
+		if updated.Role < common.RoleAdminUser {
+			if _, grantErr := repo.RevokePermissionGrantsForUser(userID); grantErr != nil {
+				common.SysError(fmt.Sprintf("UpdateAdminUserV2: revoke permission grants for demoted user id=%d failed: %v", userID, grantErr))
+			}
+		}
+	}
+	if origin.Quota != updated.Quota {
+		governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+			governance.ActionUserQuotaAdjusted, governance.ResourceUser, userID,
+			fmt.Sprintf(`{"old_quota":%d,"new_quota":%d}`, origin.Quota, updated.Quota)))
+	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionUserUpdated, governance.ResourceUser, userID,
+		fmt.Sprintf(`{"username":%q}`, updated.Username)))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "User updated successfully",
+		"data":    toAdminUserViews([]*repo.User{updated})[0],
+	})
+}
+
+// DeleteAdminUserV2 deletes a user. Guards: cannot delete self, cannot remove
+// the last root account.
+// Route: DELETE /api/v2/admin/users/:id
+func DeleteAdminUserV2(c *gin.Context) {
+	if _, ok := requireRoot(c); !ok {
+		return
+	}
+
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid user ID"})
+		return
+	}
+
+	if userID == c.GetInt("id") {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "You cannot delete your own account"})
+		return
+	}
+
+	target, err := repo.GetUserById(userID, false)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "User not found"})
+		return
+	}
+
+	// Refuse to remove the last root — would lock everyone out of admin.
+	if target.Role == common.RoleRootUser {
+		rootCount, cErr := repo.CountUsersByRole(common.RoleRootUser)
+		if cErr != nil {
+			common.SysError("Failed to count root users: " + cErr.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to delete user"})
+			return
+		}
+		if rootCount <= 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Cannot delete the last root user"})
+			return
+		}
+	}
+
+	if err := repo.AdminDeleteUser(userID); err != nil {
+		common.SysError("Failed to delete user: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to delete user"})
+		return
+	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionUserDeleted, governance.ResourceUser, userID,
+		fmt.Sprintf(`{"username":%q}`, target.Username)))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "User deleted successfully",
+	})
+}
+
+// RevokeUserSessionsAdminV2 revokes every active per-device session of a
+// user — the "compromised account" runbook step (L7, auth-security-08/26/29).
+// Route: DELETE /api/v2/admin/users/:id/sessions
+//
+// RootJWTAuth-gated, same platform-wide-by-design class as
+// DeleteAdminUserV2/UpdateAdminUserV2 above: root manages every user's
+// sessions across every tenant, not a per-tenant ownership check. reason is
+// always "admin_revoked" — distinct from a user's own self-service
+// revoke-others ("user_revoked_others") so the audit trail can tell an
+// operator-initiated revoke apart from a user-initiated one. A no-op (0
+// revoked, still 200) when the user has no active sessions.
+//
+// When SESSION_REGISTRY_ENABLED is off the endpoint refuses with 409
+// SESSION_REGISTRY_DISABLED instead (cycle-12 L4): no rows are ever
+// registered then, so it cannot revoke anything, and the 200 {"revoked":0}
+// it used to answer read to an operator working the compromised-account
+// runbook exactly like "this user had no live sessions". See
+// doc/runbook/incident-response.md for where the flag lives.
+func RevokeUserSessionsAdminV2(c *gin.Context) {
+	if _, ok := requireRoot(c); !ok {
+		return
+	}
+
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid user ID"})
+		return
+	}
+
+	// With the flag off no rows were ever registered — refuse without
+	// touching the DB, so a rollback (or leftover rows from a prior flag-on
+	// soak) cannot make this endpoint revoke anything, and the caller is
+	// told the feature is off rather than that the work is done.
+	if !repo.SessionRegistryEnabled() {
+		c.JSON(http.StatusConflict, gin.H{
+			"success":    false,
+			"message":    "Session registry is disabled on this deployment",
+			"error_code": "SESSION_REGISTRY_DISABLED",
+		})
+		return
+	}
+
+	rows, err := repo.RevokeAllUserSessions(userID, entity.SessionRevokeReasonAdminRevoked)
+	if err != nil {
+		common.SysError("RevokeUserSessionsAdminV2: failed: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to revoke sessions"})
+		return
+	}
+	for _, r := range rows {
+		redisDeleteSessionKey(c, r.SessionKey)
+	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionAuthSessionRevoked, governance.ResourceUser, userID,
+		fmt.Sprintf(`{"revoked":%d,"reason":%q}`, len(rows), entity.SessionRevokeReasonAdminRevoked)))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"revoked": len(rows),
+		},
+	})
+}

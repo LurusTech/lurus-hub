@@ -6,35 +6,85 @@ import (
 	"strings"
 
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
-	"github.com/bytedance/gopkg/util/gopool"
 	"gorm.io/gorm"
 )
 
 // Canonical definition: domain/entity/token.go
 type Token struct {
-	Id                 int            `json:"id"`
-	UserId             int            `json:"user_id" gorm:"index;index:idx_tenant_user,priority:2"`
-	TenantId           string         `json:"tenant_id" gorm:"type:varchar(36);index;index:idx_tenant_user,priority:1;default:'default'"` // Tenant isolation
-	Key                string         `json:"key" gorm:"type:char(48);uniqueIndex"`
-	Status             int            `json:"status" gorm:"default:1"`
-	Name               string         `json:"name" gorm:"index" `
-	CreatedTime        int64          `json:"created_time" gorm:"bigint"`
-	AccessedTime       int64          `json:"accessed_time" gorm:"bigint"`
-	ExpiredTime        int64          `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
-	RemainQuota        int            `json:"remain_quota" gorm:"default:0"`
-	UnlimitedQuota     bool           `json:"unlimited_quota"`
-	ModelLimitsEnabled bool           `json:"model_limits_enabled"`
-	ModelLimits        string         `json:"model_limits" gorm:"type:varchar(1024);default:''"`
-	AllowIps           *string        `json:"allow_ips" gorm:"default:''"`
-	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
-	Group              string         `json:"group" gorm:"default:''"`
-	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
-	IdentityAccountID  int64          `json:"identity_account_id" gorm:"default:0;index:idx_identity_account,where:identity_account_id > 0"` // lurus-platform account ID
-	DeletedAt          gorm.DeletedAt `gorm:"index"`
+	Id                 int     `json:"id"`
+	UserId             int     `json:"user_id" gorm:"index;index:idx_tenant_user,priority:2"`
+	TenantId           string  `json:"tenant_id" gorm:"type:varchar(36);index;index:idx_tenant_user,priority:1;default:'default'"` // Tenant isolation
+	Key                string  `json:"key" gorm:"type:char(48);uniqueIndex"`
+	Status             int     `json:"status" gorm:"default:1"`
+	Name               string  `json:"name" gorm:"index" `
+	CreatedTime        int64   `json:"created_time" gorm:"bigint"`
+	AccessedTime       int64   `json:"accessed_time" gorm:"bigint"`
+	ExpiredTime        int64   `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
+	RemainQuota        int     `json:"remain_quota" gorm:"default:0"`
+	UnlimitedQuota     bool    `json:"unlimited_quota"`
+	ModelLimitsEnabled bool    `json:"model_limits_enabled"`
+	ModelLimits        string  `json:"model_limits" gorm:"type:varchar(1024);default:''"`
+	AllowIps           *string `json:"allow_ips" gorm:"default:''"`
+	UsedQuota          int     `json:"used_quota" gorm:"default:0"` // used quota
+	Group              string  `json:"group" gorm:"default:''"`
+	CrossGroupRetry    bool    `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
+	// Scopes is a comma-separated allowlist of relay scopes (see
+	// pkg/types/token_scope.go). Empty = no restriction (backward compat).
+	// Migration 015 introduced the column. ADR Phase E2.
+	Scopes            string `json:"scopes" gorm:"type:varchar(255);default:''"`
+	IdentityAccountID int64  `json:"identity_account_id" gorm:"default:0;index:idx_identity_account,where:identity_account_id > 0"` // lurus-platform account ID
+	// CreatorUserId is users.id of the Reseller who issued this key via the
+	// Provisioning API. 0 = legacy / non-provisioned. ADR 2026-05-18 §3.3.
+	CreatorUserId int `json:"creator_user_id" gorm:"default:0;index:idx_tokens_creator_user_id,where:creator_user_id > 0"`
+	// LastUsedAt is updated on relay hit for Provisioning-issued keys.
+	// Unix seconds. 0 = never used.
+	LastUsedAt int64 `json:"last_used_at" gorm:"default:0"`
+	// AutoRotateDays enables scheduled key rotation: when > 0 the key is
+	// automatically rotated every AutoRotateDays days by the secret-rotation
+	// lifecycle task. 0 disables it. Migration 017, ADR Phase H1.4.
+	AutoRotateDays int `json:"auto_rotate_days" gorm:"default:0"`
+	// RotatedAt is the unix-second time of the last automatic rotation; 0 means
+	// never auto-rotated (the rotation interval is then measured from
+	// CreatedTime).
+	RotatedAt int64 `json:"rotated_at" gorm:"default:0"`
+	// RateLimitRPM / RateLimitTPM mirror domain/entity/token.go (canonical
+	// docs live there): per-minute request / LLM-token caps enforced by
+	// middleware.BusinessRateLimit, 0 = unlimited (migration 023 columns).
+	// Duplicated here because the token create/update handlers bind and
+	// persist through this independent struct.
+	RateLimitRPM int `json:"rate_limit_rpm" gorm:"column:rpm_limit;default:0"`
+	RateLimitTPM int `json:"rate_limit_tpm" gorm:"column:tpm_limit;default:0"`
+	// ProjectId mirrors domain/entity/token.go (canonical docs live there):
+	// cost-attribution label, 0 = unassigned (migration 029). Duplicated here
+	// because the token create/update handlers bind and persist through this
+	// independent struct — the tag MUST stay byte-identical to the entity one.
+	ProjectId int `json:"project_id" gorm:"not null;default:0"`
+	// TrustedIdentityHeaders / EmployeeRef mirror domain/entity/token.go
+	// (canonical docs live there; migration 045). Tags MUST stay
+	// byte-identical to the entity ones.
+	TrustedIdentityHeaders bool   `json:"trusted_identity_headers" gorm:"not null;default:false"`
+	EmployeeRef            string `json:"employee_ref" gorm:"type:varchar(64);not null;default:''"`
+	// SourceProduct mirrors domain/entity/token.go (migration 049); tag must stay byte-identical.
+	SourceProduct string `json:"source_product" gorm:"type:varchar(32);not null;default:''"`
+	// LogRetention mirrors domain/entity/token.go (migration 050); tag must stay byte-identical.
+	LogRetention string         `json:"content_retention" gorm:"column:content_retention;type:varchar(16);not null;default:''"`
+	DeletedAt    gorm.DeletedAt `gorm:"index"`
 }
 
 func (token *Token) Clean() {
 	token.Key = ""
+}
+
+// QuotaAvailable reports whether the token's OWN spending cap still has
+// room: an unlimited token always has room; a limited one needs
+// RemainQuota > 0. ValidateUserToken's Status==TokenStatusExhausted branch
+// below and middleware.TokenAuth's 402-hint branch both call this single
+// definition so "does this token still have quota" can never drift apart
+// between the two files — a prior defect had each site re-derive the same
+// boolean expression independently, and deleting one copy's UnlimitedQuota
+// check left the other package's tests fully green.
+func (token *Token) QuotaAvailable() bool {
+	return token.UnlimitedQuota || token.RemainQuota > 0
 }
 
 func (token *Token) GetIpLimits() []string {
@@ -74,21 +124,71 @@ func SearchUserTokens(userId int, keyword string, token string) (tokens []*Token
 	return tokens, err
 }
 
+// ErrTokenQuotaExhausted is the sentinel for both quota-exhaustion paths in
+// ValidateUserToken (Status==TokenStatusExhausted and the live
+// !UnlimitedQuota && RemainQuota<=0 downgrade). Callers use errors.Is to
+// detect it and answer with 402 instead of the generic 401 the other
+// ValidateUserToken failures get — see middleware.TokenAuth. Both paths still
+// wrap this sentinel even when the Status==TokenStatusExhausted branch's
+// RemainQuota is actually positive (see the branch below) — the caller still
+// needs the 402 token-management guidance, just with a different message.
+var ErrTokenQuotaExhausted = errors.New("token unavailable")
+
+// ErrTokenDisabled is the sentinel for a token whose Status is neither
+// Enabled, Exhausted, nor Expired. The `token.Status != TokenStatusEnabled`
+// check this sentinel guards reaches it for TokenStatusDisabled (constants.go:
+// deliberately non-zero, =2) AND for the zero value (a Status column left
+// unset, e.g. a row inserted without an explicit status) — TokenStatusEnabled
+// is 1, not 0, so a bare zero also falls into this branch, not just the
+// explicit-disable case. middleware.TokenAuth uses errors.Is to map it to
+// the token_disabled error code instead of the generic invalid_request 401
+// the other ValidateUserToken failures get.
+var ErrTokenDisabled = errors.New("token status unavailable")
+
+// ErrTokenExpired covers both expiry paths in ValidateUserToken: a row already
+// downgraded to TokenStatusExpired and a live ExpiredTime in the past. The
+// message stays the sentence callers have seen on the wire since the
+// English-message pass; the sentinel only makes it matchable.
+var ErrTokenExpired = errors.New("token has expired")
+
+// ErrTokenLookupFailed is the one ValidateUserToken failure that is NOT a
+// verdict about the key: DB.First failed for a reason other than NotFound
+// (connection down, timeout, pool exhausted). middleware.TokenAuth answers
+// it with 503 instead of 401 so a bridge that replays "unknown key" 401s to
+// another gateway does not get handed a request the hub never judged.
+var ErrTokenLookupFailed = errors.New("token lookup failed")
+
 func ValidateUserToken(key string) (token *Token, err error) {
 	if key == "" {
-		return nil, errors.New("未提供令牌")
+		return nil, errors.New("no token provided")
 	}
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
 		if token.Status == common.TokenStatusExhausted {
-			keyPrefix := key[:3]
-			keySuffix := key[len(key)-3:]
-			return token, errors.New("该令牌额度已用尽 TokenStatusExhausted[sk-" + keyPrefix + "***" + keySuffix + "]")
+			// Status==TokenStatusExhausted does NOT imply RemainQuota<=0: an
+			// admin can raise remain_quota (handler/token.go's
+			// app.ApplyTokenUpdate copies RemainQuota from the update
+			// request) without also flipping Status back to Enabled —
+			// CanEnableToken/the enable transition only runs when the
+			// request body explicitly sets status=Enabled (token.go:230).
+			// Asserting "available quota exhausted, edit remaining quota" in that state is false
+			// (the metadata this error feeds — see
+			// types.ErrOptionWithTokenDisabledHint — already reports the
+			// raised remain_quota) and points the caller at a field that's
+			// already fine; the real remedy is re-enabling the token.
+			if token.QuotaAvailable() {
+				remainDesc := "unlimited"
+				if !token.UnlimitedQuota {
+					remainDesc = fmt.Sprintf("%d", token.RemainQuota)
+				}
+				return token, fmt.Errorf("%w (remaining quota is sufficient [%s], but the token is currently disabled; re-enable it from the token management page)", ErrTokenQuotaExhausted, remainDesc)
+			}
+			return token, tokenExhaustedMessage(token.RemainQuota)
 		} else if token.Status == common.TokenStatusExpired {
-			return token, errors.New("该令牌已过期")
+			return token, ErrTokenExpired
 		}
 		if token.Status != common.TokenStatusEnabled {
-			return token, errors.New("该令牌状态不可用")
+			return token, fmt.Errorf("%w", ErrTokenDisabled)
 		}
 		if token.ExpiredTime != -1 && token.ExpiredTime < common.GetTimestamp() {
 			if !common.RedisEnabled {
@@ -98,7 +198,7 @@ func ValidateUserToken(key string) (token *Token, err error) {
 					common.SysLog("failed to update token status" + err.Error())
 				}
 			}
-			return token, errors.New("该令牌已过期")
+			return token, ErrTokenExpired
 		}
 		if !token.UnlimitedQuota && token.RemainQuota <= 0 {
 			if !common.RedisEnabled {
@@ -109,39 +209,37 @@ func ValidateUserToken(key string) (token *Token, err error) {
 					common.SysLog("failed to update token status" + err.Error())
 				}
 			}
-			keyPrefix := key[:3]
-			keySuffix := key[len(key)-3:]
-			return token, errors.New(fmt.Sprintf("[sk-%s***%s] 该令牌额度已用尽 !token.UnlimitedQuota && token.RemainQuota = %d", keyPrefix, keySuffix, token.RemainQuota))
+			return token, tokenExhaustedMessage(token.RemainQuota)
 		}
 		return token, nil
 	}
 	common.SysLog("ValidateUserToken: failed to get token: " + err.Error())
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, errors.New("无效的令牌")
-	} else {
-		return nil, errors.New("无效的令牌，数据库查询出错，请联系管理员")
+		return nil, errors.New("invalid token")
 	}
+	// Both wrapped: callers match the sentinel, and the driver error stays
+	// reachable for errors.Is (context deadline, closed pool). The text is
+	// for logs only — TokenAuth writes its own fixed 503 sentence.
+	return nil, fmt.Errorf("%w: %w", ErrTokenLookupFailed, err)
 }
 
 func GetTokenByIds(id int, userId int) (*Token, error) {
 	if id == 0 || userId == 0 {
-		return nil, errors.New("id 或 userId 为空！")
+		return nil, errors.New("id or userId is empty")
 	}
 	token := Token{Id: id, UserId: userId}
-	var err error = nil
-	err = DB.First(&token, "id = ? and user_id = ?", id, userId).Error
+	err := DB.First(&token, "id = ? and user_id = ?", id, userId).Error
 	return &token, err
 }
 
 func GetTokenById(id int) (*Token, error) {
 	if id == 0 {
-		return nil, errors.New("id 为空！")
+		return nil, errors.New("id is empty")
 	}
 	token := Token{Id: id}
-	var err error = nil
-	err = DB.First(&token, "id = ?", id).Error
+	err := DB.First(&token, "id = ?", id).Error
 	if shouldUpdateRedis(true, err) {
-		gopool.Go(func() {
+		AsyncGo(func() {
 			if err := cacheSetToken(token); err != nil {
 				common.SysLog("failed to update user status cache: " + err.Error())
 			}
@@ -154,7 +252,7 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 	defer func() {
 		// Update Redis cache asynchronously on successful DB read
 		if shouldUpdateRedis(fromDB, err) && token != nil {
-			gopool.Go(func() {
+			AsyncGo(func() {
 				if err := cacheSetToken(*token); err != nil {
 					common.SysLog("failed to update user status cache: " + err.Error())
 				}
@@ -182,23 +280,39 @@ func (token *Token) Insert() error {
 
 // AutoCreateDefaultToken creates a default unlimited-quota token for a user
 // so the playground and other session-based features work without manual setup.
+//
+// The token is bound to the OWNER's own tenant — not a hardcoded "default" —
+// so it routes through the same channels and draws against the same credit
+// pool a manually-created key for that user would. "default" is used only as
+// a fallback for the (pre-backfill) case where the owner's own tenant_id is
+// genuinely empty, never as the primary assignment. The platform account
+// link is stamped the same way BuildCleanToken does, so this token also
+// participates in the wallet-debit gate when the owner has one.
 func AutoCreateDefaultToken(userId int) (*Token, error) {
 	key, err := common.GenerateRandomKey(48)
 	if err != nil {
 		return nil, fmt.Errorf("generate token key: %w", err)
 	}
+
+	tenantId := "default"
+	if owner, err := GetUserById(userId); err == nil && owner.TenantId != "" {
+		tenantId = owner.TenantId
+	}
+	identityAccountID := IdentityAccountIDForUser(userId)
+
 	token := &Token{
-		UserId:         userId,
-		TenantId:       "default",
-		Key:            key,
-		Status:         common.TokenStatusEnabled,
-		Name:           "default",
-		CreatedTime:    common.GetTimestamp(),
-		AccessedTime:   common.GetTimestamp(),
-		ExpiredTime:    -1, // never expires
-		RemainQuota:    0,
-		UnlimitedQuota: true,
-		Group:          "",
+		UserId:            userId,
+		TenantId:          tenantId,
+		Key:               key,
+		Status:            common.TokenStatusEnabled,
+		Name:              "default",
+		CreatedTime:       common.GetTimestamp(),
+		AccessedTime:      common.GetTimestamp(),
+		ExpiredTime:       -1, // never expires
+		RemainQuota:       0,
+		UnlimitedQuota:    true,
+		Group:             "",
+		IdentityAccountID: identityAccountID,
 	}
 	if err := token.Insert(); err != nil {
 		return nil, fmt.Errorf("insert token: %w", err)
@@ -210,7 +324,7 @@ func AutoCreateDefaultToken(userId int) (*Token, error) {
 func (token *Token) Update() (err error) {
 	defer func() {
 		if shouldUpdateRedis(true, err) {
-			gopool.Go(func() {
+			AsyncGo(func() {
 				err := cacheSetToken(*token)
 				if err != nil {
 					common.SysLog("failed to update token cache: " + err.Error())
@@ -218,15 +332,25 @@ func (token *Token) Update() (err error) {
 			})
 		}
 	}()
+	// NOTE: "project_id" MUST stay in this allow-list. Omitting it does not
+	// fail — it silently drops the write, while the deferred cacheSetToken
+	// above still pushes the NEW value into Redis. The relay would then
+	// attribute spend to the new project until the cache entry expires and
+	// then flip back to the stale DB value: non-deterministic attribution
+	// drift that is close to unreproducible.
+	// Same for "trusted_identity_headers" / "employee_ref": a dropped DB write
+	// with a refreshed cache would split cache and DB on whether a key may name
+	// employees. Callers must pass tenant-admin authorization before setting them.
 	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "scopes",
+		"rpm_limit", "tpm_limit", "project_id", "trusted_identity_headers", "employee_ref").Updates(token).Error
 	return err
 }
 
 func (token *Token) SelectUpdate() (err error) {
 	defer func() {
 		if shouldUpdateRedis(true, err) {
-			gopool.Go(func() {
+			AsyncGo(func() {
 				err := cacheSetToken(*token)
 				if err != nil {
 					common.SysLog("failed to update token cache: " + err.Error())
@@ -238,10 +362,126 @@ func (token *Token) SelectUpdate() (err error) {
 	return DB.Model(token).Select("accessed_time", "status").Updates(token).Error
 }
 
+// UpdateModelLimits writes only model_limits_enabled/model_limits and
+// refreshes the token's Redis cache entry (same cacheSetToken pattern as
+// Update()/SelectUpdate()). Narrower than Update(), which rewrites the whole
+// row from the caller's in-memory snapshot — for a caller that only read the
+// row to compare/change its model entitlement (e.g. ProvisionV2's replay
+// reconcile), the wider Update() risks losing a concurrent write to a column
+// it also rewrites (remain_quota, status, …) that changed between that read
+// and this write. This can update the ModelLimitsEnabled zero value (false).
+func (token *Token) UpdateModelLimits() (err error) {
+	defer func() {
+		if shouldUpdateRedis(true, err) {
+			AsyncGo(func() {
+				err := cacheSetToken(*token)
+				if err != nil {
+					common.SysLog("failed to update token cache: " + err.Error())
+				}
+			})
+		}
+	}()
+	return DB.Model(token).Select("model_limits_enabled", "model_limits").Updates(token).Error
+}
+
+// RotateKey replaces the token's key atomically, updating the cache entry. The
+// manual rotation path deliberately leaves rotated_at untouched.
+func (token *Token) RotateKey(newKey string) error {
+	return token.rotateKey(newKey, map[string]interface{}{"key": newKey})
+}
+
+// RotateKeyWithTimestamp rotates the key and stamps rotated_at in a single
+// update. Used by the automatic rotation task so the next rotation is measured
+// from this moment.
+func (token *Token) RotateKeyWithTimestamp(newKey string, rotatedAt int64) error {
+	token.RotatedAt = rotatedAt
+	return token.rotateKey(newKey, map[string]interface{}{"key": newKey, "rotated_at": rotatedAt})
+}
+
+// ErrRotationRaceLost is returned by RotateKeyWithTimestampCAS when the
+// compare-and-swap guard found that another writer already advanced the
+// token's rotated_at past the observed baseline — i.e. this rotation lost the
+// race and must NOT rotate again. Callers treat it as a benign skip, not a
+// failure: the key was already rotated by the winning writer.
+var ErrRotationRaceLost = errors.New("token rotation race lost: rotated_at advanced concurrently")
+
+// RotateKeyWithTimestampCAS is the concurrency-safe variant of
+// RotateKeyWithTimestamp. It only rotates if the token's persisted rotated_at
+// still equals prevRotatedAt (the value the caller observed before deciding
+// the token was due; pass the raw persisted RotatedAt — which is 0 for a
+// never-rotated token — not the CreatedTime fallback used for due-ness). The
+// UPDATE carries that guard in its WHERE clause, so two racing rotators —
+// e.g. the scheduled leader task and a manual /internal/admin/rotate-due-tokens
+// trigger, or a brief split-brain where two replicas both believe they are
+// leader — cannot both rotate the same token: the conditional UPDATE
+// serializes them and the loser sees RowsAffected == 0.
+//
+// On a successful swap the in-memory token.Key / token.RotatedAt are advanced
+// and the cache is refreshed (same as rotateKey). On a lost race nothing is
+// mutated and the old cache entry is left intact (the winner refreshed it).
+func (token *Token) RotateKeyWithTimestampCAS(newKey string, prevRotatedAt, newRotatedAt int64) error {
+	oldKey := token.Key
+	result := DB.Model(&Token{}).
+		Where("id = ? AND rotated_at = ?", token.Id, prevRotatedAt).
+		Updates(map[string]interface{}{"key": newKey, "rotated_at": newRotatedAt})
+	if result.Error != nil {
+		return fmt.Errorf("rotate token CAS update: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		// Either the row vanished or rotated_at no longer matches the baseline:
+		// a concurrent writer won. Do not mutate in-memory state or cache.
+		return ErrRotationRaceLost
+	}
+
+	// CAS won: advance in-memory state and refresh the cache for old+new key.
+	token.Key = newKey
+	token.RotatedAt = newRotatedAt
+	if shouldUpdateRedis(true, nil) {
+		AsyncGo(func() {
+			_ = cacheDeleteToken(oldKey)
+			if e := cacheSetToken(*token); e != nil {
+				common.SysLog("failed to update token cache after CAS rotation: " + e.Error())
+			}
+		})
+	}
+	return nil
+}
+
+// rotateKey applies the given column updates while swapping token.Key in place,
+// then invalidates the token cache for the old and new key. Shared by RotateKey
+// and RotateKeyWithTimestamp so the cache-invalidation logic lives in one place.
+func (token *Token) rotateKey(newKey string, updates map[string]interface{}) (err error) {
+	oldKey := token.Key
+	token.Key = newKey
+	defer func() {
+		if shouldUpdateRedis(true, err) {
+			AsyncGo(func() {
+				_ = cacheDeleteToken(oldKey)
+				if e := cacheSetToken(*token); e != nil {
+					common.SysLog("failed to update token cache after rotation: " + e.Error())
+				}
+			})
+		}
+	}()
+	err = DB.Model(token).Updates(updates).Error
+	return err
+}
+
+// ListAutoRotateTokens returns enabled tokens that have auto-rotation enabled
+// (auto_rotate_days > 0). The secret-rotation lifecycle task scans these to
+// find the ones due for rotation. Bounded by the number of opted-in tokens.
+func ListAutoRotateTokens() ([]*Token, error) {
+	var tokens []*Token
+	err := DB.Where("auto_rotate_days > 0").
+		Where("status = ?", common.TokenStatusEnabled).
+		Find(&tokens).Error
+	return tokens, err
+}
+
 func (token *Token) Delete() (err error) {
 	defer func() {
 		if shouldUpdateRedis(true, err) {
-			gopool.Go(func() {
+			AsyncGo(func() {
 				err := cacheDeleteToken(token.Key)
 				if err != nil {
 					common.SysLog("failed to delete token cache: " + err.Error())
@@ -283,10 +523,27 @@ func DisableModelLimits(tokenId int) error {
 	return token.Update()
 }
 
+// GetOtherEnabledSwitchProvisionTokens returns the user's enabled relay
+// tokens whose name starts with namePrefix (the ProvisionV2
+// switch-provision-<plan_code> family), excluding excludeName. Used to find
+// the sibling key(s) a plan change must revoke — the caller disables each
+// one individually through (*Token).Update() (never a bulk UPDATE against
+// this WHERE clause), because Update()/SelectUpdate() refresh the per-key
+// Redis cache entry and a bulk UPDATE does not; a bulk UPDATE would leave a
+// warm cache still authenticating the revoked key until it naturally
+// expires.
+func GetOtherEnabledSwitchProvisionTokens(userID int, namePrefix, excludeName string) ([]*Token, error) {
+	var tokens []*Token
+	err := DB.Where("user_id = ? AND name LIKE ? AND name <> ? AND status = ?",
+		userID, namePrefix+"%", excludeName, common.TokenStatusEnabled).
+		Find(&tokens).Error
+	return tokens, err
+}
+
 func DeleteTokenById(id int, userId int) (err error) {
 	// Why we need userId here? In case user want to delete other's token.
 	if id == 0 || userId == 0 {
-		return errors.New("id 或 userId 为空！")
+		return errors.New("id or userId is empty")
 	}
 	token := Token{Id: id, UserId: userId}
 	err = DB.Where(token).First(&token).Error
@@ -298,10 +555,10 @@ func DeleteTokenById(id int, userId int) (err error) {
 
 func IncreaseTokenQuota(id int, key string, quota int) (err error) {
 	if quota < 0 {
-		return errors.New("quota 不能为负数！")
+		return errors.New("quota cannot be negative")
 	}
 	if common.RedisEnabled {
-		gopool.Go(func() {
+		AsyncGo(func() {
 			err := cacheIncrTokenQuota(key, int64(quota))
 			if err != nil {
 				common.SysLog("failed to increase token quota: " + err.Error())
@@ -328,10 +585,10 @@ func increaseTokenQuota(id int, quota int) (err error) {
 
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 	if quota < 0 {
-		return errors.New("quota 不能为负数！")
+		return errors.New("quota cannot be negative")
 	}
 	if common.RedisEnabled {
-		gopool.Go(func() {
+		AsyncGo(func() {
 			err := cacheDecrTokenQuota(key, int64(quota))
 			if err != nil {
 				common.SysLog("failed to decrease token quota: " + err.Error())
@@ -356,6 +613,60 @@ func decreaseTokenQuota(id int, quota int) (err error) {
 	return err
 }
 
+// DecreaseTokenQuotaIfEnough atomically debits a token's remain_quota ONLY when
+// the row still holds at least `quota`, mirroring DebitPoolInTx's conditional
+// UPDATE (WHERE ... >= ?) + RowsAffected guard. It is the pre-consume gate's
+// race-safe replacement for the read-compare-then-DecreaseTokenQuota sequence
+// (the token-gate TOCTOU): N concurrent pre-consume calls can no longer all
+// read the same remain_quota, all pass a Go-level check, and all debit past
+// zero.
+//
+// Returns ok=false (NOT err) when the balance was insufficient (RowsAffected
+// == 0) — the caller maps that to the existing insufficient-quota rejection.
+// A real DB failure returns err.
+//
+// This is intentionally NOT a drop-in for the general DecreaseTokenQuota, which
+// stays unconditional because PostConsumeQuota's settlement/compensation must
+// debit the ACTUAL cost even past a cap (overdraft is recorded, never refused).
+//
+// Cache / batch scope (honest):
+//   - The conditional UPDATE always runs directly on the DB, even when
+//     BatchUpdateEnabled — a batch-buffered decrement has no committed row to
+//     guard, so buffering it would defeat the atomicity. Decrements still
+//     pending in the batch buffer are invisible to the WHERE clause, the same
+//     staleness the pre-batch read already carried; BatchUpdateEnabled is off
+//     by default for this money path.
+//   - Under Redis the cache is decremented on success to stay consistent with
+//     the DB; a concurrent caller's cache read may be momentarily stale, but
+//     the DB conditional UPDATE is the authoritative guard that keeps
+//     remain_quota from going negative regardless.
+func DecreaseTokenQuotaIfEnough(id int, key string, quota int) (ok bool, err error) {
+	if quota < 0 {
+		return false, errors.New("quota cannot be negative")
+	}
+	result := DB.Model(&Token{}).
+		Where("id = ? AND remain_quota >= ?", id, quota).
+		Updates(map[string]interface{}{
+			"remain_quota":  gorm.Expr("remain_quota - ?", quota),
+			"used_quota":    gorm.Expr("used_quota + ?", quota),
+			"accessed_time": common.GetTimestamp(),
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return false, nil
+	}
+	if common.RedisEnabled {
+		AsyncGo(func() {
+			if cErr := cacheDecrTokenQuota(key, int64(quota)); cErr != nil {
+				common.SysLog("failed to decrease token quota cache: " + cErr.Error())
+			}
+		})
+	}
+	return true, nil
+}
+
 // CountUserTokens returns total number of tokens for the given user, used for pagination
 func CountUserTokens(userId int) (int64, error) {
 	var total int64
@@ -363,10 +674,89 @@ func CountUserTokens(userId int) (int64, error) {
 	return total, err
 }
 
-// BatchDeleteTokens 删除指定用户的一组令牌，返回成功删除数量
+// GetUserTokensByTenant returns tokens for the given user scoped to a specific
+// tenant. This is the v2 list function — the explicit tenant_id clause is
+// defence-in-depth (TenantPlugin also filters, but the explicit clause keeps
+// hermetic tests honest without the plugin registered).
+func GetUserTokensByTenant(userID int, tenantID string, startIdx int, num int) ([]*Token, error) {
+	var tokens []*Token
+	err := DB.Where("user_id = ? AND tenant_id = ?", userID, tenantID).
+		Order("id desc").Limit(num).Offset(startIdx).Find(&tokens).Error
+	return tokens, err
+}
+
+// CountUserTokensByTenant returns the total token count for the given user
+// within the specified tenant. Pairs with GetUserTokensByTenant for pagination.
+func CountUserTokensByTenant(userID int, tenantID string) (int64, error) {
+	var total int64
+	err := DB.Model(&Token{}).Where("user_id = ? AND tenant_id = ?", userID, tenantID).Count(&total).Error
+	return total, err
+}
+
+// ProvisionedAllCreators is the creatorUserID sentinel meaning "no creator
+// filter" — reserved for ScopeAll (platform-admin) callers, whose LIST must
+// match their revoke reach (RevokeProvisionedKey skips the creator check for
+// ScopeAll). 0 cannot be the sentinel: it is a real stored value (legacy
+// tokens), so filtering by 0 must keep meaning "creator_user_id = 0".
+const ProvisionedAllCreators = -1
+
+// GetProvisionedTokensByTenant returns Tokens issued via the Provisioning API
+// for a specific (Reseller user, tenant) pair, ordered by id DESC. Used by
+// GET /internal/v1/provisioning/tenants/:slug/keys (Tier 1.1, 2026-05-19).
+//
+// Filters:
+//   - creator_user_id = creatorUserID limits results to keys minted by THIS
+//     Reseller — keeps one Reseller's LIST output from leaking another's
+//     keys even when both happen to write to the same tenant via separate
+//     Provisioning keys. Legacy tokens (creator_user_id = 0) never show up.
+//     ProvisionedAllCreators (-1) disables the filter (ScopeAll callers) so
+//     the list reach stays symmetric with the revoke reach.
+//   - tenant_id = tenantID narrows to the URL-bound tenant scope.
+//   - includeRevoked=false adds status = TokenStatusEnabled. GORM's
+//     soft-delete (DeletedAt) is always applied by Find — revoked rows
+//     would otherwise leak via re-enabled status anomalies.
+//
+// limit / offset are clamped at the handler; the repo trusts the window.
+func GetProvisionedTokensByTenant(creatorUserID int, tenantID string, includeRevoked bool, offset, limit int) ([]*Token, error) {
+	var tokens []*Token
+	q := DB.Where("tenant_id = ?", tenantID)
+	if creatorUserID == ProvisionedAllCreators {
+		// Still a PROVISIONED-keys listing: creator_user_id > 0 keeps
+		// user-created tokens (creator 0) out even for ScopeAll callers.
+		q = q.Where("creator_user_id > 0")
+	} else {
+		q = q.Where("creator_user_id = ?", creatorUserID)
+	}
+	if !includeRevoked {
+		q = q.Where("status = ?", common.TokenStatusEnabled)
+	}
+	err := q.Order("id DESC").Offset(offset).Limit(limit).Find(&tokens).Error
+	return tokens, err
+}
+
+// CountProvisionedTokensByTenant returns the total row count matching
+// GetProvisionedTokensByTenant — used for pagination metadata in the
+// LIST response. Filter semantics MUST stay in sync with the Get above.
+func CountProvisionedTokensByTenant(creatorUserID int, tenantID string, includeRevoked bool) (int64, error) {
+	var total int64
+	q := DB.Model(&Token{}).Where("tenant_id = ?", tenantID)
+	if creatorUserID == ProvisionedAllCreators {
+		q = q.Where("creator_user_id > 0")
+	} else {
+		q = q.Where("creator_user_id = ?", creatorUserID)
+	}
+	if !includeRevoked {
+		q = q.Where("status = ?", common.TokenStatusEnabled)
+	}
+	err := q.Count(&total).Error
+	return total, err
+}
+
+// BatchDeleteTokens deletes a set of tokens belonging to the given user and
+// returns the number successfully deleted.
 func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	if len(ids) == 0 {
-		return 0, errors.New("ids 不能为空！")
+		return 0, errors.New("ids cannot be empty")
 	}
 
 	tx := DB.Begin()
@@ -387,7 +777,7 @@ func BatchDeleteTokens(ids []int, userId int) (int, error) {
 	}
 
 	if common.RedisEnabled {
-		gopool.Go(func() {
+		AsyncGo(func() {
 			for _, t := range tokens {
 				_ = cacheDeleteToken(t.Key)
 			}

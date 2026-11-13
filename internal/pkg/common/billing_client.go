@@ -4,17 +4,132 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
-	"time"
+	"sync/atomic"
 )
 
-// BillingUnifiedEnabled controls whether the pre-authorize billing path is active.
-// When true and IdentityAccountID > 0, relay requests use freeze/settle/release.
-// When false, the legacy fire-and-forget DebitWallet path is used.
-var BillingUnifiedEnabled = os.Getenv("BILLING_UNIFIED_ENABLED") == "true"
+// ErrInsufficientBalance is the sentinel for the ONE platform rejection that
+// genuinely means "this customer is out of money": a 400 whose body says
+// error=insufficient_balance.
+//
+// Match it with errors.Is, never by substring. A substring match on the
+// message also swallows every other rejection whose text happens to contain
+// the phrase, and — worse, because it is how this went wrong — it matched a
+// label this package itself fabricated for rejections that had nothing to do
+// with balance, which made the graceful-degradation path refuse to degrade on
+// exactly the failures it exists for.
+var ErrInsufficientBalance = errors.New("insufficient_balance")
+
+// InsufficientBalanceError is ErrInsufficientBalance carrying the platform's
+// own top-up link. lurus-platform (PR #106) puts the absolute wallet top-up URL
+// in the insufficient_balance body as `actions[0].url` on wallet debit /
+// pre-authorize, so a relaying service or AI agent can hand the human one URL
+// to pay and then retry. It unwraps to ErrInsufficientBalance, so every
+// errors.Is classification (degrade guard, breaker, preAuthFailure) is
+// unchanged; only callers that ask PlatformTopupURL see the link.
+//
+// Returned ONLY when the platform sent a usable absolute link; otherwise the
+// bare sentinel is returned exactly as before.
+type InsufficientBalanceError struct {
+	TopupURL string // platform-supplied absolute http(s) URL, passed through verbatim
+}
+
+func (e *InsufficientBalanceError) Error() string { return ErrInsufficientBalance.Error() }
+
+// Unwrap makes errors.Is(err, ErrInsufficientBalance) hold.
+func (e *InsufficientBalanceError) Unwrap() error { return ErrInsufficientBalance }
+
+// PlatformTopupURL returns the platform-supplied top-up link carried by err
+// (see InsufficientBalanceError), or "" when the platform sent none.
+func PlatformTopupURL(err error) string {
+	var ib *InsufficientBalanceError
+	if errors.As(err, &ib) {
+		return ib.TopupURL
+	}
+	return ""
+}
+
+// PlatformRejectedError is a platform rejection that is NOT about the
+// customer's balance — a validation rule the platform tightened, a missing
+// idempotency key, a product id it stopped recognising. It carries the
+// platform's own reason and status so the customer-facing message can say
+// "the billing service rejected this request" instead of "you are out of
+// money", and so the degrade path can tell the two classes apart.
+type PlatformRejectedError struct {
+	Op     string // the platform call that was rejected, e.g. "pre-authorize"
+	Status int    // the HTTP status the platform answered with
+	Reason string // the body's "error" field, or "unknown" when unparseable
+}
+
+func (e *PlatformRejectedError) Error() string {
+	return fmt.Sprintf("%s rejected by billing service: status=%d reason=%s", e.Op, e.Status, e.Reason)
+}
+
+// billingUnifiedEnabled is an atomic flag controlling the pre-authorize billing path.
+// Use BillingUnifiedEnabled() to read and SetBillingUnifiedEnabled() to write.
+// 1 = enabled, 0 = disabled (default).
+var billingUnifiedEnabled int32
+
+// BillingUnifiedEnabled reports whether the unified billing path (freeze/settle/release)
+// is active. Safe for concurrent use without a lock.
+func BillingUnifiedEnabled() bool {
+	return atomic.LoadInt32(&billingUnifiedEnabled) == 1
+}
+
+// SetBillingUnifiedEnabled updates the unified-billing flag atomically.
+// Called at init time (from env) and by the platform config poller.
+func SetBillingUnifiedEnabled(v bool) {
+	var n int32
+	if v {
+		n = 1
+	}
+	atomic.StoreInt32(&billingUnifiedEnabled, n)
+}
+
+// localLedgerAdvisory is an atomic flag demoting the LOCAL user-quota ledger
+// to shadow bookkeeping for platform-governed requests (Track A single-ledger
+// convergence). When true AND the request was admitted by the platform wallet
+// (RelayInfo.PlatformGoverned), the local user-balance 402 gate is skipped and
+// local pre/post-deduct failures log-and-continue instead of blocking the
+// relay/settle — the platform wallet is the sole source of truth; local writes
+// still happen so the shadow ledger keeps feeding drift reconciliation.
+// Requests the platform never admitted (legacy tokens, unlinked users, flag-off
+// windows) keep the full local gate — advisory NEVER opens the door for
+// traffic the platform hasn't vouched for.
+// Use LocalLedgerAdvisory() to read and SetLocalLedgerAdvisory() to write.
+// 1 = advisory, 0 = enforcing (default).
+var localLedgerAdvisory int32
+
+// LocalLedgerAdvisory reports whether the local quota ledger is advisory
+// (shadow) for platform-governed requests. Safe for concurrent use.
+func LocalLedgerAdvisory() bool {
+	return atomic.LoadInt32(&localLedgerAdvisory) == 1
+}
+
+// SetLocalLedgerAdvisory updates the local-ledger-advisory flag atomically.
+// Called at init time (from env) and by the platform config poller, so an
+// operator flip on the platform propagates fleet-wide within one poll cycle.
+func SetLocalLedgerAdvisory(v bool) {
+	var n int32
+	if v {
+		n = 1
+	}
+	atomic.StoreInt32(&localLedgerAdvisory, n)
+}
+
+func init() {
+	// Safe default only: package init runs BEFORE main() loads .env, so a
+	// .env-only BILLING_UNIFIED_ENABLED=true would not be visible here yet.
+	// The authoritative read happens in RefreshIdentityClientEnv (identity_client.go),
+	// called post-.env from InitResources.
+	SetBillingUnifiedEnabled(os.Getenv("BILLING_UNIFIED_ENABLED") == "true")
+	SetLocalLedgerAdvisory(os.Getenv("LOCAL_LEDGER_ADVISORY") == "true")
+}
 
 // PreAuthResult holds the response from a wallet pre-authorization call.
 type PreAuthResult struct {
@@ -43,6 +158,11 @@ func PreAuthorize(ctx context.Context, accountID int64, amount float64, productI
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+	// Platform requires an Idempotency-Key on this money endpoint (else 400). The
+	// relay request reference is the natural per-freeze dedupe key.
+	if referenceID != "" {
+		req.Header.Set("Idempotency-Key", referenceID)
+	}
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
@@ -50,13 +170,28 @@ func PreAuthorize(ctx context.Context, accountID int64, amount float64, productI
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusBadRequest {
-		reason := parseErrorResponse(resp.Body)
-		if reason == "insufficient_balance" {
-			return nil, fmt.Errorf("insufficient_balance")
+	if mayCarryInsufficientBalance(resp.StatusCode) {
+		// The body's error code, not the status, decides "out of money": the
+		// platform has answered insufficient_balance with 400, 402 and 409 at
+		// different times and is converging on 402.
+		eb := parsePlatformErrorBody(resp.Body)
+		reason := eb.reason()
+		if reason == insufficientBalanceCode {
+			return nil, eb.insufficientBalanceErr()
 		}
+		if resp.StatusCode != http.StatusBadRequest {
+			// 402/409 without the balance code: unchanged from before this
+			// status widening — treated like any other non-2xx answer.
+			SysLog(fmt.Sprintf("pre-authorize failed: account=%d, status=%d", accountID, resp.StatusCode))
+			return nil, fmt.Errorf("billing service unavailable")
+		}
+		// Any OTHER 400 is the platform refusing the request we sent, not the
+		// customer running out of money. Returning the balance sentinel here
+		// (which this arm used to do, right after logging the real reason)
+		// told the customer a falsehood they could not act on and blinded the
+		// degrade path at the same time.
 		SysLog(fmt.Sprintf("pre-authorize rejected: account=%d, status=%d, reason=%s", accountID, resp.StatusCode, reason))
-		return nil, fmt.Errorf("insufficient_balance")
+		return nil, &PlatformRejectedError{Op: "pre-authorize", Status: resp.StatusCode, Reason: reason}
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		SysLog(fmt.Sprintf("pre-authorize failed: account=%d, status=%d", accountID, resp.StatusCode))
@@ -92,6 +227,8 @@ func SettlePreAuth(ctx context.Context, preAuthID int64, actualAmount float64) (
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+	// Settle is keyed on the pre-auth row id — a retried settle must not charge twice.
+	req.Header.Set("Idempotency-Key", fmt.Sprintf("settle:%d", preAuthID))
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
@@ -102,6 +239,17 @@ func SettlePreAuth(ctx context.Context, preAuthID int64, actualAmount float64) (
 	if resp.StatusCode != http.StatusOK {
 		reason := parseErrorResponse(resp.Body)
 		SysLog(fmt.Sprintf("settle failed: preauth=%d, status=%d, reason=%s", preAuthID, resp.StatusCode, reason))
+		if isPreAuthVerdict(resp.StatusCode) {
+			// A verdict on this hold, not the platform missing. Typed so the
+			// breaker reads it as an answer (platformAnswered): the outbox
+			// retries a parked settle, and as a bare error each retry of a
+			// hold the platform had already decided on was counted as an
+			// unreachable platform — three in a row opened the breaker for
+			// every tenant. The Status lets the outbox tell them apart: 404
+			// and 409 can never succeed on retry; a 400 still may (the
+			// platform's HTTP path files its own DB hiccups under 400).
+			return nil, &PlatformRejectedError{Op: "settle", Status: resp.StatusCode, Reason: reason}
+		}
 		return nil, fmt.Errorf("settle failed: %s", reason)
 	}
 	var result SettlePreAuthResult
@@ -122,6 +270,8 @@ func ReleasePreAuth(ctx context.Context, preAuthID int64) error {
 		return fmt.Errorf("release request failed")
 	}
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+	// Release is keyed on the pre-auth row id — a retried release is a safe no-op.
+	req.Header.Set("Idempotency-Key", fmt.Sprintf("release:%d", preAuthID))
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
@@ -132,9 +282,100 @@ func ReleasePreAuth(ctx context.Context, preAuthID int64) error {
 	if resp.StatusCode != http.StatusOK {
 		reason := parseErrorResponse(resp.Body)
 		SysLog(fmt.Sprintf("release failed: preauth=%d, status=%d, reason=%s", preAuthID, resp.StatusCode, reason))
+		if isPreAuthVerdict(resp.StatusCode) {
+			return &PlatformRejectedError{Op: "release", Status: resp.StatusCode, Reason: reason}
+		}
 		return fmt.Errorf("release failed: %s", reason)
 	}
 	return nil
+}
+
+// isPreAuthVerdict reports whether a settle/release status is the platform's
+// decision about the hold (400 malformed-or-refused, 404 no such hold, 409
+// already settled/released) rather than a failure to reach or serve it.
+func isPreAuthVerdict(status int) bool {
+	return status == http.StatusBadRequest || status == http.StatusNotFound || status == http.StatusConflict
+}
+
+// PreAuthRetryIsFutile reports whether err is a platform verdict that no
+// retry can change: the hold does not exist (404) or is already in a state
+// this operation cannot reach (409). A 400 is NOT futile — see SettlePreAuth.
+func PreAuthRetryIsFutile(err error) bool {
+	var rejected *PlatformRejectedError
+	if !errors.As(err, &rejected) {
+		return false
+	}
+	return rejected.Status == http.StatusNotFound || rejected.Status == http.StatusConflict
+}
+
+// insufficientBalanceCode is the platform body `error` code meaning the
+// customer's wallet cannot cover the request.
+const insufficientBalanceCode = "insufficient_balance"
+
+// mayCarryInsufficientBalance reports whether a platform status is one the
+// platform has used (400 legacy, 402 target, 409 some paths) to answer
+// insufficient_balance. Only a body error == insufficientBalanceCode under one
+// of these statuses maps to ErrInsufficientBalance.
+func mayCarryInsufficientBalance(status int) bool {
+	return status == http.StatusBadRequest || status == http.StatusPaymentRequired || status == http.StatusConflict
+}
+
+// platformErrorAction mirrors one entry of the platform ErrorBody `actions`
+// array (respond_rich.go ErrorAction: type / label / url).
+type platformErrorAction struct {
+	Type  string `json:"type"`
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+// platformErrorBody is the platform's error envelope: {error, message, actions}.
+type platformErrorBody struct {
+	Error   string                `json:"error"`
+	Actions []platformErrorAction `json:"actions"`
+}
+
+// parsePlatformErrorBody decodes the platform error envelope. Unparseable
+// bodies yield the zero value (reason() == "unknown"). Consumes the reader.
+func parsePlatformErrorBody(body io.Reader) platformErrorBody {
+	var eb platformErrorBody
+	if err := json.NewDecoder(body).Decode(&eb); err != nil {
+		return platformErrorBody{}
+	}
+	return eb
+}
+
+func (eb platformErrorBody) reason() string {
+	if eb.Error == "" {
+		return "unknown"
+	}
+	return eb.Error
+}
+
+// topupURL returns the first "link" action's URL when it is an absolute
+// http(s) URL, verbatim; "" otherwise. A relative path (what the platform
+// sent before #106 on some routes) has no base a downstream agent could
+// resolve it against, so it is dropped rather than forwarded.
+func (eb platformErrorBody) topupURL() string {
+	for _, a := range eb.Actions {
+		if a.Type != "link" || a.URL == "" {
+			continue
+		}
+		u, err := url.Parse(a.URL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			continue
+		}
+		return a.URL
+	}
+	return ""
+}
+
+// insufficientBalanceErr is the sentinel, enriched with the platform's top-up
+// link when it sent one.
+func (eb platformErrorBody) insufficientBalanceErr() error {
+	if link := eb.topupURL(); link != "" {
+		return &InsufficientBalanceError{TopupURL: link}
+	}
+	return ErrInsufficientBalance
 }
 
 // parseErrorResponse extracts the "error" field from a JSON error response body.
@@ -147,9 +388,4 @@ func parseErrorResponse(body io.Reader) string {
 		return errResp.Error
 	}
 	return "unknown"
-}
-
-// billingGRPCTimeout wraps a context with a 5s timeout for billing gRPC calls.
-func billingGRPCTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(grpcCtx(ctx), 5*time.Second)
 }

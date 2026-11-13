@@ -1,13 +1,14 @@
 package helper
 
 import (
-	"fmt"
 	"strconv"
 
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
-	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
-	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+
 	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/currency"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/shopspring/decimal"
@@ -23,6 +24,19 @@ func EstimateQuotaFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 	if relayInfo == nil || usage == nil {
 		return 0
 	}
+
+	// Declarative context-length pricing tier (billing-pricing-14): the
+	// perception path (this function and ComputeLurusExtension, which reads
+	// relayInfo.PriceData.ModelRatio right after this call in every caller)
+	// runs strictly before postConsumeQuota settles the same request
+	// (adaptor.DoResponse precedes it in compatible_handler.go's TextHelper),
+	// so without this the X-Request-Cost header and x_lurus extension would
+	// report the stale pre-consume tier while the wallet debit uses the
+	// resettled one — half the real charge on a tier-crossing call (cycle-8
+	// plan §8 L5 B-F2). Idempotent and a no-op for UsePrice models and for
+	// any model with no tiers configured (helper.ResettleContextTier); the
+	// later postConsumeQuota call re-runs this with the same inputs.
+	ResettleContextTier(&relayInfo.PriceData, relayInfo.OriginModelName, usage.AsOpenAIWire().PromptTokens)
 
 	if relayInfo.PriceData.UsePrice {
 		q := decimal.NewFromFloat(relayInfo.PriceData.ModelPrice).
@@ -46,14 +60,20 @@ func EstimateQuotaFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 	dCompletionRatio := decimal.NewFromFloat(relayInfo.PriceData.CompletionRatio)
 	dCacheRatio := decimal.NewFromFloat(relayInfo.PriceData.CacheRatio)
 	dImageRatio := decimal.NewFromFloat(relayInfo.PriceData.ImageRatio)
-	dCachedCreationRatio := decimal.NewFromFloat(relayInfo.PriceData.CacheCreationRatio)
+	dCachedCreationRatio := decimal.NewFromFloat(relayInfo.PriceData.CacheCreationRatioForWire(usage.PromptTokensIncludeCached))
 
 	ratio := dModelRatio.Mul(dGroupRatio)
 
+	// Prompt-base deduction keyed on the wire flag stamped at the usage parse
+	// site (dto.Usage.PromptTokensIncludeCached), matching the real billing in
+	// compatible_handler.go/postConsumeQuota — this estimate used to guess
+	// from ChannelType and disagreed with the actual charge on exactly the
+	// combinations where that guess is wrong (Claude wire on non-Anthropic
+	// channels, OpenAI wire billed via the Claude path).
 	baseTokens := dPromptTokens
 	var cachedTokensWithRatio decimal.Decimal
 	if !dCacheTokens.IsZero() {
-		if relayInfo.ChannelMeta != nil && relayInfo.ChannelType != constant.ChannelTypeAnthropic {
+		if usage.PromptTokensIncludeCached {
 			baseTokens = baseTokens.Sub(dCacheTokens)
 		}
 		cachedTokensWithRatio = dCacheTokens.Mul(dCacheRatio)
@@ -61,7 +81,7 @@ func EstimateQuotaFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 
 	var cachedCreationWithRatio decimal.Decimal
 	if !dCachedCreationTokens.IsZero() {
-		if relayInfo.ChannelMeta != nil && relayInfo.ChannelType != constant.ChannelTypeAnthropic {
+		if usage.PromptTokensIncludeCached {
 			baseTokens = baseTokens.Sub(dCachedCreationTokens)
 		}
 		cachedCreationWithRatio = dCachedCreationTokens.Mul(dCachedCreationRatio)
@@ -92,7 +112,7 @@ func ComputeLurusExtension(info *relaycommon.RelayInfo, usage *dto.Usage, totalQ
 		return nil
 	}
 
-	costLB := float64(totalQuota) / common.QuotaPerUnit
+	costLB := currency.QuotaToCNY(totalQuota)
 
 	var billingMode string
 	switch {
@@ -104,7 +124,7 @@ func ComputeLurusExtension(info *relaycommon.RelayInfo, usage *dto.Usage, totalQ
 		billingMode = "legacy"
 	}
 
-	balanceRemaining := float64(info.UserQuota-totalQuota) / common.QuotaPerUnit
+	balanceRemaining := currency.QuotaToCNY(info.UserQuota - totalQuota)
 	if balanceRemaining < 0 {
 		balanceRemaining = 0
 	}
@@ -121,10 +141,83 @@ func ComputeLurusExtension(info *relaycommon.RelayInfo, usage *dto.Usage, totalQ
 		CachedTokens:     cachedTokens,
 		BalanceRemaining: balanceRemaining,
 		BillingMode:      billingMode,
+		ChargedUSD:       quotaToUSD(totalQuota),
 	}
 }
 
-// SetPerceptionHeaders writes cost/provider/request-id headers onto the response.
+func quotaToUSD(quota int) float64 {
+	if common.QuotaPerUnit <= 0 {
+		return 0
+	}
+	usd, _ := decimal.NewFromInt(int64(quota)).
+		Div(decimal.NewFromFloat(common.QuotaPerUnit)).
+		Round(10).Float64()
+	return usd
+}
+
+// ApplyChargedCost rewrites the OpenRouter-standard cost fields of an
+// OpenAI-wire usage object so they state what the caller is charged.
+//
+// An OpenRouter channel's reply carries OpenRouter's own usage.cost (what we
+// pay it, in USD) plus cost_details and is_byok. Passed through unchanged,
+// tools that read usage.cost (Cline, Roo, OpenClaw and others built for
+// OpenRouter) showed the caller our purchase price instead of their charge,
+// and every other channel showed no cost at all. The caller's charge is the
+// quota the wallet debit is computed from, in USD credits like the prices on
+// /api/v1/models. With ext nil (the request is not billed, e.g. an aborted
+// stream) the upstream cost is removed and none is stated. It reports
+// whether it changed anything, so a caller can pass an untouched frame on
+// byte for byte.
+func ApplyChargedCost(usage map[string]interface{}, ext *types.LurusUsageExtension) bool {
+	if usage == nil {
+		return false
+	}
+	changed := false
+	for _, k := range []string{"cost_details", "is_byok"} {
+		if _, ok := usage[k]; ok {
+			delete(usage, k)
+			changed = true
+		}
+	}
+	if ext == nil {
+		if _, ok := usage["cost"]; ok {
+			delete(usage, "cost")
+			changed = true
+		}
+		return changed
+	}
+	usage["cost"] = ext.ChargedUSD
+	return true
+}
+
+// Response header names this package emits, and the two values
+// CostReportingHeader can take.
+//
+// RelayAdapterHeader replaced X-Model-Provider (cycle-14 L6). The value was
+// always constant.GetChannelTypeName(info.ChannelType) — the channel's
+// configured adapter family, i.e. the wire dialect we spoke upstream. It is
+// NOT a measurement of who serves the model: an operator can point an
+// OpenAI-typed channel at any OpenAI-compatible endpoint, and a live
+// instance was answering a deepseek-chat call with "OpenAI". The gateway has
+// no way to learn the real provider — the channel's base URL is a
+// configuration value, and an aggregator's endpoint would only name the
+// aggregator — so the honest fix is to report what we do know under a name
+// that says what it is, rather than keep a documented header that lies.
+// Renaming rather than deleting keeps the genuinely useful part: the
+// adapter family tells a caller which response dialect to expect.
+//
+// CostReportingHeader exists because the two response shapes cannot carry
+// the cost the same way; see SetEventStreamHeaders.
+const (
+	RelayAdapterHeader             = "X-Relay-Adapter"
+	CostReportingHeader            = "X-Cost-Reporting"
+	CostReportingInHeaders         = "headers"
+	CostReportingInFinalUsageFrame = "final-usage-frame"
+)
+
+// SetPerceptionHeaders writes the cost/adapter/request-id headers onto a
+// BUFFERED (non-streamed) response, where the whole upstream reply — and so
+// the settled cost — is already in hand before anything is flushed.
 func SetPerceptionHeaders(c *gin.Context, info *relaycommon.RelayInfo, ext *types.LurusUsageExtension) {
 	if c == nil || info == nil {
 		return
@@ -133,10 +226,12 @@ func SetPerceptionHeaders(c *gin.Context, info *relaycommon.RelayInfo, ext *type
 	if ext != nil {
 		c.Writer.Header().Set("X-Request-Cost", perceptionFormatFloat(ext.CostLB))
 		c.Writer.Header().Set("X-Quota-Remaining", perceptionFormatFloat(ext.BalanceRemaining))
+		// Only claim the cost is in the headers when it actually is.
+		c.Writer.Header().Set(CostReportingHeader, CostReportingInHeaders)
 	}
 
 	if info.ChannelMeta != nil {
-		c.Writer.Header().Set("X-Model-Provider", constant.GetChannelTypeName(info.ChannelType))
+		c.Writer.Header().Set(RelayAdapterHeader, constant.GetChannelTypeName(info.ChannelType))
 	}
 
 	if reqID := c.GetString(common.RequestIdKey); reqID != "" {
@@ -146,14 +241,4 @@ func SetPerceptionHeaders(c *gin.Context, info *relaycommon.RelayInfo, ext *type
 
 func perceptionFormatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
-}
-
-// SetRateLimitHeaders writes standard rate-limit headers on 429 responses.
-func SetRateLimitHeaders(c *gin.Context, limit int, remaining int, retryAfterSec int64) {
-	if c == nil {
-		return
-	}
-	c.Writer.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-	c.Writer.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
-	c.Writer.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 }

@@ -34,9 +34,35 @@ var defaultGroupSpecialUsableGroup = map[string]map[string]string{
 	},
 }
 
+// GroupRatioSetting is the hierarchical config registered under
+// "group_ratio_setting".
+//
+// It used to also carry `group_ratio` and `group_group_ratio` fields holding
+// the very same map objects as the package variables below, which gave the
+// group multipliers — a price — a second write path: the config manager's
+// reflect writer, reached by PUT /api/option with key
+// "group_ratio_setting.group_ratio". That path took none of the mutexes the
+// accessors here take and skipped CheckGroupRatio's non-negative validation.
+// The canonical keys "GroupRatio" and "GroupGroupRatio" (repo/option.go's
+// dispatch, which routes to UpdateGroupRatioByJSONString /
+// UpdateGroupGroupRatioByJSONString) are the write path that remains, and
+// repo.updateOptionMap rejects the two retired hierarchical spellings listed
+// in its retiredOptionKeys.
+//
+// group_special_usable_group stays: it is the field the console writes
+// (web/src/pages/Setting/Ratio/GroupRatioSettings.jsx:197 and
+// web/src/components/settings/RatioSetting.jsx:58), and it is a types.RWMap,
+// which carries its own lock.
+//
+// That lock is only worth anything if the POINTER to it stops moving: this
+// field is read with no lock at all on the token-auth path
+// (app.GetUserUsableGroups, reached per relay request from
+// middleware/auth.go), so republishing the pointer on every option-sync tick
+// would be a data race on a per-request read. config.applyConfigMap therefore
+// unmarshals a new value INTO this pointee instead of replacing the pointer;
+// the pointer word is written once, by init below, before any goroutine
+// exists. TestGroupSpecialUsableGroup_PointerIsStableAcrossAPublish pins it.
 type GroupRatioSetting struct {
-	GroupRatio              map[string]float64                      `json:"group_ratio"`
-	GroupGroupRatio         map[string]map[string]float64           `json:"group_group_ratio"`
 	GroupSpecialUsableGroup *types.RWMap[string, map[string]string] `json:"group_special_usable_group"`
 }
 
@@ -48,19 +74,41 @@ func init() {
 
 	groupRatioSetting = GroupRatioSetting{
 		GroupSpecialUsableGroup: groupSpecialUsableGroup,
-		GroupRatio:              groupRatio,
-		GroupGroupRatio:         GroupGroupRatio,
 	}
 
 	config.GlobalConfig.Register("group_ratio_setting", &groupRatioSetting)
 }
 
+// GetGroupRatioSetting returns the registered group-ratio configuration.
+//
+// The nil repair below cannot fire from any production path — init allocates
+// the map and the config writer never replaces the pointer — but it is pinned
+// by ratio_coverage_test.go, which nils the field and expects the next call to
+// restore it, so it is kept and made lock-ordered: the check is taken under
+// the configuration read lock and the repair under the write lock (released
+// and re-taken, never nested: config.RLock is not reentrant), re-checking so
+// two callers that both saw nil publish one map rather than two.
 func GetGroupRatioSetting() *GroupRatioSetting {
-	if groupRatioSetting.GroupSpecialUsableGroup == nil {
-		groupRatioSetting.GroupSpecialUsableGroup = types.NewRWMap[string, map[string]string]()
-		groupRatioSetting.GroupSpecialUsableGroup.AddAll(defaultGroupSpecialUsableGroup)
+	config.RLock()
+	initialised := groupRatioSetting.GroupSpecialUsableGroup != nil
+	config.RUnlock()
+
+	if !initialised {
+		repairGroupSpecialUsableGroup()
 	}
 	return &groupRatioSetting
+}
+
+func repairGroupSpecialUsableGroup() {
+	config.Lock()
+	defer config.Unlock()
+
+	if groupRatioSetting.GroupSpecialUsableGroup != nil {
+		return
+	}
+	repaired := types.NewRWMap[string, map[string]string]()
+	repaired.AddAll(defaultGroupSpecialUsableGroup)
+	groupRatioSetting.GroupSpecialUsableGroup = repaired
 }
 
 func GetGroupRatioCopy() map[string]float64 {
@@ -94,11 +142,17 @@ func GroupRatio2JSONString() string {
 }
 
 func UpdateGroupRatioByJSONString(jsonStr string) error {
+	// 同 UpdateModelRatioByJSONString：解析失败不得破坏已生效的分组倍率。
+	tmp := make(map[string]float64)
+	if err := json.Unmarshal([]byte(jsonStr), &tmp); err != nil {
+		return err
+	}
+
 	groupRatioMutex.Lock()
 	defer groupRatioMutex.Unlock()
 
-	groupRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &groupRatio)
+	groupRatio = tmp
+	return nil
 }
 
 func GetGroupRatio(name string) float64 {
@@ -140,11 +194,17 @@ func GroupGroupRatio2JSONString() string {
 }
 
 func UpdateGroupGroupRatioByJSONString(jsonStr string) error {
+	// 同 UpdateModelRatioByJSONString：解析失败不得破坏已生效的分组间倍率。
+	tmp := make(map[string]map[string]float64)
+	if err := json.Unmarshal([]byte(jsonStr), &tmp); err != nil {
+		return err
+	}
+
 	groupGroupRatioMutex.Lock()
 	defer groupGroupRatioMutex.Unlock()
 
-	GroupGroupRatio = make(map[string]map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &GroupGroupRatio)
+	GroupGroupRatio = tmp
+	return nil
 }
 
 func CheckGroupRatio(jsonStr string) error {

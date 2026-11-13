@@ -6,12 +6,36 @@ import (
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 	"github.com/bytedance/gopkg/util/gopool"
 )
 
 // Worker pool for async indexing
 // 用于异步索引的工作池
 var asyncPool gopool.Pool
+
+// AsyncGo is this package's fire-and-forget spawn seam, the same convention as
+// repo.AsyncGo (internal/adapter/repo/async.go), app.AsyncGo
+// (internal/app/quota.go) and handler.AsyncGo (handler/model_meta.go). Its
+// default submits to asyncPool, so production keeps the behaviour the four
+// Sync*Async functions below had before this seam existed; a package's
+// TestMain can assign
+// an inline implementation so a submission finishes before the test that
+// caused it returns.
+//
+// Why this package needs one: the submissions below read the package globals
+// Client / RetryCount / RetryDelay / Debug / IndexPrefix from a pool worker,
+// while cov_helpers_test.go's withFakeClient restores those same globals in
+// t.Cleanup. There is no join point between the two, which is the shape the
+// cycle-12 plan §1.2 records as the 2026-09-09 CI `-race` failure at
+// sync.go's batch submission. (That attribution is quoted from the plan, not
+// re-measured here — `-race` needs cgo and does not run on the dev host.)
+//
+// This seam does not change the panic semantics of the calls it replaces:
+// they were already asyncPool.Go, and a gopool worker recovers a panic in the
+// submitted func and logs it (gopool@v0.1.3 util/gopool/worker.go run())
+// rather than letting it crash the process.
+var AsyncGo = func(f func()) { asyncPool.Go(f) }
 
 // syncCtx and syncCancel for graceful shutdown
 var (
@@ -35,7 +59,7 @@ func InitSyncWithContext(ctx context.Context) error {
 
 	// Initialize worker pool for async operations
 	// 初始化工作池用于异步操作
-	asyncPool = gopool.NewPool("meilisearch-sync", int32(WorkerCount), gopool.NewConfig())
+	asyncPool = gopool.NewPool("meilisearch-sync", int32(WorkerCount), gopool.NewConfig()) // #nosec G115 — WorkerCount is config-bounded to ≤256; fits in int32.
 
 	common.SysLog(fmt.Sprintf("Meilisearch sync initialized with %d workers", WorkerCount))
 
@@ -68,16 +92,22 @@ func SyncLogAsync(log *Log) {
 	if asyncPool == nil {
 		// If pool not initialized, index synchronously
 		// 如果池未初始化,则同步索引
-		_ = IndexLog(log)
+		if err := IndexLog(log); err != nil {
+			metrics.LogSearchSyncFailedTotal.Inc()
+		}
 		return
 	}
 
 	// Submit to worker pool
 	// 提交到工作池
-	asyncPool.Go(func() {
+	AsyncGo(func() {
 		err := RetryWithBackoff(func() error {
 			return IndexLog(log)
 		})
+		if err != nil {
+			// Counted regardless of Debug: the log line is opt-in, the loss is not.
+			metrics.LogSearchSyncFailedTotal.Inc()
+		}
 		if err != nil && Debug {
 			common.SysLog(fmt.Sprintf("Failed to sync log %d after retries: %v", log.Id, err))
 		}
@@ -94,16 +124,21 @@ func SyncLogsBatchAsync(logs []*Log) {
 	if asyncPool == nil {
 		// If pool not initialized, index synchronously
 		// 如果池未初始化,则同步索引
-		_ = IndexLogsBatch(logs)
+		if err := IndexLogsBatch(logs); err != nil {
+			metrics.LogSearchSyncFailedTotal.Inc()
+		}
 		return
 	}
 
 	// Submit to worker pool
 	// 提交到工作池
-	asyncPool.Go(func() {
+	AsyncGo(func() {
 		err := RetryWithBackoff(func() error {
 			return IndexLogsBatch(logs)
 		})
+		if err != nil {
+			metrics.LogSearchSyncFailedTotal.Inc()
+		}
 		if err != nil && Debug {
 			common.SysLog(fmt.Sprintf("Failed to sync log batch after retries: %v", err))
 		}
@@ -122,7 +157,7 @@ func SyncUserAsync(user *User) {
 		return
 	}
 
-	asyncPool.Go(func() {
+	AsyncGo(func() {
 		err := RetryWithBackoff(func() error {
 			return IndexUser(user)
 		})
@@ -144,7 +179,7 @@ func SyncChannelAsync(channel *Channel) {
 		return
 	}
 
-	asyncPool.Go(func() {
+	AsyncGo(func() {
 		err := RetryWithBackoff(func() error {
 			return IndexChannel(channel)
 		})

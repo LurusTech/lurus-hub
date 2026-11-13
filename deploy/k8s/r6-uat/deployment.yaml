@@ -1,0 +1,333 @@
+# UAT instance of lurus-newhub on R6 — the first environment that is NOT
+# production. Context (UAT 2026-08-26 finding): test-newhub.lurus.cn and
+# hub.lurus.cn proxy to the SAME NodePort/process/DB, so every "stage"
+# verification was actually hitting production. This instance gives UAT and
+# the Playwright e2e suite an isolated data plane:
+#   - own PostgreSQL database `newhub_uat` (role newhub_uat, schema built by
+#     the same GORM auto-migrate + embedded runner on first boot; migration
+#     021 self-seeds the default tenant)
+#   - own Redis keyspace (DB 3; prod uses DB 2)
+#   - E2E_BRIDGE_TOKEN set → /api/v2/bridge/exchange registers, so e2e can
+#     log in without OIDC
+#
+# Deliberate divergences from prod (each is a "must not touch prod state"
+# decision, not drift):
+#   - OIDC off: no IdP client is registered for a UAT redirect URI; e2e uses
+#     the bridge. Wiring UAT into the IdP is an owner decision.
+#   - BILLING_UNIFIED off: UAT relay traffic must never debit the real
+#     platform wallet. /api/health reports billing=legacy_mode (healthy).
+#   - LLM_QUOTA_NATS off: UAT events must not pollute the LLM_EVENTS stream
+#     consumed by lurus-notification.
+#   - replicas 1, host-only session cookie. Since 2026-08-30 the
+#     test-newhub.lurus.cn vhost fronts this instance (TLS at the host-nginx
+#     edge, source deploy/r6-host-nginx/test-newhub.conf); the NodePort
+#     tunnel remains for API-level access.
+# Everything else (image digest, probes, security context, resource shape,
+# CREDIT_POOL_REQUIRED=enforce, ERROR_LOG_ENABLED) tracks production.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lurus-newhub
+  namespace: lurus-newhub-uat
+  labels:
+    app: lurus-newhub
+    environment: uat
+spec:
+  replicas: 1
+  # Same as r6-stage: keep one superseded ReplicaSet instead of the default
+  # ten. UAT had 11 of them for a single running pod.
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: lurus-newhub
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: lurus-newhub
+        environment: uat
+    spec:
+      # cycle-13 L11 graceful drain budget: preStop 5s +
+      # GRACEFUL_SHUTDOWN_TIMEOUT 75s + 10s margin = 90. Kept identical to
+      # r6-stage so UAT exercises the same drain shape.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: lurus-newhub
+          # The `# pin:` and `image:` lines are AUTO-WRITTEN by
+          # docker-image-main.yml (bump_r6_manifest job) — same mechanism as
+          # deploy/k8s/r6-stage/deployment.yaml, both files are rewritten by
+          # every :main build so UAT always runs the digest prod runs.
+          # pin: main-20261113-a4acca7 run=43373601743
+          image: ghcr.io/hanmahong5-arch/lurus-newhub@sha256:337be7cc291c5fe1e7c5dc0c90a9df5505184dac0b0fd45947682e2f92a1a03f
+          imagePullPolicy: IfNotPresent
+          # --log-dir= (empty): file-based logging is a no-op here
+          # (internal/pkg/logger/logger.go's SetupLogger gates on
+          # *common.LogDir != ""); stdout is already collected by kubelet.
+          args: ["--log-dir="]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: PORT
+              value: "3000"
+            - name: TZ
+              value: "Asia/Shanghai"
+            - name: GIN_MODE
+              value: "release"
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-uat-secrets
+                  key: SESSION_SECRET
+            - name: SQL_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-uat-secrets
+                  key: SQL_DSN
+            - name: REDIS_CONN_STRING
+              value: "redis://redis.lurus-system.svc.cluster.local:6379/3"
+            # Downward API: this pod's own identity, published on /metrics
+            # (lurus_gateway_instance_info, X-Lurus-Instance header) — see
+            # r6-stage/deployment.yaml for the same addition. /api/health is
+            # public and deliberately does not carry this identity.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Host-only session cookie. The code default Domain=.lurus.cn made
+            # localhost tunnel clients silently DROP the cookie — bridge login
+            # returned 200 but every authenticated call after it was a 401
+            # (observed on first e2e run 2026-08-30: 28/34 failed this way).
+            - name: SESSION_COOKIE_DOMAIN
+              value: ""
+            # Secure since the 2026-08-30 nginx cutover: test-newhub.lurus.cn
+            # (TLS at the host-nginx edge) now fronts this instance, so the
+            # cookie must not travel over plain http. Note for tunnel access
+            # (http://localhost:30851): browsers DROP Secure cookies on plain-
+            # http localhost responses — use the domain, not the tunnel, for
+            # browser/e2e flows.
+            - name: SESSION_SECURE
+              value: "true"
+            # The whole e2e suite arrives from ONE ip (the SSH tunnel), and the
+            # default web limit (60 req/180s/ip) starts 429ing page assets
+            # mid-suite — measured 2026-08-30: a 70-GET burst went 42x200 then
+            # 28x429, which is exactly the "later specs see a blank SPA"
+            # failure shape. Limiter stays ENABLED so the middleware is still
+            # exercised; only the budget is UAT-sized.
+            - name: GLOBAL_WEB_RATE_LIMIT
+              value: "600"
+            # /api/v2 now carries its own IP-keyed rate limit (default
+            # 600/180s). The nightly e2e suite runs from a single IP (the
+            # SSH tunnel) and would exhaust that budget partway through —
+            # same rationale as GLOBAL_WEB_RATE_LIMIT above. Limiter stays
+            # ENABLED so the middleware is still exercised; only the budget
+            # is UAT-sized.
+            - name: GLOBAL_V2_RATE_LIMIT
+              value: "3000"
+            # The audit read/export endpoints sit behind the critical limiter
+            # (default 20 req / 20 min / ip). One e2e run spends ~10 of them
+            # from a single IP, and e2e is now dispatched after every deploy
+            # (docker-image-main.yml verify_rollout) as well as nightly, so two
+            # merges within 20 minutes 429'd the audit specs (measured
+            # 2026-09-30: 31 passed / 3 failed, all on /api/v2/admin/audit/*).
+            # Limiter stays ENABLED; only the budget is UAT-sized. Prod keeps
+            # the default.
+            - name: CRITICAL_RATE_LIMIT
+              value: "200"
+            # Error rows go into the shared logs table (LogTypeError).
+            # Retention is the log-retention leader task (cycle-13 L6): the
+            # window comes from LOG_RETENTION_DAYS (set below since 2026-10-10). Setting
+            # a window is an owner decision -- read
+            # doc/runbook/log-retention.md first (money rows have their own
+            # LOG_RETENTION_MONEY_DAYS window and a 400-day floor, because
+            # the invoice endpoints SUM the logs table directly).
+            - name: ERROR_LOG_ENABLED
+              value: "true"
+            # Retention windows, set 2026-10-10 (owner delegated the decision):
+            # diagnostic rows (unknown/manage/system/error) live 180 days;
+            # money rows (topup/consume/refund) 730 days - the invoice
+            # endpoints SUM the logs table directly, so this keeps two years
+            # of statements reproducible (floor is 400). Archived prompt text
+            # (log_bodies, migration 052) has its own 30-day default and is
+            # off until a tenant consents. Runbook: doc/runbook/log-retention.md.
+            - name: LOG_RETENTION_DAYS
+              value: "180"
+            - name: LOG_RETENTION_MONEY_DAYS
+              value: "730"
+            - name: OIDC_ENABLED
+              value: "false"
+            - name: MEILISEARCH_ENABLED
+              value: "false"
+            - name: BILLING_UNIFIED_ENABLED
+              value: "false"
+            - name: CREDIT_POOL_REQUIRED
+              value: "enforce"
+            # Same paid-SKU download gate as r6-stage (Switch mirror + Release artifacts).
+            - name: RELEASE_GATED_PRODUCTS
+              value: "lurus-switch"
+            - name: LLM_QUOTA_NATS_ENABLED
+              value: "false"
+            # L7 per-device session registry: on in UAT this cycle for the
+            # soak period (O5); prod flips after 7 days of clean UAT signal.
+            - name: SESSION_REGISTRY_ENABLED
+              value: "true"
+            - name: ALLOWED_ORIGINS
+              # test-newhub.lurus.cn fronts THIS instance since the 2026-08-30
+              # nginx cutover (it proxied prod:30850 before) — without it every
+              # same-origin POST from the UAT console would 403 the moment the
+              # domain flips. localhost:5173 stays for local vite dev.
+              value: "https://test-newhub.lurus.cn,http://localhost:5173"
+            # Registers POST /api/v2/bridge/exchange (rate-limited bootstrap
+            # login for e2e). The route does not exist when this env is unset —
+            # this is the one env that must NEVER be set on the prod instance.
+            - name: E2E_BRIDGE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-uat-secrets
+                  key: E2E_BRIDGE_TOKEN
+            # Registers the in-process fault simulator under
+            # /api/v2/faultsim/* (handler/faultsim.go). Like the bridge token
+            # above, the routes do not exist when this env is unset, and it
+            # must never be set on the prod instance: it is an OpenAI-shaped
+            # stub upstream plus a task vendor a UAT channel can point at, so
+            # relay failure modes and the generic task round trip can be
+            # exercised without a vendor key. Reachable over loopback only —
+            # the UAT egress policy excludes RFC1918, and a channel pointed at
+            # http://127.0.0.1:3000/api/v2/faultsim stays inside the pod.
+            - name: FAULTSIM_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-uat-secrets
+                  key: FAULTSIM_TOKEN
+            - name: LURUS_WHITELABEL_MASTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-uat-secrets
+                  key: LURUS_WHITELABEL_MASTER_SECRET
+            - name: NODE_TYPE
+              value: "master"
+            - name: SYNC_FREQUENCY
+              value: "60"
+            # Multi-provider CatalogSync (mig 056). Doctor live on UAT/hub
+            # 2026-11-06 (fleetctl catalog_sync.status=live). Ticker on for UAT
+            # soak; promote the same value to r6-stage only after UAT green.
+            - name: CATALOG_SYNC_FREQUENCY
+              value: "1440"
+            # Circuit breaker: a run of upstream failures only trips a channel
+            # if the failures fall within 5 minutes of each other; older ones
+            # are forgotten (resilience.Config.FailureWindow, default off).
+            - name: CB_FAILURE_WINDOW_SEC
+              value: "300"
+            # Cycle-13 pool ceiling, kept identical to r6-stage so UAT
+            # exercises the same pool shape. replicas: 1 here, so 1 x 12 = 12
+            # PostgreSQL connections against the MEASURED server budget
+            # (2026-09-20, R6 ns database, pod lurus-pg-0: max_connections =
+            # 100, 38 in use -- newhub 13, zitadel 8, newhub_uat 5,
+            # identity 3, lucrum 3, other 6).
+            # Only ONE pool here: a second exists solely when LOG_SQL_DSN is
+            # set, and neither manifest sets it (InitLogDB aliases LOG_DB to
+            # DB otherwise). deploy_consistency_test.go counts it that way
+            # rather than assuming x2.
+            # IDLE == OPEN on purpose: ConnMaxIdleTime already reaps idle
+            # connections, so a lower idle cap only buys reconnect churn.
+            # Lowering this is an AVAILABILITY knob, not a latency one: the deep
+            # readinessProbe's DB ping takes a pooled connection, so a saturated
+            # pool answers /api/health with 503 and pulls replicas out of the
+            # Service. See doc/runbook/db-pool-saturation.md.
+            - name: SQL_MAX_OPEN_CONNS
+              value: "12"
+            - name: SQL_MAX_IDLE_CONNS
+              value: "12"
+            # Per-tenant ceiling on concurrent relay requests: one tenant
+            # cannot spend the whole process upstream concurrency budget.
+            - name: RELAY_MAX_CONCURRENT_PER_TENANT
+              value: "64"
+            # Bifrost UAT soak (fusion Waves 1–2): chat + embeddings + messages.
+            # Prod/stage mirrors these modes — see
+            # doc/runbook/bifrost-stage-prod-flip.md. Flip back to legacy
+            # if soak fails.
+            - name: RELAY_ENGINE
+              value: "bifrost"
+            - name: RELAY_BIFROST_MODES
+              value: "chat,embeddings,messages"
+            # Below the 1Gi container limit so the Go heap backs off before the
+            # cgroup OOM-kills the pod.
+            - name: GOMEMLIMIT
+              value: "900MiB"
+            # cycle-13 L11: bounds only how long http.Server.Shutdown waits
+            # for in-flight requests; a stream still running when it elapses
+            # is cut, logged and counted, and the process still exits 0.
+            # Must fit inside terminationGracePeriodSeconds (90) with the 5s
+            # preStop sleep. doc/runbook/graceful-drain.md.
+            - name: GRACEFUL_SHUTDOWN_TIMEOUT
+              value: "75s"
+            - name: LOG_FORMAT
+              value: "json"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          startupProbe:
+            httpGet:
+              path: /api/status
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            # 5 + 120x5 = 605s -- the boot-migration budget before kubelet
+            # SIGKILLs the pod mid-statement (039's CREATE INDEX
+            # CONCURRENTLY runs outside a transaction). Kept identical to
+            # r6-stage; locked by deploy_consistency_test.go.
+            failureThreshold: 120
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 3
+            successThreshold: 1
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sleep", "5"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi

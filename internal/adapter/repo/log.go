@@ -2,20 +2,23 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/domain/entity"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 	"github.com/LurusTech/lurus-hub/internal/pkg/search"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/bytedance/gopkg/util/gopool"
 	"gorm.io/gorm"
 )
 
@@ -36,23 +39,95 @@ const (
 	LogTypeRefund  = entity.LogTypeRefund
 )
 
+// ============================================================================
+// Tenant scoping — structural enforcement for the logs table
+// ============================================================================
+//
+// The logs table is deliberately NOT covered by TenantPlugin auto-scoping
+// (see hasTenantIDColumn in tenant_plugin.go):
+//   - the plugin only engages on tenant-bound context handles (WithTenantID /
+//     GetTenantDB), which no log call site uses, so listing "logs" there would
+//     add zero read protection;
+//   - its beforeCreate callback errors when the tenant context is missing,
+//     which would break every bare-handle log write (RecordLog /
+//     RecordConsumeLog / RecordErrorLog — the relay hot path);
+//   - the plugin is registered on DB only (repo/main.go), while LOG_DB may be
+//     a separate database (LOG_SQL_DSN) that never has the plugin at all.
+//
+// Isolation for logs is therefore enforced HERE, structurally: every exported
+// query function in this file is either principal-scoped (filtered by user_id
+// / token_id / token key — globally unique principals that cannot cross
+// tenants) or requires an explicit TenantScope argument. Forgetting the
+// tenant decision is a compile error, not a silent cross-tenant leak.
+
+// TenantScope is the mandatory tenant decision for cross-user log queries.
+// Construct it with ForTenant or AllTenantsForAdmin — the zero value is
+// fail-closed (matches no rows).
+type TenantScope struct {
+	tenantID   string
+	allTenants bool
+}
+
+// ForTenant scopes a log query to a single tenant. An empty tenantID matches
+// no rows (every log row carries a non-empty tenant_id, default 'default'),
+// so a missing tenant fails closed instead of leaking all tenants.
+func ForTenant(tenantID string) TenantScope {
+	return TenantScope{tenantID: tenantID}
+}
+
+// AllTenantsForAdmin deliberately spans every tenant. Reserve it for
+// platform-admin surfaces (v1 admin console, root analytics) and system
+// tasks (retention cleanup) — never for caller-facing views.
+func AllTenantsForAdmin() TenantScope {
+	return TenantScope{allTenants: true}
+}
+
+// apply adds the scope's tenant filter to a logs query.
+func (s TenantScope) apply(tx *gorm.DB) *gorm.DB {
+	if s.allTenants {
+		return tx
+	}
+	return tx.Where("tenant_id = ?", s.tenantID)
+}
+
 func formatUserLogs(logs []*Log) {
 	for i := range logs {
 		logs[i].ChannelName = ""
 		// Strip Internal-tier governance struct fields (not visible to regular users).
 		logs[i].RequestFingerprint = ""
 		logs[i].UpstreamModel = ""
-		var otherMap map[string]interface{}
-		otherMap, _ = common.StrToMap(logs[i].Other)
-		if otherMap != nil {
-			// Strip Internal-tier fields from Other map (governance classification).
-			for _, key := range internalOtherKeys {
-				delete(otherMap, key)
-			}
-		}
-		logs[i].Other = common.MapToJsonStr(otherMap)
+		logs[i].Other = SanitizeOtherForUser(logs[i].Other)
 		logs[i].Id = logs[i].Id % 1024
 	}
+}
+
+// SanitizeOtherForUser returns a log row's Other JSON with every TierInternal
+// key stripped (governance classification) — the projection a non-admin caller
+// may see. Both the v1 self-log formatting above and the v2 log projection go
+// through here so there is exactly one strip list; an empty or unparseable
+// payload comes back as "" so callers can omit the field.
+func SanitizeOtherForUser(other string) string {
+	otherMap, _ := common.StrToMap(other)
+	if otherMap == nil {
+		return ""
+	}
+	for _, key := range internalOtherKeys {
+		delete(otherMap, key)
+	}
+	// Rows written before 2026-09-01 carry frt = -1000, the "no first token
+	// observed" sentinel that used to be subtracted unconditionally. The write
+	// side is fixed, but the fix is forward-only and frt became user-visible in
+	// the same day's change, so without this every historical non-streaming row
+	// would show a paying customer "-1000ms time to first token". A latency is
+	// never negative; drop the key rather than render a sentinel as a
+	// measurement. The admin route intentionally keeps the raw payload — an
+	// audit surface should show what is actually stored.
+	if frt, ok := otherMap["frt"]; ok {
+		if v, isNum := frt.(float64); !isNum || v < 0 {
+			delete(otherMap, "frt")
+		}
+	}
+	return common.MapToJsonStr(otherMap)
 }
 
 // internalOtherKeys lists Other map keys classified as TierInternal that must
@@ -64,36 +139,172 @@ var internalOtherKeys = []string{
 	"completion_ratio",
 	"cache_ratio",
 	"cache_creation_ratio",
+	// The 5m/1h cache-creation multipliers, written by GenerateClaudeOtherInfo
+	// whenever the corresponding bucket is non-zero. They are the same kind of
+	// value as cache_creation_ratio right above — our price multiplier — and
+	// were simply never added here, which is exactly the failure mode this
+	// list has: it is default-allow, so a new key leaks until someone
+	// remembers. TestOtherProjectionIsFullyClassified now fails the build
+	// instead of remembering.
+	//
+	// Only the *_ratio keys are stripped. cache_creation_tokens_5m / _1h stay
+	// visible: a token count is the customer's own consumption, and they need
+	// it to reconcile a discounted charge.
+	"cache_creation_ratio_5m",
+	"cache_creation_ratio_1h",
 	"model_price",
 	"user_group_ratio",
-	"frt",
+	// "frt" is deliberately NOT here: time to first token is the caller's own
+	// request timing, classified TierPublic alongside total_latency_ms. See
+	// governance/classification.go — and TestInternalOtherKeys_NoPublicField
+	// keeps the two lists from drifting apart again.
 	"is_model_mapped",
 	"upstream_model_name",
 	"web_search_price",
 	"web_search_call_count",
 	"file_search_price",
 	"file_search_call_count",
+	// Written by the error-log path (adapter/handler/relay.go
+	// recordRelayErrorLog), which builds its own Other map rather than going
+	// through the generators — so these never passed through any of the
+	// classification the consume-log keys did. They name the upstream account
+	// that served (and failed) the request: TierInternal in
+	// governance/classification.go, and the same values the v2 user log route
+	// now blanks in the channel_name column. Stripping the column while
+	// shipping the payload would have been a false credential.
+	//
+	// channel_type is deliberately NOT stripped alongside them: governance
+	// classifies it TierPublic, and TestInternalOtherKeys_NoPublicField
+	// enforces that. The vendor family is already implied by the model the
+	// caller chose; the account identity is not.
+	//
+	// Read channel_id here for what it is, not for more than it is: the
+	// numeric id is ALSO carried by the public logView column "channel"
+	// (v2_log.go, json:"channel"), which stays visible for both users and
+	// admins — the legacy self-log projection formatUserLogs above made the
+	// same call, blanking ChannelName/UpstreamModel/RequestFingerprint and
+	// keeping ChannelId, and the console's "#25" fallback and support tickets
+	// depend on it. So stripping channel_id from Other blocks zero bits today.
+	// It is on the list because governance classifies it TierInternal and it
+	// costs nothing, NOT because channel identity is hidden. The secret this
+	// entry actually protects is channel_name next to it; the id is not
+	// hidden anywhere, and anyone reading this list as "the caller cannot
+	// tell which channel served them" would be reading it wrong.
+	"channel_id",
+	"channel_name",
 	"image_ratio",
 	"audio_ratio",
 	"audio_completion_ratio",
 	"audio_input_price",
+	// The flag half of audio_input_price above: it is written only when a
+	// separate audio-input price was applied, so keeping it while stripping the
+	// price announces a pricing decision the caller cannot see. The sibling
+	// audio_input_token_count stays — that is their own consumption.
+	"audio_input_seperate_price",
 	"image_generation_call_price",
 	"data_flow_source",
 	"data_flow_dest",
+	// L2-REQUEST-IDENTITY: a one-way hash of the CALLER's own end-user
+	// identifier (OpenAI `user` / Anthropic `metadata.user_id`) — a third
+	// party's identity, unlike request_id/session_id right below it, which
+	// stay visible because they are the caller's own values. See
+	// governance/classification.go (TierConfidential).
+	"end_user",
+	// The vendor's own request/trace id (governance.EnrichLogParams;
+	// adapter/handler/relay.go recordRelayErrorLog copies it onto error rows
+	// too). TierInternal in governance/classification.go, same rationale as
+	// channel_id/channel_name above: it names the upstream, for
+	// support-ticket correlation — distinct from the caller's own request_id,
+	// which stays public and is not on this list.
+	"upstream_request_id",
 }
 
-func GetLogByKey(key string) (logs []*Log, err error) {
-	if os.Getenv("LOG_SQL_DSN") != "" {
-		var tk Token
-		if err = DB.Model(&Token{}).Where(logKeyCol+"=?", strings.TrimPrefix(key, "sk-")).First(&tk).Error; err != nil {
-			return nil, err
+// GetLogByKey returns the history of the ONE token identified by its
+// plaintext key, and only when that token belongs to the calling principal.
+//
+// The ownership predicate lives here rather than in the handler on purpose:
+// the key is caller-supplied, so the endpoint's own auth (TokenAuth) proves
+// only that SOMEBODY is authenticated, not that the queried key is theirs.
+// Enforcing in the repo means a future second call site cannot reopen the
+// hole by forgetting the check — passing a caller identity is a compile-time
+// obligation, the same discipline TenantScope imposes on the cross-user
+// queries above.
+//
+// Fail-closed rules:
+//   - callerUserID <= 0 is denied outright. Provisioned tokens carry
+//     UserId = 0, so `target.UserId == callerUserID` would be 0 == 0 for
+//     EVERY provisioned token — an equality that is not an identity. Denying
+//     is the simpler half of the choice: such callers lose an endpoint they
+//     have no console for, instead of gaining each other's spend history.
+//   - an empty callerTenantID matches nothing, matching ForTenant's
+//     fail-closed convention.
+//   - an unknown key and a foreign key return the IDENTICAL shape (both go
+//     through deny), so the endpoint is not an existence oracle for other
+//     people's keys. Only a genuine infrastructure error is surfaced.
+//
+// The token lookup is Unscoped because a caller who revoked (soft-deleted)
+// their own key must still be able to read that key's history.
+func GetLogByKey(key string, callerUserID int, callerTenantID string) (logs []*Log, err error) {
+	separateLogDB := os.Getenv("LOG_SQL_DSN") != ""
+	// deny reproduces, byte for byte, what an unknown key returned before this
+	// check existed: an empty page on the join path, not-found on the
+	// separate-log-DB path.
+	deny := func() ([]*Log, error) {
+		if separateLogDB {
+			return nil, gorm.ErrRecordNotFound
 		}
-		err = LOG_DB.Model(&Log{}).Where("token_id=?", tk.Id).Find(&logs).Error
-	} else {
-		err = LOG_DB.Joins("left join tokens on tokens.id = logs.token_id").Where("tokens.key = ?", strings.TrimPrefix(key, "sk-")).Find(&logs).Error
+		return []*Log{}, nil
 	}
+	if callerUserID <= 0 || callerTenantID == "" {
+		return deny()
+	}
+	var tk Token
+	if err = DB.Unscoped().Model(&Token{}).Where(logKeyCol+"=?", strings.TrimPrefix(key, "sk-")).First(&tk).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return deny()
+		}
+		return nil, err
+	}
+	tokenTenant := tk.TenantId
+	if tokenTenant == "" {
+		// Rows predating the tenant column default land in the default tenant.
+		tokenTenant = "default"
+	}
+	if tk.UserId != callerUserID || tokenTenant != callerTenantID {
+		return deny()
+	}
+	err = LOG_DB.Model(&Log{}).Where("token_id=?", tk.Id).Find(&logs).Error
 	formatUserLogs(logs)
 	return logs, err
+}
+
+// GetLogByRequestID looks up the single log row carrying the given
+// Other.request_id, for GET /v1/generation. Ownership is stricter than
+// GetLogByKey above: there is no caller-supplied key to look up first — the
+// caller's own token/tenant/user identity already came from TokenAuth's
+// context — so the query filters on all three directly rather than
+// resolving a row and comparing after the fact. callerTokenID<=0 denies
+// outright rather than matching token_id=0 rows: that value is a legitimate
+// default for pre-migration/legacy rows, not "no token", so it must never
+// be reachable by an unauthenticated/misconfigured caller.
+//
+// Returns gorm.ErrRecordNotFound both when no row exists and when a row
+// exists but belongs to someone else — the caller cannot distinguish "never
+// happened" from "not yours" by request id alone.
+func GetLogByRequestID(requestID string, callerUserID int, callerTenantID string, callerTokenID int) (*Log, error) {
+	if requestID == "" || callerTokenID <= 0 || callerTenantID == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var log Log
+	err := LOG_DB.Model(&Log{}).
+		Where("token_id = ? AND tenant_id = ? AND user_id = ?", callerTokenID, callerTenantID, callerUserID).
+		Where(jsonOtherTextExpr("request_id")+" = ?", requestID).
+		Order("id DESC").
+		First(&log).Error
+	if err != nil {
+		return nil, err
+	}
+	return &log, nil
 }
 
 // recordLogTx writes an audit log within a DB transaction when LOG_DB == DB (single-database setup).
@@ -105,6 +316,7 @@ func recordLogTx(tx *gorm.DB, userId int, logType int, content string) {
 	username, _ := GetUsernameById(userId, false)
 	l := &Log{
 		UserId:    userId,
+		TenantId:  resolveLogTenantID("", userId),
 		Username:  username,
 		CreatedAt: common.GetTimestamp(),
 		Type:      logType,
@@ -128,6 +340,7 @@ func RecordLog(userId int, logType int, content string) {
 	username, _ := GetUsernameById(userId, false)
 	log := &Log{
 		UserId:    userId,
+		TenantId:  resolveLogTenantID("", userId),
 		Username:  username,
 		CreatedAt: common.GetTimestamp(),
 		Type:      logType,
@@ -165,40 +378,11 @@ func RecordLogWithTenant(userId int, tenantID string, logType int, content strin
 	}
 }
 
-// convertLogToSearchLog converts model.Log to search.Log
-// 将 model.Log 转换为 search.Log
-func convertLogToSearchLog(log *Log) *search.Log {
-	return &search.Log{
-		Id:               log.Id,
-		CreatedAt:        log.CreatedAt,
-		Type:             log.Type,
-		UserId:           log.UserId,
-		Username:         log.Username,
-		TokenId:          log.TokenId,
-		TokenName:        log.TokenName,
-		ModelName:        log.ModelName,
-		Content:          log.Content,
-		Quota:            log.Quota,
-		PromptTokens:     log.PromptTokens,
-		CompletionTokens: log.CompletionTokens,
-		UseTime:          log.UseTime,
-		IsStream:         log.IsStream,
-		ChannelId:        log.ChannelId,
-		ChannelName:      log.ChannelName,
-		Group:            log.Group,
-		Ip:               log.Ip,
-		Other:            log.Other,
-		ChannelType:      log.ChannelType,
-		RelayMode:        log.RelayMode,
-		UpstreamModel:    log.UpstreamModel,
-		TotalLatencyMs:   log.TotalLatencyMs,
-	}
-}
-
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
 	isStream bool, group string, other map[string]interface{}) {
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
 	username := c.GetString("username")
+	other = setRequestIdIfAbsent(c, other)
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -209,10 +393,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	}
 	// Extract governance fields from context for error logs.
 	channelType := c.GetInt("channel_type")
-	tenantId := c.GetString("tenant_id")
-	if tenantId == "" {
-		tenantId = "default"
-	}
+	tenantId := resolveLogTenantID(c.GetString("tenant_id"), userId)
 	log := &Log{
 		UserId:           userId,
 		TenantId:         tenantId,
@@ -238,18 +419,36 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		}(),
 		Other:       otherStr,
 		ChannelType: channelType,
+		// Attribution (migrations 029/045) comes from the request context:
+		// the auth middleware resolved it before any channel was tried, so an
+		// error row is attributed exactly like the consume row it replaces.
+		ProjectId:   common.GetContextKeyInt(c, constant.ContextKeyProjectId),
+		EmployeeRef: common.GetContextKeyString(c, constant.ContextKeyEmployeeRef),
 	}
-	err := LOG_DB.Create(log).Error
+	err := LOG_DB.Create(applyContentRetention(withChannelKeyIdx(c, log))).Error
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
 	} else {
 		// Async sync to Meilisearch
 		// 异步同步到 Meilisearch
 		search.SyncLogAsync(convertLogToSearchLog(log))
+		notifyLogPersisted(log)
 	}
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
+	// P1-3: emit usage metrics here — the one chokepoint every relay path funnels
+	// through — BEFORE the log-config guards, so token/quota series are recorded
+	// even when consume-log writes are disabled. Provider is derived from the
+	// channel type so RecordTokens' (provider, model) labels are populated.
+	metricTenant := resolveLogTenantID(c.GetString("tenant_id"), userId)
+	metrics.RecordTokens(constant.GetChannelTypeName(params.ChannelType), params.ModelName,
+		params.PromptTokens, params.CompletionTokens)
+	if params.Quota > 0 {
+		// Counter.Add panics on negatives; refund/zero rows must not be recorded.
+		metrics.RecordQuotaConsumed(metricTenant, int64(params.Quota))
+	}
+
 	if !common.LogConsumeEnabled {
 		return
 	}
@@ -262,6 +461,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	}
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
+	params.Other = setRequestIdIfAbsent(c, params.Other)
 	otherStr := common.MapToJsonStr(params.Other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -270,13 +470,9 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			needRecordIp = true
 		}
 	}
-	tenantId := c.GetString("tenant_id")
-	if tenantId == "" {
-		tenantId = "default"
-	}
 	log := &Log{
 		UserId:           userId,
-		TenantId:         tenantId,
+		TenantId:         metricTenant,
 		Username:         username,
 		CreatedAt:        common.GetTimestamp(),
 		Type:             LogTypeConsume,
@@ -303,28 +499,51 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		RequestFingerprint: params.RequestFingerprint,
 		UpstreamModel:      params.UpstreamModel,
 		TotalLatencyMs:     params.TotalLatencyMs,
+		// Cost attribution (migration 029), filled by
+		// governance.EnrichLogParams. 0 = unassigned. This value can never be
+		// backfilled: whatever is written here is the row's attribution
+		// forever.
+		ProjectId:   params.ProjectId,
+		EmployeeRef: params.EmployeeRef,
+		ChargedCNY4: params.ChargedCNY4,
+		PricedCNY4:  params.PricedCNY4,
+		// Unified retrieval metering (migration 053).
+		UsageUnit:          params.UsageUnit,
+		UsageQuantity:      params.UsageQuantity,
+		UsageSource:        params.UsageSource,
+		RetrievalDocuments: params.RetrievalDocuments,
 	}
-	err := LOG_DB.Create(log).Error
+	err := LOG_DB.Create(applyContentRetention(withChannelKeyIdx(c, log))).Error
 	if err != nil {
+		// The charge has already happened; this row was the usage record.
+		// Counted so the loss reaches an alarm, not only a log line.
+		metrics.BillingConsumeLogWriteFailedTotal.Inc()
 		logger.LogError(c, "failed to record log: "+err.Error())
 	} else {
 		// Async sync to Meilisearch
 		// 异步同步到 Meilisearch
 		search.SyncLogAsync(convertLogToSearchLog(log))
+		notifyLogPersisted(log)
+		// Opt-in body archive (migration 052): gated on tenant consent + retention,
+		// async, never affects the row above or billing.
+		archiveLogBody(c, log, bodyRequestID(c, params.Other), params.LogDetailLevel)
 	}
 	if common.DataExportEnabled {
-		gopool.Go(func() {
+		AsyncGo(func() {
 			LogQuotaData(userId, username, params.ModelName, params.Quota, common.GetTimestamp(), params.PromptTokens+params.CompletionTokens)
 		})
 	}
 }
 
-func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string) (logs []*Log, total int64, err error) {
+// GetAllLogs lists logs across users. scope is the explicit tenant decision:
+// the v1 platform-admin console passes AllTenantsForAdmin(); tenant-facing
+// callers must pass ForTenant.
+func GetAllLogs(scope TenantScope, logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
-		tx = LOG_DB
+		tx = scope.apply(LOG_DB)
 	} else {
-		tx = LOG_DB.Where("logs.type = ?", logType)
+		tx = scope.apply(LOG_DB.Where("logs.type = ?", logType))
 	}
 
 	if modelName != "" {
@@ -420,22 +639,39 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 	return logs, total, err
 }
 
-func SearchAllLogs(keyword string) (logs []*Log, err error) {
-	err = LOG_DB.Where("type = ? or content LIKE ?", keyword, keyword+"%").Order("id desc").Limit(common.MaxRecentItems).Find(&logs).Error
+// logKeywordCondition matches keyword against the integer `type` column only
+// when it parses as a number: on PostgreSQL, binding an arbitrary string
+// against an integer column raises 22P02 ("invalid input syntax for type
+// integer") and aborts the whole query, so non-numeric keywords must only hit
+// the content LIKE arm.
+func logKeywordCondition(tx *gorm.DB, keyword string) *gorm.DB {
+	if logType, parseErr := strconv.Atoi(keyword); parseErr == nil {
+		return tx.Where("type = ? or content LIKE ?", logType, keyword+"%")
+	}
+	return tx.Where("content LIKE ?", keyword+"%")
+}
+
+// SearchAllLogs searches logs across users. scope is the explicit tenant
+// decision (see GetAllLogs).
+func SearchAllLogs(scope TenantScope, keyword string) (logs []*Log, err error) {
+	err = logKeywordCondition(scope.apply(LOG_DB), keyword).Order("id desc").Limit(common.MaxRecentItems).Find(&logs).Error
 	return logs, err
 }
 
 func SearchUserLogs(userId int, keyword string) (logs []*Log, err error) {
-	err = LOG_DB.Where("user_id = ? and type = ?", userId, keyword).Order("id desc").Limit(common.MaxRecentItems).Find(&logs).Error
+	err = logKeywordCondition(LOG_DB.Where("user_id = ?", userId), keyword).Order("id desc").Limit(common.MaxRecentItems).Find(&logs).Error
 	formatUserLogs(logs)
 	return logs, err
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat) {
-	tx := LOG_DB.Table("logs").Select("sum(quota) quota")
+// SumUsedQuota aggregates quota/rpm/tpm across users. scope is the explicit
+// tenant decision — the username filter alone is NOT an isolation boundary
+// (usernames are not guaranteed unique across tenants).
+func SumUsedQuota(scope TenantScope, logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat) {
+	tx := scope.apply(LOG_DB.Table("logs")).Select("sum(quota) quota")
 
 	// 为rpm和tpm创建单独的查询
-	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, sum(prompt_tokens) + sum(completion_tokens) tpm")
+	rpmTpmQuery := scope.apply(LOG_DB.Table("logs")).Select("count(*) rpm, sum(prompt_tokens) + sum(completion_tokens) tpm")
 
 	if username != "" {
 		tx = tx.Where("username = ?", username)
@@ -471,34 +707,30 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())
 
 	// 执行查询
+	// Scan rpm/tpm into a separate struct: GORM's Scan resets the whole
+	// destination struct per call, so scanning both queries into `stat`
+	// zeroed Quota on the second scan (quota was always returned as 0).
 	tx.Scan(&stat)
-	rpmTpmQuery.Scan(&stat)
+	var rate Stat
+	rpmTpmQuery.Scan(&rate)
+	stat.Rpm = rate.Rpm
+	stat.Tpm = rate.Tpm
 
 	return stat
 }
 
-func SumUsedToken(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string) (token int) {
-	tx := LOG_DB.Table("logs").Select("ifnull(sum(prompt_tokens),0) + ifnull(sum(completion_tokens),0)")
-	if username != "" {
-		tx = tx.Where("username = ?", username)
-	}
-	if tokenName != "" {
-		tx = tx.Where("token_name = ?", tokenName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
-	}
-	if modelName != "" {
-		tx = tx.Where("model_name = ?", modelName)
-	}
-	tx.Where("type = ?", LogTypeConsume).Scan(&token)
-	return token
-}
-
-func DeleteOldLog(ctx context.Context, targetTimestamp int64, limit int) (int64, error) {
+// DeleteOldLog batch-deletes logs older than targetTimestamp. scope is the
+// explicit tenant decision: retention cleanup (platform-admin) passes
+// AllTenantsForAdmin(); a tenant-facing purge must pass ForTenant.
+//
+// Each pass deletes by `id IN (SELECT id ... ORDER BY id LIMIT ?)` rather
+// than `.Limit(n).Delete(...)` directly on the logs table: gorm's
+// DeleteClauses (both the postgres and glebarez/sqlite drivers) render
+// DELETE/FROM/WHERE only — no LIMIT — so a plain `.Limit(n).Delete(&Log{})`
+// is silently unbounded and one call removes every matching row in a single
+// transaction. The id subquery is where the LIMIT actually takes effect on
+// both dialects.
+func DeleteOldLog(ctx context.Context, scope TenantScope, targetTimestamp int64, limit int) (int64, error) {
 	var total int64 = 0
 
 	for {
@@ -506,7 +738,10 @@ func DeleteOldLog(ctx context.Context, targetTimestamp int64, limit int) (int64,
 			return total, ctx.Err()
 		}
 
-		result := LOG_DB.Where("created_at < ?", targetTimestamp).Limit(limit).Delete(&Log{})
+		idQuery := scope.apply(LOG_DB.Model(&Log{}).Select("id").Where("created_at < ?", targetTimestamp)).
+			Order("id").
+			Limit(limit)
+		result := LOG_DB.Where("id IN (?)", idQuery).Delete(&Log{})
 		if nil != result.Error {
 			return total, result.Error
 		}
@@ -525,14 +760,30 @@ func DeleteOldLog(ctx context.Context, targetTimestamp int64, limit int) (int64,
 // V2 API Log Query Functions with Tenant Support
 // ============================================================================
 
-// GetUserLogsWithParams retrieves logs for a user with tenant isolation
-func GetUserLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, err error) {
-	tx := LOG_DB.Model(&Log{})
+// SourceProductExpr exposes the dialect-specific Other.source_product JSON
+// extraction (savings.go's jsonOtherTextExpr, unexported) to callers
+// outside this package — namely v2_log_stat.go's by_product breakdown, which
+// hand-writes its own aggregate query rather than going through
+// GetUserLogsWithParams. One definition, so every reader of the tag agrees on
+// how to extract it.
+func SourceProductExpr() string {
+	return jsonOtherTextExpr("source_product")
+}
 
-	// Apply tenant filter (required for isolation)
-	if params.TenantID != "" {
-		tx = tx.Where("tenant_id = ?", params.TenantID)
-	}
+// OtherTextExpr exposes jsonOtherTextExpr to callers outside this package —
+// the general form of SourceProductExpr above, for any other Other.<key>
+// text extraction (request_id/session_id filters here, more in future
+// lanes). key MUST be a literal the caller wrote into their own source; see
+// jsonOtherTextExpr's doc comment.
+func OtherTextExpr(key string) string {
+	return jsonOtherTextExpr(key)
+}
+
+// GetUserLogsWithParams retrieves logs for a user with tenant isolation.
+// scope replaces the former params.TenantID soft filter (an empty TenantID
+// silently meant "all tenants" — fail-open); params.TenantID is now ignored.
+func GetUserLogsWithParams(scope TenantScope, params *LogQueryParams) (logs []*Log, total int64, err error) {
+	tx := scope.apply(LOG_DB.Model(&Log{}))
 
 	// Apply user filter
 	if params.UserID > 0 {
@@ -562,6 +813,37 @@ func GetUserLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, er
 		tx = tx.Where("token_name = ?", params.TokenName)
 	}
 
+	// Cursor filter for live-tail: only rows strictly newer than the given id.
+	// id is indexed and monotonic, so this is a cheap "give me what's new" probe.
+	if params.AfterID > 0 {
+		tx = tx.Where("id > ?", params.AfterID)
+	}
+
+	// Cost-attribution filter (migration 029). > 0 only: 0 means "no filter".
+	// NOTE: logs.project_id carries no index by design — see the field comment
+	// in entity/log.go. This filter always runs alongside the tenant/user
+	// clauses, which are indexed, so it narrows an already-bounded scan.
+	if params.ProjectID > 0 {
+		tx = tx.Where("project_id = ?", params.ProjectID)
+	}
+	tx = ApplyLogAttributionFilters(tx, params.ProjectIDs, params.EmployeeRef)
+
+	// Cross-product attribution filter (Workstream 0). Empty = no filter.
+	// Same JSON extraction the tenant-wide spend aggregate uses (savings.go),
+	// so a caller's filtered total here always agrees with that aggregate.
+	if params.SourceProduct != "" {
+		tx = tx.Where(jsonOtherTextExpr("source_product")+" = ?", params.SourceProduct)
+	}
+
+	// L2-REQUEST-IDENTITY: correlation-id filters. Same empty-means-unfiltered
+	// convention and JSON extraction as SourceProduct above.
+	if params.RequestID != "" {
+		tx = tx.Where(jsonOtherTextExpr("request_id")+" = ?", params.RequestID)
+	}
+	if params.SessionID != "" {
+		tx = tx.Where(jsonOtherTextExpr("session_id")+" = ?", params.SessionID)
+	}
+
 	// Count total matching records
 	err = tx.Count(&total).Error
 	if err != nil {
@@ -573,14 +855,11 @@ func GetUserLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, er
 	return logs, total, err
 }
 
-// GetTenantLogsWithParams retrieves all logs for a tenant (admin view)
-func GetTenantLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, err error) {
-	tx := LOG_DB.Model(&Log{})
-
-	// Apply tenant filter (required for isolation)
-	if params.TenantID != "" {
-		tx = tx.Where("tenant_id = ?", params.TenantID)
-	}
+// GetTenantLogsWithParams retrieves all logs for a tenant (tenant-admin view).
+// scope replaces the former params.TenantID soft filter (an empty TenantID
+// silently meant "all tenants" — fail-open); params.TenantID is now ignored.
+func GetTenantLogsWithParams(scope TenantScope, params *LogQueryParams) (logs []*Log, total int64, err error) {
+	tx := scope.apply(LOG_DB.Model(&Log{}))
 
 	// Apply type filter
 	if params.LogType > 0 {
@@ -610,6 +889,32 @@ func GetTenantLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, 
 		tx = tx.Where("username = ?", params.Username)
 	}
 
+	// Cost-attribution filter (migration 029). > 0 only: 0 means "no filter".
+	if params.ProjectID > 0 {
+		tx = tx.Where("project_id = ?", params.ProjectID)
+	}
+	tx = ApplyLogAttributionFilters(tx, params.ProjectIDs, params.EmployeeRef)
+
+	// Cross-product attribution filter (Workstream 0). Empty = no filter.
+	if params.SourceProduct != "" {
+		tx = tx.Where(jsonOtherTextExpr("source_product")+" = ?", params.SourceProduct)
+	}
+
+	// L2-REQUEST-IDENTITY: correlation-id filters.
+	if params.RequestID != "" {
+		tx = tx.Where(jsonOtherTextExpr("request_id")+" = ?", params.RequestID)
+	}
+	if params.SessionID != "" {
+		tx = tx.Where(jsonOtherTextExpr("session_id")+" = ?", params.SessionID)
+	}
+
+	// The vendor's own request/trace id (TierInternal) — this route is the
+	// tenant-admin view (requireTenantAdmin gates GetAllLogsV2), so unlike
+	// GetUserLogsWithParams above this one is allowed to bind it.
+	if params.UpstreamRequestID != "" {
+		tx = tx.Where(jsonOtherTextExpr("upstream_request_id")+" = ?", params.UpstreamRequestID)
+	}
+
 	// Count total matching records
 	err = tx.Count(&total).Error
 	if err != nil {
@@ -621,64 +926,33 @@ func GetTenantLogsWithParams(params *LogQueryParams) (logs []*Log, total int64, 
 	return logs, total, err
 }
 
-// GetUserLogsInternal returns paginated logs for a user (internal API, no tenant filter).
-func GetUserLogsInternal(userID, offset, limit int) (logs []*Log, total int64, err error) {
-	tx := LOG_DB.Model(&Log{}).Where("user_id = ?", userID)
-	err = tx.Count(&total).Error
-	if err != nil {
-		return nil, 0, err
-	}
-	err = tx.Order("created_at DESC").Offset(offset).Limit(limit).Find(&logs).Error
-	return logs, total, err
-}
-
-// GetTokenLogsInternal returns paginated logs filtered by token ID (internal API).
-func GetTokenLogsInternal(tokenID, offset, limit int) (logs []*Log, total int64, err error) {
-	tx := LOG_DB.Model(&Log{}).Where("token_id = ?", tokenID)
-	err = tx.Count(&total).Error
-	if err != nil {
-		return nil, 0, err
-	}
-	err = tx.Order("created_at DESC").Offset(offset).Limit(limit).Find(&logs).Error
-	return logs, total, err
-}
+// billableConsumeExcludeSettlementFailed and billableConsumeExcludeChannelProbe
+// are substrings of a log row's Other JSON column that mark quota which was
+// logged but never actually charged. Both are written by callers outside this
+// package, through this same file's RecordConsumeLog (Other is JSON-encoded
+// via common.MapToJsonStr, which never inserts whitespace around ':', so
+// these substrings land byte-for-byte regardless of what else is in the map
+// or its key order): internal/app/settlement_outcome.go's
+// FlagSettlementOutcome sets other["settlement"]="failed" when SettleConsume's
+// debit call errored — the row still carries the quota that would have been
+// charged, not what actually landed; internal/adapter/handler/channel-test.go's
+// probeChannel sets other["source"]=channelProbeLogSource ("channel_test") on
+// every manual channel-test row — probeChannel settles nothing, so the row's
+// Quota is a paper number nobody's wallet paid. This package cannot import
+// either of those (both import repo; repo importing either would be a build
+// cycle), so the two substrings are pinned here as this package's single
+// source of truth and proven against the real writers by
+// TestProbeChannel_RowIsUnbilled (internal/adapter/handler, drives the real
+// probeChannel) and log_billable_test.go (this package, real
+// RecordConsumeLog write, then query back).
+const (
+	billableConsumeExcludeSettlementFailed = `"settlement":"failed"`
+	billableConsumeExcludeChannelProbe     = `"source":"channel_test"`
+)
 
 // LogStatEntry holds aggregated log statistics.
 type LogStatEntry struct {
 	Key        string `json:"key"`
 	Count      int64  `json:"count"`
 	TotalQuota int64  `json:"total_quota"`
-}
-
-// GetUserLogStatInternal returns aggregated usage stats (by model or day).
-// GetUserLogStatByPeriod returns usage stats filtered by time period and grouped by model.
-func GetUserLogStatByPeriod(userID int, since time.Time) ([]LogStatEntry, error) {
-	var results []LogStatEntry
-	err := LOG_DB.Model(&Log{}).
-		Select("model_name as key, COUNT(*) as count, COALESCE(SUM(quota), 0) as total_quota").
-		Where("user_id = ? AND created_at >= ?", userID, since).
-		Group("model_name").
-		Order("total_quota DESC").
-		Find(&results).Error
-	return results, err
-}
-
-func GetUserLogStatInternal(userID int, groupBy string) ([]LogStatEntry, error) {
-	var results []LogStatEntry
-	var selectExpr, groupExpr string
-	switch groupBy {
-	case "day":
-		selectExpr = "DATE(created_at) as key, COUNT(*) as count, COALESCE(SUM(quota), 0) as total_quota"
-		groupExpr = "DATE(created_at)"
-	default:
-		selectExpr = "model_name as key, COUNT(*) as count, COALESCE(SUM(quota), 0) as total_quota"
-		groupExpr = "model_name"
-	}
-	err := LOG_DB.Model(&Log{}).
-		Select(selectExpr).
-		Where("user_id = ?", userID).
-		Group(groupExpr).
-		Order("total_quota DESC").
-		Find(&results).Error
-	return results, err
 }

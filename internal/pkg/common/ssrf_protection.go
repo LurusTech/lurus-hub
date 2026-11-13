@@ -29,9 +29,24 @@ var DefaultSSRFProtection = &SSRFProtection{
 	AllowedPorts:     []int{},
 }
 
+// IsPrivateOrInternalIP reports whether ip is an SSRF-relevant internal target
+// (loopback, unspecified, link-local, CGNAT 100.64/10 — used by this cluster's
+// Tailscale mesh — RFC1918 private, multicast, reserved, or IPv6 ULA/link-local)
+// that relay egress must not reach unless private access is explicitly allowed.
+// Exported so the transport-layer relay dial guard enforces the exact same
+// notion of "internal" as write-time channel validation.
+func IsPrivateOrInternalIP(ip net.IP) bool {
+	return isPrivateIP(ip)
+}
+
 // isPrivateIP 检查IP是否为私有地址
 func isPrivateIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	// Unspecified addresses (0.0.0.0, ::) — the kernel routes 0.0.0.0 to
+	// localhost, so they are an SSRF vector that IsLoopback does not catch.
+	if ip.IsUnspecified() {
 		return true
 	}
 
@@ -42,6 +57,7 @@ func isPrivateIP(ip net.IP) bool {
 		{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(16, 32)}, // 192.168.0.0/16
 		{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)},    // 127.0.0.0/8
 		{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)}, // 169.254.0.0/16 (链路本地)
+		{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)},  // 100.64.0.0/10 (CGNAT; Tailscale 使用此段, 集群节点经此可达)
 		{IP: net.IPv4(224, 0, 0, 0), Mask: net.CIDRMask(4, 32)},    // 224.0.0.0/4 (组播)
 		{IP: net.IPv4(240, 0, 0, 0), Mask: net.CIDRMask(4, 32)},    // 240.0.0.0/4 (保留)
 	}

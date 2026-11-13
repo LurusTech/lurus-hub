@@ -1,0 +1,98 @@
+# Egress allow-list for newhub pods on R6 STAGE.
+# - in-cluster NATS (ns messaging, 4222) — LLM_EVENTS stream + notification consumer
+#   (replaces the dead R5 bridge 100.120.110.73:14222)
+# - kube-dns for cluster DNS
+# - PG in `database` namespace
+# - lurus-system + lurus-platform (Redis, platform-core gRPC/HTTP)
+# - lurus-grok2api (chenyme/grok2api OpenAI-compat upstream; see deploy/k8s/r6-grok2api/)
+# - public 80/443/8800 (egress to internet, excluding RFC1918)
+#   8800 is interim for host-network grok2api on R1 (43.226.46.164) until
+#   deploy/k8s/r6-grok2api/ is live in ns lurus-grok2api (rule 4 already covers it).
+#
+# RELAY EGRESS MODEL (measured from a live pod 2026-08-24 — read before adding
+# an HTTP_PROXY env, it is deliberately absent):
+#   * Upstream LLM providers are reached DIRECTLY on :443. Verified from
+#     lurus-newhub-679b47f4bd-7p4d8: api.deepseek.com OK (a real
+#     /v1/chat/completions returned 200), api.anthropic.com OK (401 = connected),
+#     mirrors.aliyun.com OK. api.openai.com and generativelanguage.googleapis.com
+#     FAIL at the network layer — blocked upstream of this cluster, not by policy.
+#   * The last rule's `except` list means a pod CANNOT reach any RFC1918 address,
+#     so a proxy listening on a node-local/bridge IP is unreachable by design.
+#     Measured: 172.30.0.1:10809, 10.42.0.1:10809 and the node's public IP on
+#     :10809 all fail from inside a pod (only :80/:443 leave, and only to public
+#     addresses). The `10.42.1.1:10808` proxy recorded in the retired base
+#     manifest never resolved here either — cni0 is 10.42.0.1 and nothing listens
+#     on :10808 at all.
+#   * To serve an upstream that is blocked, the designed control point is the
+#     PER-CHANNEL proxy (internal/app/http_client.go — a channel carries its own
+#     proxy URL, and relay_dial_guard.go exempts the proxy host from the SSRF
+#     private-IP check). Deploy that proxy as a Service in ns lurus-system or
+#     lurus-platform: rule 4 above already allows all TCP to those namespaces, so
+#     no NetworkPolicy change is needed. Do NOT set a cluster-wide HTTP_PROXY —
+#     it would route every channel through one egress point and broaden the SSRF
+#     surface the dial guard narrows.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: newhub-nats-egress
+  namespace: lurus-newhub
+  annotations:
+    description: Allow newhub egress to in-cluster NATS (ns messaging, 4222) + cluster DNS + cluster services
+spec:
+  podSelector:
+    matchLabels:
+      app: lurus-newhub
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: messaging
+      ports:
+        - port: 4222
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lurus-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lurus-platform
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lurus-grok2api
+      ports:
+        - protocol: TCP
+        - protocol: UDP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+        - port: 8800
+          protocol: TCP

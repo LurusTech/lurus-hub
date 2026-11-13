@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
@@ -17,6 +20,33 @@ import (
 // V2 Channel Controllers
 // Channels are tenant-level resources managed by tenant admins
 // ============================================================================
+
+// channelView is the field-whitelisted projection returned by ListChannelsV2.
+// It excludes the raw key and per-channel secrets (other, setting,
+// param_override, header_override, other_info) plus tenant_id (implicit from
+// route), so a tenant admin only sees the display surface — never another
+// channel's credentials. Mirrors redemptionView.
+type channelView struct {
+	Id           int     `json:"id"`
+	Name         string  `json:"name"`
+	Type         int     `json:"type"`
+	Key          string  `json:"key"` // always masked; repo omits the key column
+	Status       int     `json:"status"`
+	Group        string  `json:"group"`
+	Models       string  `json:"models"`
+	ModelMapping *string `json:"model_mapping"`
+	Priority     *int64  `json:"priority"`
+	Weight       *uint   `json:"weight"`
+	Tag          *string `json:"tag"`
+	Remark       *string `json:"remark"`
+	BaseURL      *string `json:"base_url"`
+	Balance      float64 `json:"balance"`
+	UsedQuota    int64   `json:"used_quota"`
+	ResponseTime int     `json:"response_time"`
+	TestTime     int64   `json:"test_time"`
+	CreatedTime  int64   `json:"created_time"`
+	channelOps
+}
 
 // ListChannelsV2 retrieves channels for the tenant (admin only)
 // Route: GET /api/v2/:tenant_slug/channels
@@ -32,7 +62,7 @@ func ListChannelsV2(c *gin.Context) {
 	}
 
 	// Check admin role
-	if !hasRole(tenantCtx.Roles, "admin") {
+	if !isPlatformStaff(c, tenantCtx) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Admin role required",
@@ -65,8 +95,8 @@ func ListChannelsV2(c *gin.Context) {
 
 	// Build query based on filters
 	if keyword != "" || group != "" || modelFilter != "" {
-		// Use search function
-		allChannels, searchErr := repo.SearchChannels(keyword, group, modelFilter, idSort)
+		// Use search function (tenant-scoped: never matches other tenants' channels)
+		allChannels, searchErr := repo.SearchChannelsByTenant(tenantCtx.TenantID, keyword, group, modelFilter, idSort)
 		if searchErr != nil {
 			common.SysError("Failed to search channels: " + searchErr.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -85,8 +115,8 @@ func ListChannelsV2(c *gin.Context) {
 			channels = allChannels[startIdx:end]
 		}
 	} else if tag != "" {
-		// Filter by tag
-		allChannels, tagErr := repo.GetChannelsByTag(tag, idSort, false)
+		// Filter by tag (tenant-scoped)
+		allChannels, tagErr := repo.GetChannelsByTagAndTenant(tenantCtx.TenantID, tag, idSort)
 		if tagErr != nil {
 			common.SysError("Failed to get channels by tag: " + tagErr.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -105,9 +135,9 @@ func ListChannelsV2(c *gin.Context) {
 			channels = allChannels[startIdx:end]
 		}
 	} else {
-		// Get all channels with pagination
+		// Get this tenant's channels with pagination
 		var getAllErr error
-		channels, getAllErr = repo.GetAllChannels(startIdx, pageSize, false, idSort)
+		channels, getAllErr = repo.GetChannelsByTenant(tenantCtx.TenantID, startIdx, pageSize, idSort)
 		if getAllErr != nil {
 			common.SysError("Failed to get channels: " + getAllErr.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -116,18 +146,40 @@ func ListChannelsV2(c *gin.Context) {
 			})
 			return
 		}
-		total, _ = repo.CountAllChannels()
+		total, _ = repo.GetTenantChannelCount(tenantCtx.TenantID)
 	}
 
-	// Mask sensitive keys in response
+	// Project to the field-whitelisted view (masked/empty key, no secrets).
+	opsByID := channelOpsFor(tenantCtx.TenantID, channels)
+	items := make([]channelView, 0, len(channels))
 	for _, ch := range channels {
-		ch.Key = maskKey(ch.Key)
+		items = append(items, channelView{
+			Id:           ch.Id,
+			Name:         ch.Name,
+			Type:         ch.Type,
+			Key:          maskKey(ch.Key),
+			Status:       ch.Status,
+			Group:        ch.Group,
+			Models:       ch.Models,
+			ModelMapping: ch.ModelMapping,
+			Priority:     ch.Priority,
+			Weight:       ch.Weight,
+			Tag:          ch.Tag,
+			Remark:       ch.Remark,
+			BaseURL:      ch.BaseURL,
+			Balance:      ch.Balance,
+			UsedQuota:    ch.UsedQuota,
+			ResponseTime: ch.ResponseTime,
+			TestTime:     ch.TestTime,
+			CreatedTime:  ch.CreatedTime,
+			channelOps:   opsOrDefault(opsByID, ch),
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"channels":  channels,
+			"channels":  items,
 			"total":     total,
 			"page":      page,
 			"page_size": pageSize,
@@ -149,7 +201,7 @@ func GetChannelV2(c *gin.Context) {
 	}
 
 	// Check admin role
-	if !hasRole(tenantCtx.Roles, "admin") {
+	if !isPlatformStaff(c, tenantCtx) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Admin role required",
@@ -177,10 +229,34 @@ func GetChannelV2(c *gin.Context) {
 		return
 	}
 
+	// Verify tenant ownership
+	if channel.TenantId != tenantCtx.TenantID {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "Access denied"})
+		return
+	}
+
+	// Mask the upstream provider key — this is the single-channel read path
+	// and must never return the plaintext credential (see channelView in
+	// ListChannelsV2, which already masks it for the list path).
+	channel.Key = maskKey(channel.Key)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    channel,
 	})
+}
+
+// channelConfigErrorResponse builds the 400 body for a channel config-document
+// validation failure, surfacing the field-naming code from
+// relaycommon.ChannelConfigValidationError when the error came from one of the
+// four validators, so a console/API caller can branch on the code instead of
+// parsing the message.
+func channelConfigErrorResponse(err error) gin.H {
+	var verr *relaycommon.ChannelConfigValidationError
+	if errors.As(err, &verr) {
+		return gin.H{"success": false, "code": verr.Code, "message": verr.Message}
+	}
+	return gin.H{"success": false, "message": err.Error()}
 }
 
 // CreateChannelV2 creates a new channel (admin only)
@@ -197,7 +273,7 @@ func CreateChannelV2(c *gin.Context) {
 	}
 
 	// Check admin role
-	if !hasRole(tenantCtx.Roles, "admin") {
+	if !isPlatformStaff(c, tenantCtx) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Admin role required",
@@ -264,12 +340,34 @@ func CreateChannelV2(c *gin.Context) {
 		channel.TenantId = "default"
 	}
 
-	// Validate settings if provided
-	if err := channel.ValidateSettings(); err != nil {
+	// Shared vendor/config validation (settings format, model-name length,
+	// VertexAI deployment region) — the same rules the v1 write path enforces via
+	// validateChannel, so the v2 create path no longer diverges (previously it
+	// only checked settings and would accept an over-long model name or a
+	// VertexAI channel with no/invalid region). Egress (SSRF) is validated
+	// separately below; see validateChannelContent for why it is kept out.
+	if err := validateChannelContent(&channel, true); err != nil {
+		c.JSON(http.StatusBadRequest, channelConfigErrorResponse(err))
+		return
+	}
+
+	// SSRF guard: a tenant admin must not point the channel egress at an
+	// internal address to make the gateway relay/reflect internal responses.
+	if err := validateChannelEgress(&channel); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": err.Error(),
 		})
+		return
+	}
+
+	// channel:sensitive_write (L2): a create has no prior row (existing=nil),
+	// so the populated Key (required above) carries the same power as an
+	// update that touches one. Runs last, after every validation step above
+	// (so an unauthorized-AND-malformed request still gets the same 400 an
+	// authorized caller would, matching the v1 AddChannel ordering) and
+	// before the row is inserted — a refused create writes nothing.
+	if enforceChannelSensitiveWrite(c, nil, &channel, 0) {
 		return
 	}
 
@@ -284,7 +382,7 @@ func CreateChannelV2(c *gin.Context) {
 	}
 
 	// Refresh channel cache
-	go repo.InitChannelCache()
+	AsyncGo(func() { repo.InitChannelCache() })
 	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, tenantCtx.UserID,
 		governance.ActionChannelUpdated, governance.ResourceChannel, channel.Id, ""))
 
@@ -312,7 +410,7 @@ func UpdateChannelV2(c *gin.Context) {
 	}
 
 	// Check admin role
-	if !hasRole(tenantCtx.Roles, "admin") {
+	if !isPlatformStaff(c, tenantCtx) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Admin role required",
@@ -340,6 +438,12 @@ func UpdateChannelV2(c *gin.Context) {
 		return
 	}
 
+	// Verify tenant ownership
+	if existingChannel.TenantId != tenantCtx.TenantID {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "Access denied"})
+		return
+	}
+
 	// Parse request body
 	var updateReq repo.Channel
 	if err := c.ShouldBindJSON(&updateReq); err != nil {
@@ -350,6 +454,12 @@ func UpdateChannelV2(c *gin.Context) {
 		})
 		return
 	}
+
+	// Snapshot the pristine row before the merge loop below mutates
+	// existingChannel in place — the channel:sensitive_write gate (below,
+	// after config-document/egress validation) needs the ORIGINAL values to
+	// diff against, not the already-merged state.
+	originalChannel := *existingChannel
 
 	// Update fields if provided
 	if updateReq.Name != "" {
@@ -405,12 +515,50 @@ func UpdateChannelV2(c *gin.Context) {
 		existingChannel.HeaderOverride = updateReq.HeaderOverride
 	}
 
-	// Validate settings
-	if err := existingChannel.ValidateSettings(); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+	// Validate the four config documents (param_override, header_override,
+	// model_mapping, setting) on the fields THIS request touches, not
+	// existingChannel's merged state — so a partial update that edits only
+	// e.g. the name doesn't get re-rejected by a pre-existing document with a
+	// structural defect it isn't editing (that document keeps working via
+	// the relay-time ErrorCodeChannelParamOverrideInvalid backstop until it
+	// is itself next saved). param_override runs a structural pre-pass
+	// (channel_config_validate.go: validateOperationsStructure) over the
+	// parsed operations array before dry-running the engine, so it rejects a
+	// non-object operation entry, a missing/unknown mode, move/copy with an
+	// empty from or to, any other path-based mode with an empty path, an
+	// unparseable regex_replace pattern, and a missing trim/ensure value or
+	// replace from — independently of whether the targeted path exists on
+	// the probe — plus whatever the dry-run itself still rejects
+	// (unsupported comparison mode). It does not check whether a path the
+	// probe does not carry exists on a real request body: an operation
+	// whose target field is absent from the {model, messages} probe but
+	// would be present on a real request body still saves.
+	if err := validateChannelConfigDocuments(&updateReq); err != nil {
+		c.JSON(http.StatusBadRequest, channelConfigErrorResponse(err))
+		return
+	}
+
+	// SSRF guard: re-validate egress only when this update actually touches the
+	// egress fields. Validating unconditionally would trap a channel that became
+	// non-compliant after a policy tightening — the admin could no longer disable
+	// or rename it (every mutation would 400), leaving delete as the only escape.
+	if updateReq.BaseURL != nil || updateReq.Setting != nil {
+		if err := validateChannelEgress(existingChannel); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+
+	// channel:sensitive_write (L2): checked against the pre-merge snapshot
+	// (originalChannel) vs. exactly what the caller sent (updateReq) — run
+	// last, after config-document/egress validation, so a malformed-AND-
+	// unauthorized request gets the same 400 an authorized caller would
+	// (matching the v1 UpdateChannel/CreateChannelV2 ordering), and before
+	// Update() persists anything.
+	if enforceChannelSensitiveWrite(c, &originalChannel, &updateReq, existingChannel.Id) {
 		return
 	}
 
@@ -425,7 +573,10 @@ func UpdateChannelV2(c *gin.Context) {
 	}
 
 	// Refresh channel cache
-	go repo.InitChannelCache()
+	AsyncGo(func() { repo.InitChannelCache() })
+	if existingChannel.Status == common.ChannelStatusEnabled && originalChannel.Status != common.ChannelStatusEnabled {
+		app.ClearChannelCooldown(existingChannel.Id)
+	}
 	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, tenantCtx.UserID,
 		governance.ActionChannelUpdated, governance.ResourceChannel, existingChannel.Id, ""))
 
@@ -453,7 +604,7 @@ func DeleteChannelV2(c *gin.Context) {
 	}
 
 	// Check admin role
-	if !hasRole(tenantCtx.Roles, "admin") {
+	if !isPlatformStaff(c, tenantCtx) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Admin role required",
@@ -481,6 +632,12 @@ func DeleteChannelV2(c *gin.Context) {
 		return
 	}
 
+	// Verify tenant ownership
+	if channel.TenantId != tenantCtx.TenantID {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "Access denied"})
+		return
+	}
+
 	// Delete channel
 	if err := channel.Delete(); err != nil {
 		common.SysError("Failed to delete channel: " + err.Error())
@@ -492,7 +649,7 @@ func DeleteChannelV2(c *gin.Context) {
 	}
 
 	// Refresh channel cache
-	go repo.InitChannelCache()
+	AsyncGo(func() { repo.InitChannelCache() })
 	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, tenantCtx.UserID,
 		governance.ActionChannelDeleted, governance.ResourceChannel, channelID, ""))
 

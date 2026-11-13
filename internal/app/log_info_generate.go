@@ -3,10 +3,10 @@ package app
 import (
 	"strings"
 
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
@@ -41,13 +41,41 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other["cache_ratio"] = cacheRatio
 	other["model_price"] = modelPrice
 	other["user_group_ratio"] = userGroupRatio
-	other["frt"] = float64(relayInfo.FirstResponseTime.UnixMilli() - relayInfo.StartTime.UnixMilli())
+	// frt = time to first token, and it only exists if a first token was
+	// actually observed. RelayInfo seeds FirstResponseTime to StartTime minus
+	// one second as a "never happened" sentinel (provider/common/relay_info.go),
+	// and only the streaming adaptors call SetFirstResponseTime — so computing
+	// this unconditionally wrote a literal **-1000** into every non-streaming
+	// consume log. Measured on UAT 2026-09-01: every non-stream row carried
+	// frt=-1000, and the console's latency panel rendered it as "-1000ms".
+	// HasSendResponse is the sentinel's own predicate; omit the key entirely
+	// when it says no, which is also what the frontend's null-guard expects.
+	if relayInfo.HasSendResponse() {
+		other["frt"] = float64(relayInfo.FirstResponseTime.UnixMilli() - relayInfo.StartTime.UnixMilli())
+	}
 	if relayInfo.ReasoningEffort != "" {
 		other["reasoning_effort"] = relayInfo.ReasoningEffort
+	}
+	// Decision-model routing (middleware.ApplyDecisionRouting) leaves
+	// {requested, model, reason} under "routing_decision" only when a policy
+	// matched; a direct request has no key and no other.routed.
+	if ctx != nil {
+		if v, ok := ctx.Get("routing_decision"); ok && v != nil {
+			other["routed"] = v
+		}
 	}
 	if relayInfo.IsModelMapped {
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = relayInfo.UpstreamModelName
+	}
+	// conversion_dropped: caller-supplied fields ClaudeToOpenAIRequest /
+	// GeminiToOpenAIRequest (convert.go) could not map onto the upstream
+	// request. Nil when the converter dropped nothing (the common case) or
+	// when this request never went through a cross-wire converter at all
+	// (native OpenAI-wire requests) — either way, no key, so an
+	// always-present empty array is never written.
+	if len(relayInfo.ConversionDropped) > 0 {
+		other["conversion_dropped"] = relayInfo.ConversionDropped
 	}
 
 	isSystemPromptOverwritten := common.GetContextKeyBool(ctx, constant.ContextKeySystemPromptOverride)
@@ -66,6 +94,14 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	isLocalCountTokens := common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens)
 	if isLocalCountTokens {
 		adminInfo["local_count_tokens"] = isLocalCountTokens
+	}
+
+	// Only attach the routing trace when the request actually bounced. A
+	// single-attempt request is already fully described by channel_id, so
+	// writing the trace for all of them would inflate every log row for the
+	// ~99% case that never needs it.
+	if attempts := GetRouteAttempts(ctx); len(attempts) > 1 {
+		adminInfo["route_attempts"] = attempts
 	}
 
 	other["admin_info"] = adminInfo

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/domain/entity"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 	"github.com/gin-gonic/gin"
@@ -35,7 +36,7 @@ type V2TestContext struct {
 	AdminUser  *repo.User
 }
 
-// SetupV2TestRouter initializes router with mock ZitadelAuth for V2 API testing.
+// SetupV2TestRouter initializes router with mock OIDCAuth for V2 API testing.
 // Uses headers: X-Test-Tenant-ID, X-Test-User-ID, X-Test-Roles
 func SetupV2TestRouter(t *testing.T) *V2TestContext {
 	t.Helper()
@@ -61,6 +62,13 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		&repo.Ability{},
 		&repo.Redemption{},
 		&repo.QuotaData{},
+		// Cost-attribution projects (migration 029). AutoMigrate cannot create
+		// the partial unique index (`WHERE deleted_at IS NULL`), so uniqueness
+		// here rests on CreateProject's explicit pre-check — the DDL itself is
+		// proven in internal/pkg/migration/projects_pg_test.go.
+		&entity.Project{},
+		// Delegated admin permission grants (migration 034, L4).
+		&entity.AdminPermissionGrant{},
 	}
 	for _, tbl := range tables {
 		if err := db.AutoMigrate(tbl); err != nil {
@@ -80,6 +88,8 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 	prevSQLite := common.UsingSQLite
 	prevPG := common.UsingPostgreSQL
 	prevRedis := common.RedisEnabled
+	prevQuotaForNewUser := common.QuotaForNewUser
+	prevLogConsumeEnabled := common.LogConsumeEnabled
 
 	repo.DB = db
 	repo.LOG_DB = db
@@ -104,7 +114,7 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		Name:         "Test Tenant",
 		Slug:         fmt.Sprintf("test-tenant-%d", v2TestDBCounter.Load()),
 		Status:       repo.TenantStatusEnabled,
-		ZitadelOrgID: "org_test_123",
+		IDPOrgID: "org_test_123",
 		CreatedAt:    time.Now(),
 		UpdatedAt:    time.Now(),
 	}
@@ -149,7 +159,7 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 	// Build router
 	router := gin.New()
 
-	// Mock ZitadelAuth middleware that reads from test headers
+	// Mock OIDCAuth middleware that reads from test headers
 	mockAuth := func(c *gin.Context) {
 		tenantID := c.GetHeader("X-Test-Tenant-ID")
 		if tenantID == "" {
@@ -173,7 +183,7 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		tenantCtx := &middleware.TenantContext{
 			TenantID:      tenantID,
 			UserID:        userID,
-			ZitadelUserID: "zitadel_test_user",
+			IDPSubject: "zitadel_test_user",
 			Email:         "test@test.local",
 			Username:      "testuser",
 			Roles:         roles,
@@ -205,8 +215,10 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		// Token routes
 		v2.GET("/tokens", ListTokensV2)
 		v2.POST("/tokens", CreateTokenV2)
+		v2.POST("/tokens/batch-delete", DeleteTokensV2)
 		v2.PUT("/tokens/:id", UpdateTokenV2)
 		v2.DELETE("/tokens/:id", DeleteTokenV2)
+		v2.POST("/tokens/:id/rotate", RotateTokenV2)
 
 		// Channel routes
 		v2.GET("/channels", ListChannelsV2)
@@ -214,6 +226,25 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		v2.POST("/channels", CreateChannelV2)
 		v2.PUT("/channels/:id", UpdateChannelV2)
 		v2.DELETE("/channels/:id", DeleteChannelV2)
+		v2.POST("/channels/:id/test", TestChannelV2)
+		v2.GET("/channels/:id/upstream-models", FetchUpstreamModelsV2)
+		v2.POST("/channels/import", ImportChannelsV2)
+		v2.GET("/channels/:id/health", GetChannelHealthV2)
+		v2.POST("/channels/:id/keys/:idx/test", TestChannelKeyV2)
+		v2.POST("/channels/:id/keys/:idx/restore", RestoreChannelKeyV2)
+		v2.PUT("/channels/:id/keys/:idx/settings", UpdateChannelKeySettingsV2)
+
+		// Project routes (cost attribution, migration 029). Route shapes must
+		// mirror api-v2-router.go: /projects/spend is a STATIC sibling of
+		// /projects/:id, so registering them in a different order here would
+		// test a route table production does not have.
+		v2.GET("/projects", ListProjectsV2)
+		v2.GET("/projects/spend", GetProjectSpendV2)
+		v2.GET("/projects/:id", GetProjectV2)
+		v2.POST("/projects", CreateProjectV2)
+		v2.PUT("/projects/:id", UpdateProjectV2)
+		v2.DELETE("/projects/:id", DeleteProjectV2)
+		v2.POST("/projects/:id/restore", RestoreProjectV2)
 
 		// Redemption routes
 		v2.POST("/redeem", RedeemCodeV2)
@@ -228,6 +259,9 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		// Log routes
 		v2.GET("/logs", GetLogsV2)
 		v2.GET("/logs/all", GetAllLogsV2)
+		v2.GET("/logs/cluster", GetLogClusterV2)
+		v2.GET("/logs/stat", GetLogStatV2)
+		v2.GET("/logs/stat/all", GetAllLogStatV2)
 	}
 
 	// Admin routes (platform-level, use v1 session auth)
@@ -238,6 +272,11 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		admin.GET("/mappings/:id", GetUserMappingV2)
 		admin.DELETE("/mappings/:id", DeleteUserMappingV2)
 		admin.GET("/stats", GetSystemStatsV2)
+		admin.GET("/users", ListAdminUsersV2)
+		admin.PUT("/users/:id", UpdateAdminUserV2)
+		admin.DELETE("/users/:id", DeleteAdminUserV2)
+		admin.GET("/options", ListAdminOptionsV2)
+		admin.PUT("/options", UpdateAdminOptionV2)
 	}
 
 	cleanup := func() {
@@ -246,6 +285,13 @@ func SetupV2TestRouter(t *testing.T) *V2TestContext {
 		common.UsingSQLite = prevSQLite
 		common.UsingPostgreSQL = prevPG
 		common.RedisEnabled = prevRedis
+		// These two are set above and were not restored before cycle-12 L1:
+		// every test that built a V2 router left QuotaForNewUser at 0 and
+		// LogConsumeEnabled at false for the rest of the binary, so a later
+		// test asserting either one passed or failed depending on run order
+		// — which `go test -shuffle=on` now varies.
+		common.QuotaForNewUser = prevQuotaForNewUser
+		common.LogConsumeEnabled = prevLogConsumeEnabled
 		sqlDB, _ := db.DB()
 		if sqlDB != nil {
 			sqlDB.Close()
@@ -374,6 +420,7 @@ func SeedV2Channel(t *testing.T, ctx *V2TestContext, name string) *repo.Channel 
 	t.Helper()
 	channel := &repo.Channel{
 		Name:        name,
+		TenantId:    ctx.TenantID,
 		Key:         "sk-test-" + common.GetRandomString(24),
 		Status:      common.ChannelStatusEnabled,
 		Type:        1, // OpenAI type

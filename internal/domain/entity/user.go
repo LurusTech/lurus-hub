@@ -9,11 +9,17 @@ import (
 	"gorm.io/gorm"
 )
 
-// User is the core user entity. Auth is delegated to Zitadel; billing is delegated to lurus-platform.
+// User is the core user entity. Auth is delegated to the OIDC provider; billing is delegated to lurus-platform.
 type User struct {
-	Id             int            `json:"id"`
-	TenantId       string         `json:"tenant_id" gorm:"type:varchar(36);index;default:'default'"` // Tenant isolation
-	Username       string         `json:"username" gorm:"unique;index" validate:"max=20"`
+	Id       int    `json:"id"`
+	TenantId string `json:"tenant_id" gorm:"type:varchar(36);index;uniqueIndex:uk_users_tenant_username,priority:1;default:'default'"` // Tenant isolation
+	// Username is unique PER TENANT (composite uk_users_tenant_username with
+	// TenantId, migration 025) — auth is OIDC-sub based, so no lookup needs a
+	// global username. The tag must stay in sync with the repo-local User
+	// struct (adapter/repo/user.go): AutoMigrate runs over BOTH, and a stray
+	// single-column `unique` tag on either side would re-create the dropped
+	// global unique every boot.
+	Username       string         `json:"username" gorm:"index;uniqueIndex:uk_users_tenant_username,priority:2" validate:"max=20"`
 	DisplayName    string         `json:"display_name" gorm:"index" validate:"max=20"`
 	Role           int            `json:"role" gorm:"type:int;default:1"`   // admin, common
 	Status         int            `json:"status" gorm:"type:int;default:1"` // enabled, disabled
@@ -31,7 +37,26 @@ type User struct {
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
 	Setting        string         `json:"setting" gorm:"type:text;column:setting"`
 	Remark         string         `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
+	// LurusAccountID is the lurus-platform account integer ID. Nullable
+	// because pre-Layer-C users were created via direct registration and
+	// have no platform binding. Bridge endpoint (Layer C) sets it when a
+	// newhub user is first bound to a platform account; uniqueIndex
+	// prevents double-binding.
+	LurusAccountID *int64 `json:"lurus_account_id,omitempty" gorm:"type:bigint;column:lurus_account_id;uniqueIndex"`
+	// TenantRole is the user's role INSIDE their own tenant (migration 046):
+	// "" (plain member), "admin" or "dept_lead". It is deliberately separate
+	// from the integer Role above — a global role >= 10 opens the v1 AdminAuth
+	// routes (channels, users, all logs), which a customer's admin must never
+	// reach. Mirrors repo.User; both tags must move together.
+	TenantRole string `json:"tenant_role" gorm:"type:varchar(16);not null;default:''"`
 }
+
+// Tenant-scoped role values stored in users.tenant_role.
+const (
+	TenantRoleNone     = ""
+	TenantRoleAdmin    = "admin"
+	TenantRoleDeptLead = "dept_lead"
+)
 
 func (user *User) ToBaseUser() *UserBase {
 	return &UserBase{
@@ -42,6 +67,8 @@ func (user *User) ToBaseUser() *UserBase {
 		Username:       user.Username,
 		Setting:        user.Setting,
 		Email:          user.Email,
+		TenantId:       user.TenantId,
+		TenantRole:     user.TenantRole,
 		DailyQuota:     user.DailyQuota,
 		DailyUsed:      user.DailyUsed,
 		LastDailyReset: user.LastDailyReset,
@@ -88,12 +115,19 @@ func (user *User) IsSubscriber() bool {
 
 // UserBase is a lightweight view of User for caching
 type UserBase struct {
-	Id             int    `json:"id"`
-	TenantId       string `json:"tenant_id"`
-	Group          string `json:"group"`
-	Email          string `json:"email"`
-	Quota          int    `json:"quota"`
-	Status         int    `json:"status"`
+	Id       int    `json:"id"`
+	TenantId string `json:"tenant_id"`
+	Group    string `json:"group"`
+	Email    string `json:"email"`
+	Quota    int    `json:"quota"`
+	Status   int    `json:"status"`
+	// Role lets authHelper re-validate a session's privilege level against
+	// the DB on every request (not just status). 0 means "not populated" —
+	// caches built before this field existed, or written without a DB hit —
+	// and callers must treat that as unknown rather than as a demotion.
+	Role int `json:"role"`
+	// TenantRole mirrors users.tenant_role (migration 046); "" when unknown.
+	TenantRole     string `json:"tenant_role"`
 	Username       string `json:"username"`
 	Setting        string `json:"setting"`
 	DailyQuota     int    `json:"daily_quota"`
@@ -128,13 +162,20 @@ type DailyQuotaInfo struct {
 	NeedsReset      bool   `json:"needs_reset"`
 }
 
-// NeedsDailyReset checks if daily quota needs to be reset based on last reset timestamp
+// NeedsDailyReset reports whether the daily quota should be reset, using the
+// current wall-clock time. Day boundaries are UTC midnight (unix-day = ts/86400).
 func NeedsDailyReset(lastResetTimestamp int64) bool {
+	return NeedsDailyResetAt(lastResetTimestamp, common.GetTimestamp())
+}
+
+// NeedsDailyResetAt is the pure, clock-injectable core of NeedsDailyReset: it
+// reports whether a reset is due as of nowTimestamp. Both args are unix seconds
+// and the day boundary is UTC midnight (ts/86400). Exposed so the reset decision
+// can be tested deterministically — callers that build "now-relative" timestamps
+// against the real clock (e.g. now-1h) otherwise flake near a UTC day boundary.
+func NeedsDailyResetAt(lastResetTimestamp, nowTimestamp int64) bool {
 	if lastResetTimestamp == 0 {
 		return true
 	}
-	now := common.GetTimestamp()
-	nowDay := now / 86400
-	lastResetDay := lastResetTimestamp / 86400
-	return nowDay > lastResetDay
+	return nowTimestamp/86400 > lastResetTimestamp/86400
 }

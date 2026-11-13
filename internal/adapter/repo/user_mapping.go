@@ -6,17 +6,20 @@ import (
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/domain/entity"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"gorm.io/gorm"
 )
 
 // Type aliases pointing to entity package
 type UserIdentityMapping = entity.UserIdentityMapping
-type ZitadelUserClaims = entity.ZitadelUserClaims
+type OIDCUserClaims = entity.OIDCUserClaims
 
-// GetUserMappingByZitadelID retrieves user mapping by Zitadel User ID and Tenant ID
-func GetUserMappingByZitadelID(zitadelUserID string, tenantID string) (*UserIdentityMapping, error) {
+// GetUserMappingByIDPSubject retrieves user mapping by upstream OIDC subject and Tenant ID.
+// NOTE(idp-migration): the SQL/physical column stays zitadel_user_id until the
+// column-rename migration is reserved & applied (owner-gated).
+func GetUserMappingByIDPSubject(idpSubject string, tenantID string) (*UserIdentityMapping, error) {
 	var mapping UserIdentityMapping
-	err := DB.Where("zitadel_user_id = ? AND tenant_id = ? AND is_active = ?", zitadelUserID, tenantID, true).
+	err := DB.Where("zitadel_user_id = ? AND tenant_id = ? AND is_active = ?", idpSubject, tenantID, true).
 		First(&mapping).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -41,10 +44,27 @@ func GetUserMappingByLurusUserID(lurusUserID int, tenantID string) (*UserIdentit
 	return &mapping, nil
 }
 
+// GetUserMappingByLurusUserIDAnyTenant returns the first active mapping of a
+// lurus user across all tenants (lowest id, deterministic). For global
+// (non-tenant) callers such as the root-operator shadow check.
+func GetUserMappingByLurusUserIDAnyTenant(lurusUserID int) (*UserIdentityMapping, error) {
+	var mapping UserIdentityMapping
+	err := DB.Where("lurus_user_id = ? AND is_active = ?", lurusUserID, true).
+		Order("id ASC").
+		First(&mapping).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errors.New("user mapping not found")
+		}
+		return nil, err
+	}
+	return &mapping, nil
+}
+
 // CreateUserMapping creates a new user identity mapping
-func CreateUserMapping(lurusUserID int, zitadelUserID string, tenantID string, email string, displayName string, preferredUsername string) (*UserIdentityMapping, error) {
+func CreateUserMapping(lurusUserID int, idpSubject string, tenantID string, email string, displayName string, preferredUsername string) (*UserIdentityMapping, error) {
 	// Check if mapping already exists
-	existingMapping, _ := GetUserMappingByZitadelID(zitadelUserID, tenantID)
+	existingMapping, _ := GetUserMappingByIDPSubject(idpSubject, tenantID)
 	if existingMapping != nil {
 		// Update last sync time
 		now := time.Now()
@@ -60,7 +80,7 @@ func CreateUserMapping(lurusUserID int, zitadelUserID string, tenantID string, e
 	now := time.Now()
 	mapping := &UserIdentityMapping{
 		LurusUserID:       lurusUserID,
-		ZitadelUserID:     zitadelUserID,
+		IDPSubject:        idpSubject,
 		TenantID:          tenantID,
 		Email:             email,
 		DisplayName:       displayName,
@@ -119,17 +139,17 @@ func ListUserMappingsByTenant(tenantID string, offset int, limit int) ([]*UserId
 	return mappings, total, nil
 }
 
-// ListUserMappingsByZitadelUser retrieves all mappings for a Zitadel user across tenants
-func ListUserMappingsByZitadelUser(zitadelUserID string) ([]*UserIdentityMapping, error) {
+// ListUserMappingsByIDPSubject retrieves all mappings for an OIDC subject across tenants.
+func ListUserMappingsByIDPSubject(idpSubject string) ([]*UserIdentityMapping, error) {
 	var mappings []*UserIdentityMapping
-	err := DB.Where("zitadel_user_id = ? AND is_active = ?", zitadelUserID, true).
+	err := DB.Where("zitadel_user_id = ? AND is_active = ?", idpSubject, true).
 		Order("created_at DESC").
 		Find(&mappings).Error
 	return mappings, err
 }
 
-// SyncUserDataFromZitadel syncs user data from Zitadel claims to mapping
-func SyncUserDataFromZitadel(mappingID int, email string, displayName string, preferredUsername string) error {
+// SyncUserDataFromIDP syncs user data from OIDC claims to mapping.
+func SyncUserDataFromIDP(mappingID int, email string, displayName string, preferredUsername string) error {
 	now := time.Now()
 	return UpdateUserMapping(mappingID, map[string]interface{}{
 		"email":              email,
@@ -139,11 +159,11 @@ func SyncUserDataFromZitadel(mappingID int, email string, displayName string, pr
 	})
 }
 
-// GetUserByZitadelID retrieves lurus user by Zitadel user ID and tenant
-// This is a helper function that combines mapping lookup and user retrieval
-func GetUserByZitadelID(zitadelUserID string, tenantID string) (*User, *UserIdentityMapping, error) {
+// GetUserByIDPSubject retrieves lurus user by OIDC subject and tenant.
+// This is a helper function that combines mapping lookup and user retrieval.
+func GetUserByIDPSubject(idpSubject string, tenantID string) (*User, *UserIdentityMapping, error) {
 	// Get mapping
-	mapping, err := GetUserMappingByZitadelID(zitadelUserID, tenantID)
+	mapping, err := GetUserMappingByIDPSubject(idpSubject, tenantID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -157,16 +177,47 @@ func GetUserByZitadelID(zitadelUserID string, tenantID string) (*User, *UserIden
 	return user, mapping, nil
 }
 
-// CreateUserFromZitadelClaims creates a new lurus user from Zitadel JWT claims
+// GetUserByIDPSubjectAnyTenant retrieves the lurus user for an OIDC subject
+// without constraining the lookup to a single tenant. The lurus-platform
+// session-bearer path (authHelper) has no tenant of its own to scope
+// by — pinning that lookup to "default" left every user provisioned into a
+// non-default tenant unable to authenticate with a platform session token.
+// When more than one active mapping exists for the same subject (the schema
+// doesn't forbid it, even though today's provisioning creates at most one),
+// prefer the active mapping, then the lowest id, so the result is
+// deterministic rather than whatever order the DB happens to return.
+func GetUserByIDPSubjectAnyTenant(idpSubject string) (*User, *UserIdentityMapping, error) {
+	var mapping UserIdentityMapping
+	err := DB.Where("zitadel_user_id = ? AND is_active = ?", idpSubject, true).
+		Order("is_active DESC, id ASC").
+		First(&mapping).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, errors.New("user mapping not found")
+		}
+		return nil, nil, err
+	}
+
+	user, err := GetUserById(mapping.LurusUserID, false)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return user, &mapping, nil
+}
+
+// CreateUserFromIDPClaims creates a new lurus user from upstream OIDC JWT claims
 // and establishes the identity mapping.
 //
 // Lookup order:
-//  1. Exact mapping match (zitadel_user_id + tenant_id)
-//  2. Email fallback — matches pre-Zitadel users across all tenants, auto-creates mapping
-//  3. Auto-create new user (if ZITADEL_AUTO_CREATE_USER=true)
-func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*User, *UserIdentityMapping, error) {
+//  1. Exact mapping match (idp subject column + tenant_id)
+//  2. Email fallback — links a pre-OIDC user *of the same tenant*, and only when
+//     the claimed address is verified, the match is unambiguous, and the matched
+//     account is not privileged. See the comment on the branch for why.
+//  3. Auto-create new user (if OIDC_AUTO_CREATE_USER=true)
+func CreateUserFromIDPClaims(claims *OIDCUserClaims, tenantID string) (*User, *UserIdentityMapping, error) {
 	// Step 1: Check if mapping already exists
-	existingMapping, _ := GetUserMappingByZitadelID(claims.Sub, tenantID)
+	existingMapping, _ := GetUserMappingByIDPSubject(claims.Sub, tenantID)
 	if existingMapping != nil {
 		user, err := GetUserById(existingMapping.LurusUserID, false)
 		if err != nil {
@@ -175,15 +226,40 @@ func CreateUserFromZitadelClaims(claims *ZitadelUserClaims, tenantID string) (*U
 		return user, existingMapping, nil
 	}
 
-	// Step 2: Email fallback — link pre-existing users who haven't migrated to Zitadel yet.
-	// Search across all tenants (legacy users may have tenant_id="default").
-	if claims.Email != "" {
-		var existingUser User
+	// Step 2: Email fallback — link a pre-OIDC user *of this tenant* who has not
+	// migrated yet.
+	//
+	// This branch converts an IdP-supplied email claim into a local identity, so
+	// it is deliberately narrow. It must never (a) cross a tenant boundary,
+	// (b) resolve an ambiguous match by preferring privilege, (c) trust an
+	// unverified email, or (d) adopt an admin/root account. Any one of those
+	// turns "sign up at the IdP with the right address" into account takeover:
+	// the callback writes the matched user's id and role straight into the
+	// session (handler/oauth.go), and middleware.authHelper trusts that role.
+	//
+	// The tenant predicate is written out explicitly rather than left to the
+	// tenant plugin so the scoping is visible at the call site.
+	if claims.Email != "" && claims.EmailVerified {
+		var candidates []User
 		err := WithoutTenantIsolation(DB).
-			Where("email = ? AND status = 1 AND deleted_at IS NULL", claims.Email).
-			Order("role DESC"). // prefer highest-privilege match (root > admin > user)
-			First(&existingUser).Error
-		if err == nil {
+			Where("tenant_id = ? AND email = ? AND status = ? AND deleted_at IS NULL",
+				tenantID, claims.Email, common.UserStatusEnabled).
+			Limit(2).
+			Find(&candidates).Error
+		switch {
+		case err != nil:
+			// Fall through to step 3 rather than guessing.
+		case len(candidates) > 1:
+			common.SysLog(fmt.Sprintf(
+				"oidc email fallback: refusing ambiguous match for tenant %s (%d enabled users share the claimed address)",
+				tenantID, len(candidates)))
+		case len(candidates) == 1 && candidates[0].Role >= common.RoleAdminUser:
+			// Privileged accounts are linked by an operator, never by a login.
+			common.SysLog(fmt.Sprintf(
+				"oidc email fallback: refusing to auto-link privileged user %d (role %d) in tenant %s; link it explicitly",
+				candidates[0].Id, candidates[0].Role, tenantID))
+		case len(candidates) == 1:
+			existingUser := candidates[0]
 			mapping, mapErr := CreateUserMapping(
 				existingUser.Id,
 				claims.Sub,
@@ -274,4 +350,3 @@ func ensureUniqueUsername(baseUsername string, tenantID string) string {
 		username = baseUsername + fmt.Sprintf("_%d", suffix)
 	}
 }
-

@@ -9,14 +9,15 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/relay"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
-	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
-	"github.com/LurusTech/lurus-hub/internal/app/relay"
 
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
@@ -82,6 +83,10 @@ func UpdateTaskBulkWithContext(ctx context.Context) {
 			common.SysLog("task bulk update stopped")
 			return
 		case <-ticker.C:
+			// HA: only the leader polls task updates; non-leaders idle.
+			if !common.IsLeader() {
+				continue
+			}
 			common.SysLog("任务进度轮询开始")
 			allTasks := repo.GetAllUnFinishSyncTasks(constant.TaskQueryLimit)
 			platformTask := make(map[constant.TaskPlatform][]*repo.Task)
@@ -177,9 +182,10 @@ func updateSunoTaskAll(ctx context.Context, channelId int, taskIds []string, tas
 		return errors.New("adaptor not found")
 	}
 	proxy := channel.GetSetting().Proxy
-	resp, err := adaptor.FetchTask(*channel.BaseURL, channel.Key, map[string]any{
+	forceHTTP1 := dto.ParamOverrideForceHTTP1(channel.GetParamOverride())
+	resp, err := adaptor.FetchTask(channel.GetBaseURL(), channel.Key, map[string]any{
 		"ids": taskIds,
-	}, proxy)
+	}, proxy, forceHTTP1)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("Get Task Do req error: %v", err))
 		return err
@@ -224,14 +230,8 @@ func updateSunoTaskAll(ctx context.Context, channelId int, taskIds []string, tas
 				logger.LogError(ctx, "error update user quota cache: "+err.Error())
 			} else {
 				quota := task.Quota
-				if quota != 0 {
-					err = repo.IncreaseUserQuota(task.UserId, quota, false)
-					if err != nil {
-						logger.LogError(ctx, "fail to increase user quota: "+err.Error())
-					}
-					logContent := fmt.Sprintf("异步任务执行失败 %s，补偿 %s", task.TaskID, logger.LogQuota(quota))
-					repo.RecordLog(task.UserId, repo.LogTypeSystem, logContent)
-				}
+				refundTaskQuota(ctx, task.UserId, task.ChannelId, quota,
+					fmt.Sprintf("异步任务执行失败 %s，补偿 %s", task.TaskID, logger.LogQuota(quota)))
 			}
 		}
 		if responseItem.Status == repo.TaskStatusSuccess {
@@ -288,11 +288,75 @@ func checkTaskNeedUpdate(oldTask *repo.Task, newTask dto.SunoDataResponse) bool 
 	return false
 }
 
+// normalizeRequestIDFilter trims whitespace off the request_id filter and
+// reports it invalid when it exceeds 64 bytes (len(trimmed), not rune
+// count) — tasks.request_id's own column width (migration 035).
+// Byte-truncating an oversized value instead (the earlier version of this
+// function) is wrong on two counts: a stored 64-byte request_id would then
+// match a caller-supplied prefix of a longer string, and slicing at a
+// fixed byte offset can split a multibyte UTF-8 rune, sending an invalid
+// byte sequence into the query. Cycle-8 L10
+// repair (ruling B-F2): callers must treat "invalid" as "cannot match any
+// row" and skip the query entirely, not narrow it to a truncated value.
+func normalizeRequestIDFilter(raw string) (value string, invalid bool) {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) > 64 {
+		return "", true
+	}
+	return trimmed, false
+}
+
+// normalizeProjectIDFilter parses the project_id query param the way the v2
+// log list does (GetLogsV2, v2_log.go): strconv.Atoi, filter only applied
+// when the value is a positive integer. Unlike the log list — which folds a
+// parse failure into projectID==0 (no filter) because repo.LogQueryParams.
+// ProjectID is an int — the task query builders take ProjectID as a raw
+// string forwarded straight into `project_id = ?` against an integer
+// column (repo/task.go). Forwarding an unparseable string there raises a
+// PostgreSQL 22P02 in production that the builder swallows into an empty
+// result with the error discarded, not logged (TaskGetAllTasks returns nil
+// on err, TaskCountAllTasks does `_ = query.Count(&total).Error`); parsing
+// here first lets an invalid value short-circuit to the same empty page
+// without hitting the database at all. Cycle-8 L10 repair (ruling B-F1).
+func normalizeProjectIDFilter(raw string) (value string, invalid bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false
+	}
+	n, err := strconv.Atoi(trimmed)
+	if err != nil || n <= 0 {
+		return "", true
+	}
+	return strconv.Itoa(n), false
+}
+
+// respondEmptyTaskPage answers the fail-closed empty page for an invalid
+// project_id/request_id filter without touching the database — SetItems
+// gets an empty (not nil) slice so the response body is items:[] rather
+// than items:null (cycle-8 L10 repair, ruling B-F1/B-F2).
+func respondEmptyTaskPage(c *gin.Context, pageInfo *common.PageInfo) {
+	pageInfo.SetTotal(0)
+	pageInfo.SetItems([]*repo.Task{})
+	common.ApiSuccess(c, pageInfo)
+}
+
 func GetAllTask(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+
+	// ProjectID/RequestID: cost-attribution/support-lookup filters on the
+	// migration-035 columns (cycle-8 L10); exact match. An invalid value for
+	// either short-circuits to the empty page before any query builder or
+	// DB call runs.
+	projectID, projectIDInvalid := normalizeProjectIDFilter(c.Query("project_id"))
+	requestID, requestIDInvalid := normalizeRequestIDFilter(c.Query("request_id"))
+	if projectIDInvalid || requestIDInvalid {
+		respondEmptyTaskPage(c, pageInfo)
+		return
+	}
+
 	// 解析其他查询参数
 	queryParams := repo.SyncTaskQueryParams{
 		Platform:       constant.TaskPlatform(c.Query("platform")),
@@ -302,6 +366,19 @@ func GetAllTask(c *gin.Context) {
 		StartTimestamp: startTimestamp,
 		EndTimestamp:   endTimestamp,
 		ChannelID:      c.Query("channel_id"),
+		ProjectID:      projectID,
+		RequestID:      requestID,
+	}
+	// This route is mounted under middleware.AdminAuth() (role >=
+	// RoleAdminUser), not RootAuth — a tenant admin narrower than root must
+	// not see other tenants' tasks. Mirrors GetAllChannels' isRoot/
+	// callerTenant scope (channel.go:113-114,153-154): the filter is set
+	// unconditionally for every non-root caller, including one whose
+	// session carries no tenant yet, so an empty tenant closes the page
+	// rather than falling through to the platform-wide view.
+	if c.GetInt("role") < common.RoleRootUser {
+		queryParams.TenantID = c.GetString("tenant_id")
+		queryParams.TenantScoped = true
 	}
 
 	items := repo.TaskGetAllTasks(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)
@@ -319,6 +396,20 @@ func GetUserTask(c *gin.Context) {
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
 
+	// ProjectID is combined with the userId scope both list functions
+	// already apply below, so a project this user does not own yields an
+	// empty page (fail-closed) rather than needing a separate ownership
+	// check — mirrors GetLogsV2's ProjectID handling (v2_log.go), which
+	// relies on the same UserID+ProjectID AND for the same reason. An
+	// invalid (non-numeric / non-positive) value short-circuits the same
+	// way, before any query builder or DB call runs.
+	projectID, projectIDInvalid := normalizeProjectIDFilter(c.Query("project_id"))
+	requestID, requestIDInvalid := normalizeRequestIDFilter(c.Query("request_id"))
+	if projectIDInvalid || requestIDInvalid {
+		respondEmptyTaskPage(c, pageInfo)
+		return
+	}
+
 	queryParams := repo.SyncTaskQueryParams{
 		Platform:       constant.TaskPlatform(c.Query("platform")),
 		TaskID:         c.Query("task_id"),
@@ -326,6 +417,8 @@ func GetUserTask(c *gin.Context) {
 		Action:         c.Query("action"),
 		StartTimestamp: startTimestamp,
 		EndTimestamp:   endTimestamp,
+		ProjectID:      projectID,
+		RequestID:      requestID,
 	}
 
 	items := repo.TaskGetAllUserTask(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)

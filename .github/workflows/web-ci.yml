@@ -1,0 +1,245 @@
+name: Web CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/web-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/web-ci.yml'
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: 'Run Playwright e2e against UAT (test-newhub.lurus.cn)'
+        required: false
+        default: 'false'
+      # The two below are set by docker-image-main.yml's verify_rollout job
+      # when it dispatches this run post-deploy; leave both blank for a plain
+      # manual run — the e2e job's follow-up comment step is skipped when
+      # pr_number is empty.
+      pr_number:
+        description: 'PR number to post the e2e result to (set by verify_rollout)'
+        required: false
+        default: ''
+      version:
+        description: 'Version string being verified (set by verify_rollout)'
+        required: false
+        default: ''
+  # Nightly e2e against the isolated UAT instance (test-newhub.lurus.cn →
+  # NodePort 30851 since the 2026-08-30 cutover). 19:00 UTC = 03:00 Beijing:
+  # off working hours and clear of auto-pin rollouts.
+  schedule:
+    - cron: '0 19 * * *'
+
+# Same policy as go-ci.yml: a newer push to the same PR branch cancels the
+# superseded run; main (and the nightly schedule, which runs on main's ref)
+# never cancels.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    working-directory: web/next
+
+jobs:
+  next-console:
+    name: Console (web/next) lint + typecheck + vitest + build
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    # web/next is the console (rsbuild + TypeScript). It owns the site root;
+    # its build assets are served under /next/.
+    defaults:
+      run:
+        working-directory: web/next
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.10'
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run lint
+      - run: bun run test
+      # Writes web/dist/next (outDir is ../dist/next), which web/embed.go
+      # embeds (IndexPage is dist/next/index.html).
+      - run: bun run build
+      - name: build output is where the Go server expects it
+        run: test -f ../dist/next/index.html
+      # Feature strings are collected by import.meta.webpackContext, which the
+      # bundler only rewrites when written literally; written any other way it
+      # is undefined in the bundle and every page silently renders in English
+      # while the unit tests stay green (caught on the local stack 2026-10-09).
+      # "创建密钥" is the Chinese of the keys page's "Create key".
+      - name: feature translations are bundled
+        run: grep -rqF '创建密钥' ../dist/next/static/js
+
+  security:
+    name: bun audit + gitleaks
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 20
+    # push/PR only. gitleaks-action scans the pushed commit RANGE on those
+    # events but the FULL history on schedule/workflow_dispatch, where it
+    # trips on known historical doc artifacts (verified 2026-08-30: same
+    # HEAD, push run green, dispatch run red on commits fbff5649/9eee5290
+    # from June). Leaving it on schedule would paint every nightly e2e run
+    # red at the run level — a permanently-red signal nobody reads. The
+    # incremental gate on real code pushes is unchanged.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    # Run security checks independently so they don't block the fast test job
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history required by gitleaks for commit-range scanning
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.10'
+      - run: bun install --frozen-lockfile
+      - name: bun audit (blocking — high+ acceptable, critical blocks)
+        # The console package (web/next). Until the legacy console was retired
+        # this job audited only web/ — web/next had never been audited and
+        # carried 2 critical advisories (seroval via @tanstack/router-core,
+        # proxy-addr via the shadcn CLI's MCP SDK), both pinned past the fix
+        # in web/next/package.json `overrides`. The gate stays at `critical`
+        # (33 high remain, mostly dev tooling); ratchet to `high` once a run
+        # of `bun audit` shows 0 high — re-run it, do not assume.
+        run: bun audit --audit-level critical
+      - name: gitleaks (secret scanning)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE is optional; set it in repo secrets if you have a
+          # commercial license. The action works without it for public repos.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  e2e:
+    name: Playwright e2e (UAT)
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    # The suite talks to a remote UAT instance over the network; without this a
+    # hung run burns the runner's 6-hour default.
+    timeout-minutes: 40
+    # Branch on event: schedule events carry NO inputs, so a naive
+    # `inputs.run_e2e == 'true'` arm alone would never fire nightly.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_e2e == 'true') ||
+      github.event_name == 'schedule'
+    needs: next-console
+    # Only the deploy-verify follow-up comment step below needs this; the
+    # nightly schedule run posts nothing and this permission is a no-op for it.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.10'
+      - run: bun install --frozen-lockfile
+      # --with-deps runs apt-get. The self-hosted pool is rootless with no real
+      # sudo, so there it failed before a single spec ran (every run from
+      # 09-25 to 09-30); its Chromium system packages are part of the machine
+      # definition instead (lurus-deploy local-ci/apt-packages.txt).
+      - run: bunx playwright install $([ "$RUNNER_ENVIRONMENT" = self-hosted ] || echo --with-deps) chromium
+      - run: bun run test:e2e
+        env:
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL || 'https://test-newhub.lurus.cn' }}
+          E2E_BRIDGE_TOKEN: ${{ secrets.E2E_BRIDGE_TOKEN }}
+          # 'lurus' matches the helper default (tests/e2e/helpers/auth.ts) that
+          # every green local run used — the bridge's cosmetic "default" slug is
+          # not routable, so a 'default' fallback here would fail in CI only.
+          E2E_TENANT_SLUG: ${{ secrets.E2E_TENANT_SLUG || 'lurus' }}
+      - name: Assert the e2e run was not hollow (passed count + skip budget)
+        # A Playwright run that authenticates against the wrong instance, or
+        # whose global setup silently bails, still exits 0 while reporting a
+        # handful of skipped specs. The suite has been 33 passed / 1 legit skip
+        # (x2 browsers) since 2026-08-30, so a run that passes fewer than 30 or
+        # skips more than 2 has stopped being the nightly proof it is kept for.
+        # results.json is written by the json reporter in web/next/playwright.config.ts.
+        if: always()
+        run: |
+          report=playwright-report/results.json  # job default working-directory is web/next/
+          if [ ! -f "$report" ]; then
+            echo "::error::$report is missing — the json reporter did not run, so the counts below cannot be checked. Do not read a green step as a green suite."
+            exit 1
+          fi
+          expected=$(jq '.stats.expected // -1' "$report")
+          skipped=$(jq '.stats.skipped // -1' "$report")
+          unexpected=$(jq '.stats.unexpected // -1' "$report")
+          flaky=$(jq '.stats.flaky // -1' "$report")
+          echo "playwright stats: expected(passed)=$expected unexpected(failed)=$unexpected skipped=$skipped flaky=$flaky"
+          rc=0
+          if [ "$expected" -lt 30 ]; then
+            echo "::error::only $expected specs passed (floor 30) — the suite ran hollow or specs were lost."
+            rc=1
+          fi
+          if [ "$skipped" -gt 2 ]; then
+            echo "::error::$skipped specs were skipped (budget 2) — a skipped spec proves nothing; find out what stopped running."
+            rc=1
+          fi
+          # A flaky spec is one Playwright retried into a pass. It never turns
+          # the run red on its own, so until 2026-09-27 (cycle 18) this step
+          # did not read stats.flaky at all and a suite could degrade to
+          # pass-on-retry across the board without anyone seeing it. Budget 1:
+          # one retried spec is an isolated timing hiccup; two in one run are
+          # a pattern worth a red build.
+          if [ "$flaky" -gt 1 ]; then
+            echo "::error::$flaky specs passed only on retry (budget 1) — a retried pass is a fail the reporter forgave; fix the race, do not raise the budget."
+            rc=1
+          fi
+          exit $rc
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: web/next/playwright-report/
+          retention-days: 14
+
+      # Closes the post-deploy verification loop's second half: verify_rollout
+      # (docker-image-main.yml) dispatched this run with pr_number/version set
+      # and does not wait for it, so this is the only place the merger learns
+      # whether e2e actually passed against the new digest. Runs regardless of
+      # job.status (always()); skipped entirely on the nightly schedule and on
+      # a plain manual dispatch, both of which leave pr_number blank (GitHub
+      # coerces the missing input to null, which compares equal to '').
+      - name: Post e2e result to the deploy PR (idempotent)
+        if: always() && github.event.inputs.pr_number != ''
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          VERSION: ${{ github.event.inputs.version }}
+          RESULT: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -u
+          icon="✗"
+          [ "$RESULT" = "success" ] && icon="✓"
+          MARKER="<!-- deploy-verify-e2e:${VERSION} -->"
+          BODY=$(printf 'e2e (UAT) for %s: %s %s — %s\n\n%s' \
+            "$VERSION" "$icon" "$RESULT" "$RUN_URL" "$MARKER")
+          # The comment only REPORTS; the job's verdict was decided by the steps
+          # above. GitHub's API drops a connection now and then ("error
+          # connecting to api.github.com" turned #242's green e2e red), so
+          # retry with backoff and, if it still fails, warn instead of failing.
+          upsert() {
+            local found existing
+            found=$(gh api "/repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+              --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id") || return 1
+            existing=$(printf '%s\n' "$found" | head -1)
+            if [ -n "$existing" ]; then
+              gh api --method PATCH "/repos/${REPO}/issues/comments/${existing}" -f body="$BODY" >/dev/null
+            else
+              gh api --method POST "/repos/${REPO}/issues/${PR_NUMBER}/comments" -f body="$BODY" >/dev/null
+            fi
+          }
+          for attempt in 1 2 3 4; do
+            upsert && exit 0
+            sleep $((attempt * 10))
+          done
+          echo "::warning::could not post the PR comment after 4 attempts (GitHub API unreachable)"

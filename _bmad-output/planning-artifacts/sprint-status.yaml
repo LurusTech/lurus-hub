@@ -1,18 +1,33 @@
-# Sprint Status - Lurus API
-# Updated: 2026-02-13
-# Project: Lurus API
-# Project Key: LURUS-API
-# Tracking System: file-system
+# Sprint Status - Lurus Hub
+# Updated: 2026-05-05
+# 2026-09-22 doc slim: a 2026-05-05 snapshot, not current state — later rounds
+# live in PRs. The story-*.md files its comments name were deleted that day
+# (git history has them). Line numbers kept: doc/reseller-onboarding/* cite them.
 
 # STATUS DEFINITIONS:
 # ==================
 # Epic:  backlog → in-progress → done
 # Story: backlog → ready-for-dev → in-progress → review → done
 
-generated: 2026-02-13
-project: Lurus API
-project_key: LURUS-API
+generated: 2026-05-05
+project: Lurus Hub
+project_key: LURUS-HUB
 tracking_system: file-system
+
+# ============================================================
+# NORTH STAR METRICS (replaces previous infra-only SC)
+# ============================================================
+north_star_metrics:
+  product:
+    paying_tenants_M12:        { current: 0,    target: 20  }      # 付费租户数
+    monthly_active_api_keys:   { current: null, target: 100 }      # 每租户 MoM 活跃 key
+    ttft_minutes:              { current: null, target: 5   }      # 注册 → 首次成功调用
+    cost_savings_via_insights: { current: 0,    target: "15% avg per tenant" }
+  reliability_baseline:
+    monthly_uptime:            { current: "~98%",  target: "99.5%" }
+    gateway_p95_overhead_ms:   { current: 80,     target: 50 }
+  governance:
+    forking_burden_hours_pm:   { current: null,  target: "<2h/month after E8" }
 
 # GOVERNANCE NOTE:
 # ================
@@ -76,6 +91,410 @@ development_status:
   6-10-p2-context-background-cleanup: done  # Story doc: story-6-10-context-background-cleanup.md
 
   # ============================================================
-  # ACTIVE SPRINT - Ready for new Epic planning
+  # PHASE 1 — 加固期 (2026-Q2, Active)
   # ============================================================
-  # (No active stories - awaiting next sprint planning)
+
+  # Epic 7: Reliability Hard Floor (P0)
+  epic-7: in-progress
+  7-1-per-provider-circuit-breaker: review           # ✅ audit + IsUpstreamFailure filter; awaiting STAGE chaos drill
+  7-2-postgres-ha:                  review           # ✅ ADR (lurus/doc/decisions/2026-05-07-newhub-pg-ha.md); split to 7-2.1~7-2.4
+  7-2.1-pg-wal-g-backups:           review           # ✅ Dockerfile + compose + runbook + drill; STAGE deploy + drill pending
+  7-2.2-pg-restore-runbook-drill:   backlog          # Phase 1.0 — 0.5 day
+  7-2.3-pg-streaming-replica:       backlog          # Phase 1.1 — pending 2nd host
+  7-2.4-pg-managed-migration:       backlog          # Phase 2.x — pending 5+ paying tenants
+  7-3-relay-data-plane-scale-out:   backlog
+  7-4-quota-real-backpressure:      review           # ✅ audit + Retry-After generalization; awaiting STAGE verify
+  7-5-chaos-drill-slo-dashboard:    review           # ✅ stage-smoke.sh + chaos-drill.sh + grafana dashboard + 11 alerts
+                                                     #    story-7-5-chaos-drill-slo-dashboard.md
+                                                     #    awaiting first STAGE drill run
+
+  # Epic 8: Newapi/Newhub Consolidation (P0) [renamed 2026-05-05 per 8-1 audit]
+  # Audit revealed two parallel forks, not a derivation chain.
+  # Recommendation: Option A — retire newapi, consolidate to newhub.
+  epic-8: in-progress
+  8-1-newapi-fork-audit:            review           # ✅ deliverable: doc/decisions/2026-05-05-newapi-newhub-fork-audit.md
+  # — Below stories drafted assuming Option A; rewrite if B chosen, drop if C.
+  8-2-newapi-original-port-list:    review           # ✅ deliverable: story-8-2-newapi-port-list.md (4 P0/P1 ports identified, ~2 days work)
+  8-2.1-cost-spike-port:            review           # ✅ port done; story-8-2.1-cost-spike-port.md; STAGE breach test pending
+  8-2.2-auth-hardening-port:        review           # ✅ video_proxy ownership fix; story-8-2.2-auth-hardening-port.md
+                                                     #    (audit was overstated — only 1 real gap, fixed)
+  8-2.3-nats-image-event-port:      review           # ✅ port done; story-8-2.3-nats-image-event-port.md
+  8-2.3.1-image-url-extraction:     review           # ✅ port done; story-8-2.3.1-image-url-extraction.md
+                                                     #    BufferedResponseWriter (64KiB cap) + ExtractImageURL 3-tier walker
+  8-2.4-nats-usage-milestone-port:  review           # ✅ port done; story-8-2.4-nats-usage-milestone-port.md
+                                                     #    decision: new event type (not merged with quota.threshold)
+  8-3-provider-parity-audit:        backlog          # 2026-05-20 unblocked by D1 = Option B accepted
+  8-4-cutover-plan:                 backlog          # 2026-05-20 unblocked by D1 = Option B accepted
+                                                     # newhub→newapi cutover plan to draft post 8-3
+  8-5-newapi-archive-yaml-revise:   backlog          # 2026-05-20 unblocked by D1 = Option B accepted
+                                                     # scope: lurus.yaml + lurus/CLAUDE.md "newhub on top of newapi"
+                                                     #        revise + newapi repo 归档 (90d 只读)
+                                                     # depends on 8-4 cutover complete
+
+  # Epic 9: Modality Slim-Down (P1)
+  epic-9: in-progress
+  9-1-tier3-usage-audit:            done             # 2026-05-20: PROD + STAGE e9-1 SQL ran (exit=0)
+                                                     # PROD R1 19,291 LLM logs / 0 tier-3 调用 / 0 tier-3 channel
+                                                     # STAGE R6 同 0 / 0 / 0
+                                                     # 报告: doc/reports/e9-1-tier3-usage-20260520.md
+                                                     # 决策: 推荐 E9-2 announce + E9-3 code removal
+                                                     # unblocks 9-2 (announce) + 9-3 (90d 后 code removal)
+  9-2-tier3-deprecate-announce:     backlog          # 2026-05-20 unblocked; 9-1 数据 = 全 0 调用
+                                                     # 90-day window per D3 decision
+  9-3-tier3-code-removal:           backlog          # blocked by 9-2 (90-day window)
+
+  # ============================================================
+  # PHASE 2 — 入口期 (2026-Q3, Backlog)
+  # ============================================================
+  epic-10: backlog                                   # 5-Minute Time-to-First-Token
+  epic-11: backlog                                   # v1 Web UI Sunset
+  epic-12: backlog                                   # 套餐计费分层
+
+  # ============================================================
+  # PHASE 3 — 差异化期 (2026-Q4, Backlog)
+  # ============================================================
+  epic-13: backlog                                   # ClickHouse Insights Plane
+  epic-14: backlog                                   # PII Audit & Compliance
+  epic-15: backlog                                   # 智能路由
+
+  # ============================================================
+  # PHASE 4 — 外溢期 (2027-Q1+, Direction Only)
+  # ============================================================
+  # 公开 SaaS / Stripe 直付 / 与 Helicone 差异化 — 待 Phase 3 收尾后规划
+
+# ============================================================
+# ACTIVE SPRINT (Sprint 1 of Q2)
+# ============================================================
+active_sprint:
+  id: 2026-Q2-S1
+  window: "2026-05-05 ~ 2026-06-02"
+  goal: "并行启动 Phase 1：E7-1 熔断器落地 + E8-1 fork 审计"
+  stories:
+    - 7-1-per-provider-circuit-breaker  # ✅ review
+    - 8-1-newapi-fork-audit              # ✅ review
+    - 8-2-newapi-original-port-list      # ✅ review (added 2026-05-07)
+    - 7-2-postgres-ha-adr                # ✅ review (added 2026-05-07; split to sub-stories)
+    - 7-4-quota-real-backpressure        # ✅ review (added 2026-05-07)
+    - 8-2.4-nats-usage-milestone-port    # ✅ review (added 2026-05-07)
+    - 8-2.3.1-image-url-extraction       # ✅ review (added 2026-05-07)
+    - 9-1-tier3-usage-audit              # ✅ review (added 2026-05-07; pending PROD SQL)
+    - 7-5-chaos-drill-slo-dashboard      # ✅ review (added 2026-05-07; smoke + chaos + dashboard)
+  next_recommended:
+    - STAGE deploy main-20b23add + run scripts/stage-smoke.sh   # validates 12 review stories live
+    - Import deploy/grafana/newhub-slo.json + apply newhub-alerts.yaml
+    - PROD usage SQL for 9-1             # 5 min, unblocks 9-2 announce
+    - STAGE deploy all 11 review stories # validate Retry-After + IsUpstreamFailure + NATS events live
+    - 8-2 port PR (待 Anita confirm Option A)
+    - 7-2.1 PG WAL-G STAGE drill (Phase 1.0, 0.5 day)
+
+# ============================================================
+# HARDENING SWARM (2026-05-18, dev-only, single session)
+# ============================================================
+hardening_swarm_2026_05_18:
+  scope_selected_by_user: "Lane A full + Lane D full + Lane B partial; Lane C deferred"
+  acceptance_report: "_bmad-output/planning-artifacts/hardening-swarm-2026-05-18-acceptance.md"
+  lane_a_quality_floor:
+    status: done
+    artifacts:
+      - web/vitest.config.js
+      - web/playwright.config.ts
+      - web/tests/e2e/story-11-2-token-persistence.spec.ts
+      - .github/workflows/web-ci.yml
+    evidence: "vitest 2/2 smoke; playwright 1 skipped (no E2E_BRIDGE_TOKEN — correct)"
+  lane_b_v2_mock_clear:
+    status: partial
+    delivered:
+      - "Pass 1: TenantSwitcher → real /api/v2/admin/tenants + 5 component tests"
+      - "Pass 2: Dashboard qps/ttft p50/error rate derived from /logs 5-min window (was '—' / 'coming soon'); 17 unit tests for kpis.js helpers"
+      - "Pass 3: WIPBanner explicit markers on Playground/Models/Chat/Flows; Log Cluster/Live tabs strip CLUSTERS/LIVE_ROWS mock arrays + show empty state; 4 banner tests"
+    deferred: "Settings non-profile tabs (Sessions/Notifications/Team)"
+  lane_c_epic7_stage_validation:
+    status: deferred
+    reason: "Needs operator SSH to R6 + multi-min observation windows for breaker / PG HA / WAL-G / backpressure / chaos drill"
+    next_session_inputs: "stage-smoke.sh + chaos-drill.sh + per-story acceptance template"
+  lane_d_backend_tests:
+    status: done
+    artifacts:
+      - internal/adapter/handler/audit_governance_test.go
+      - .github/workflows/go-ci.yml
+      - _bmad-output/planning-artifacts/test-debt-findings.md
+    evidence: "9 new (audit+governance) + 1 repaired (v2 token) — all PASS; go build/vet clean"
+    deferred: "billing handler test (platform gRPC dep); relay fake-provider test; broad go test -short gate (OAuth/JWKS test debt)"
+  not_claimed_per_4_1_6:
+    - "Epic 7 review→done"
+    - "v2 hi-fi mock zero"
+    - "go test -short ./... green"
+    - "Story 11-2 e2e behavior-verified on STAGE"
+
+# ============================================================
+# Q3 PHASE 2 SWARM (Credit pool + Provisioning API) — 2026-05-18 evening
+# Plan: 5 lanes / 2 waves driving Switch-Reseller backend enablement.
+# ============================================================
+phase2_swarm_2026_05_18:
+  story_doc: "_bmad-output/planning-artifacts/story-q3-phase2-credit-pool.md"
+  pre_swarm_commit: f6a492ad  # Phase 2 schema draft (migration 012 + entity + repo stub)
+  commits:
+    lane_delta_observability: 395d9065   # NATS pool_threshold publisher + 3 metrics + Grafana panels + 2 alerts
+    lane_alpha_backend:       e9f26560   # 5 admin + 2 provisioning handlers + relay-gate on 5 groups + quota wiring
+    lane_epsilon_docs:        a8f3de37   # ADR §4.2 Bearer→X-API-Key fix + contract spec + runbook + 5 retros + epic-7 roll-up
+    lane_gamma_frontend:      7ca1aa18   # CreditPoolDrawer + 11 vitest cases + Tenants pool button + Token "by user #N"
+    lane_beta_tests:          8e29a97e   # entity helpers + repo atomic race invariant + middleware shape contract
+  verified:
+    go_build: clean
+    go_vet:   clean
+    repo_tests: "TestDebitPool_AtomicRace (20 goroutines x 10 vs pool 50 -> exactly 5 ok, 15 reject, 0 negative)"
+    nats_tests: "8/8 pool_threshold cases (schema dedup + Redis dedup + redis-down fallback)"
+    frontend_tests: "50/50 vitest including 11 new CreditPoolDrawer cases"
+    frontend_build: "bun run build clean"
+  not_claimed_per_4_1_6:
+    - "STAGE drill — pool gate / wallet topup / provisioning round-trip on R6 (Phase 3, operator session)"
+    - "Switch integration — depends on G1 (Switch team commits Provisioning API timeline)"
+    - "PROD push — gated on G2 (after Phase 3 evidence + G3 pilot Reseller commitment)"
+    - "Handler-level admin/JWT tests — existing OAuth/JWKS test debt blocks broad gate; documented as follow-up"
+  external_gates_pending_anita:
+    G1_switch_team_timeline:   pending
+    G2_prod_push_authorization: pending
+    G3_pilot_reseller_commit:   pending
+
+# ============================================================
+# PHASE 2 SELF-AUDIT — P0 reliability close-out (2026-05-19)
+# ============================================================
+phase2_self_audit_2026_05_19:
+  trigger: "user reliability self-test: 'every button / jump / edge case'"
+  audit_doc: "doc/audit/2026-05-19-phase2-self-audit.md"
+  scope: "P0 only — three confirmed cash-path / tenant-isolation / ops bugs; P1/P2 deferred to Phase 3 STAGE drill"
+  commits:
+    b1_video_router_pool_gate:     d4a540a4   # feat(relay): gate video routes with PoolBalanceCheck
+    b2_provisioning_tenant_check:  80e674ad   # feat(provisioning): enforce tenant ownership on key creation
+    b3_nats_fail_closed:           ceaa3948   # fix(nats): fail-closed on pool threshold mark-fired
+    b2_scopeall_bypass_followup:   pending    # refactor InternalKeyAllowedForTenant(apiKey *InternalApiKey, tenantID) + ScopeAll bypass
+  verified:
+    go_build: clean
+    go_vet:   clean
+    nats_tests: "9/9 pool_threshold cases (was 8; +1 mark-fail, +1 inverted contract)"
+    repo_tests: "TestInternalKeyAllowedForTenant (skips without TEST_POSTGRES_DSN; compiles + skip-path PASS) — now covers ScopeAll bypass + nil/zero/empty inputs"
+  deploy_behaviour: |
+    Migration 013 creates internal_api_key_tenants empty. Platform admin
+    keys (scopes JSON contains "*") bypass the whitelist via ScopeAll —
+    no INSERT required for STAGE/PROD admin operations. Only narrow-scope
+    Reseller-issued keys (scopes = ["provisioning"] only) need an
+    explicit (api_key_id, tenant_id) row; that case doesn't exist yet
+    on STAGE so no manual seeding is currently required.
+  p1_p2_risk_register_deferred:
+    C1: "5 admin + 2 provisioning handlers untested → STAGE smoke"
+    C2: "quota.go Phase 2.5 integration untested → STAGE e2e"
+    C3: "wallet-revert two-phase commit untested → STAGE topup drill with forced WalletDebit failure"
+    C4: "frontend CreditPoolDrawer lifecycle untested → Phase 3 Playwright"
+    C5: "frontend 401/500/network paths untested → same"
+    C6: "no-pool-row = unlimited silent bypass → operator runbook (explicit Create required on onboarding)"
+    C7: "concurrent topup+debit race uncovered → STAGE burst drill"
+    C8: "monthly/weekly reset boundary arithmetic uncovered → manual one-cycle verification"
+    C9: "migration 012 backfill on 50M-row tokens table unproven → DBA evaluation pre-PROD"
+    C10: "internal_api_key_tenants seeding required only for narrow-scope Reseller keys (ScopeAll bypasses) → operator runbook + future admin UI when first such key is provisioned"
+  not_claimed_per_4_1_6:
+    - "P1/P2 surfaces verified — markers only, no STAGE measurement yet"
+    - "Migration 013 safe on populated keys table — CREATE TABLE only, unproven"
+    - "Phase 3 STAGE drill complete"
+    - "Migration 014 (Option A vs B) decided"
+
+# ============================================================
+# OPEN STRATEGIC DECISIONS (need Anita confirmation)
+# ============================================================
+open_decisions:
+  D1_fork_strategy:    accepted  # Option A — newapi 退役,整合到 newhub (Anita 重确认 2026-05-27)
+                                 # ADR: doc/decisions/2026-05-27-d1-newapi-retire.md  ← 正式记录
+                                 # 修正: 2026-05-20 此条原标签"Option B"错误;描述"newhub 吃掉 newapi"
+                                 #       实际即 Option A 语义 (per 2026-05-05 ADR 原始定义)。
+                                 #       占位 ADR `2026-05-20-d1-newapi-newhub-fork-final.md` 文件从未存在
+                                 #       (grep + ls 双重验证),本日由 2026-05-27 ADR 补齐。
+                                 # 迁移路径 (R-1 → R-5 五阶段,详见 2026-05-27 ADR):
+                                 #   R-1 移植 newapi 90d Lurus 原创 (Plan W3-4)
+                                 #   R-2 Provider parity 审计 (Plan W3-4)
+                                 #   R-3 切流方案 + STAGE 1w 镜像 (Plan W7-8)
+                                 #   R-4 PROD 5% → 25% → 50% → 100% 灰度 (Plan W9-10 = H1.5)
+                                 #   R-5 newapi 归档 + lurus.yaml 修订 (Plan W11+)
+                                 # 回滚: ≤15min(DNS TTL 60s) / ≤30min(image+DB restore,7d 内有效)
+                                 # 历史 audit (2026-05-05): doc/decisions/2026-05-05-newapi-newhub-fork-audit.md
+                                 # Q2 切流时间: 待 STAGE 演练后定(原推荐 2026-07 月初)
+                                 # Q3 newapi repo: 归档+90d 只读
+                                 # Q4 lurus.yaml: 由 8-5 完成(含"newhub on top of newapi"错误表述修订)
+  D2_external_saas:    accepted  # "2026 内部为主，Q4 起准备外部 SaaS"
+  D3_tier3_modality:   accepted  # "砍 MJ/Suno/Realtime/Music/Video" — 由 E9 执行
+  D4_insights_backend: accepted  # "Q3 自建 ClickHouse；先 Langfuse OSS 跑 PoC"
+
+# ============================================================
+# WAVE A KICKOFF — 2026-05-20 (Industrial-Grade Plan, Squad 1A done)
+# ============================================================
+wave_a_kickoff_2026_05_20:
+  plan_source: "in-conversation 2026-05-20 plan: Newhub 70% → industrial-grade, 3-wave"
+  status: in-progress
+  day_1_artifacts_committed:
+    - doc/decisions/2026-05-20-d1-newapi-newhub-fork-final.md   # D1 ADR — Option B accepted
+    - doc/decisions/2026-05-20-orphan-features-1-ionet.md
+    - doc/decisions/2026-05-20-orphan-features-2-openrouter-pool.md
+    - doc/decisions/2026-05-20-orphan-features-3-whitelabel-hmac.md
+    - doc/decisions/2026-05-20-orphan-features-4-console-migrate-not-found.md   # 不存在调查闭合
+    - _bmad-output/planning-artifacts/story-15-0-smart-routing-baseline.md       # v0 已上线但未接入路由
+  day_1_recon_findings:
+    drill_scripts:
+      chaos-drill_sh:      "154 行；缺 Prometheus metric 验证 / log assertion / 自动 teardown"
+      pg-restore-drill_sh: "145 行；缺 RTO/RPO enforcement + 绝对路径 env file"
+      stage-smoke_sh:      "217 行；多数 check 仅 wiring；缺 schema validation + curl timeout"
+      e9-1-prod-usage_sql: "不存在 — 需新写（9-1 done 前置）"
+    grafana:
+      slo_panels: 17        # newhub-slo.json，含 Story 7/8 + Phase 2 Credit Pool 面板
+      alerts: 14           # newhub-alerts.yaml，6 group，Page/Ticket/Info 分级
+      receiver_wired: false # alertmanager receiver 未配（无 Slack/PagerDuty）
+    e2e_11_2:
+      specs_exist: 1       # tests/e2e/story-11-2-token-persistence.spec.ts
+      blocked_on: "E2E_BRIDGE_TOKEN 未注入；Layer C 桥获取"
+      settings_tabs_actual: ["profile", "security", "notifications-stub", "team-stub",
+                             "integrations-stub", "region-stub", "danger-stub"]
+      settings_tabs_in_plan: ["profile", "subscription", "billing", "notifications"]
+      mismatch_flagged_to_user: true     # plan 提到 subscription/billing 不在现有 tab 列表
+  wave_a_progress_2026_05_20_evening:
+    completed:
+      - "Day-1 全部 (D1+ADRs+drill scripts patched+Settings tabs)"
+      - "Day-2.A: e9-1 PROD+STAGE 跑通 0 tier-3 → 9-1 done"
+      - "Day-2.B: Reseller onboarding pack → G1/G2/G3 物料 ready (3 文件)"
+      - "Day-2.C: Alertmanager receiver E2E 验证 — PrometheusRule applied → alertmanager → alert-sink WaveADryRunTest fingerprint=f14966ad6d4c0133"
+    blocked_drills:
+      chaos_drill:
+        reason: "R6 STAGE newhub DB 是空 seed - channels/tokens/logs 都 0 行 + admin user (id=1 Postgres) access_token NULL"
+        evidence: "kubectl exec lurus-pg-0 psql newhub -c 'SELECT COUNT(*) FROM {channels,tokens,logs}' = 0/0/0"
+        plan_assumption_violated: "Plan 假设 R6 有真 channel + 真 user 可 chaos；实际 schema-only"
+        options_pending_anita:
+          a: "Anita 从 Zitadel 登陆 newhub UI 后导出 admin JWT + seed 1 test channel + 1 test token → drill 才有真 signal"
+          b: "推迟 chaos drill 到 G3 reseller pilot 上线后 (STAGE 有真 data 时再 drill)"
+          c: "跳过 chaos drill, 7-1/8-2.1 review→done 用 unit test evidence 关闭"
+        recommendation: "B - 与 reseller onboarding 自然对齐; chaos 才有 meaningful signal"
+      pg_restore_drill:
+        reason: "R6 上没装 wal-g (kubectl get pods -A | grep wal-g 空); pg-restore-drill.sh line 73-76 检测 WALG_S3_PREFIX 缺失 直接 exit 0 skip; 现有 daily-pg-dump cron 只 dump lurus-identity DB, 不覆盖 newhub"
+        evidence: "/backups/lurus-identity-20260520-180002.dump (270K); 无 newhub dump"
+        options_pending_anita:
+          a: "Anita 给 R6 装 wal-g + S3 bucket (基础设施改造)"
+          b: "改 pg-restore-drill.sh 支持 pg_dump 模式 (engineering, ~1h) + 改 daily-pg-dump cron 把 newhub 加进去"
+          c: "跳过 pg-restore drill, 7-2.1 review→backlog (等 wal-g 部署后再跑)"
+        recommendation: "B - 工作量小, 立即跑得通; A 是更大的 infra 决策"
+
+  blocked_until_user_says_proceed:
+    - "Chaos drill option A/B/C 决定"
+    - "PG-restore drill option A/B/C 决定"
+    - "11-2 Layer C bridge token (G1 dep)"
+
+# ============================================================
+# WAVE-UAT STATUS (added 2026-05-26 by Sε squad)
+# ============================================================
+wave_uat:
+  status: in-progress
+  started: 2026-05-25
+  squads_landed:
+    - S0  # baseline scaffolding
+    - "Sα (α1-α6): handler smoke tests, repo coverage 60.1%, cross-tenant isolation (10 tests), 5 security projections, race audit"
+    - "Sβ (full): frontend casing scanner + 18/18 page tests green"
+    - "Sδ (full): stage-rollback.sh, OpenAPI spec (1974 lines / 39 schemas), Grafana dashboard, .env.example"
+    - "Sα2 (α5/α7/α8): coverage baseline, race audit doc, coverage-gate CI job"
+    - "Sε (full): contract scanner, gosec 0 HIGH, bun audit + gitleaks CI, UAT handbook, ADR"
+  squads_deferred:
+    - "Sγ (Playwright e2e) — depends on STAGE green (blocked on STAGING_KUBECONFIG secret)"
+    - "α9 gate threshold calibration — thresholds set to current baseline (18/58/19); aspirational targets pending integration harness"
+  dod_items_passing:
+    - "α1: handler smoke tests (TestGetAuditEvents + TestGetGovernance + TestListTokensV2_Pagination) — PASS"
+    - "α2: repo coverage 60.1% (baseline 58%) — PASS"
+    - "α3: cross-tenant isolation (10 tests) — PASS"
+    - "α4: 5 security projection structs (token/channel/log/billing/billing_invoice view structs) — PASS"
+    - "α6: race detector audit doc committed — PASS"
+    - "α8: race audit doc at _bmad-output/planning-artifacts/test-debt-findings.md — PASS"
+    - "α9: coverage-gate CI job in go-ci.yml (18/58/19 thresholds) — PASS"
+    - "β1: casing scanner + all 18 page tests pass bun run test — PASS"
+    - "δ1: scripts/stage-rollback.sh functional — PASS"
+    - "δ2: docs/openapi/api-v2.yaml committed (39 schemas) — PASS"
+    - "ε1: scripts/check-contract.mjs — 0 mismatches, verified to fire — PASS"
+    - "ε2: gosec HIGH=0 (15 findings fixed with #nosec + justification) — PASS"
+    - "ε3: bun audit + gitleaks wired into web-ci.yml — PASS"
+    - "ε4: doc/uat-handbook.md (6 sections) — PASS"
+    - "ε5: doc/decisions/2026-05-26-bridge-endpoint-tenant-resolution.md — PASS"
+  dod_items_deferred:
+    - "α5: internal/app coverage 80% — 19.3% actual; needs integration harness with real PG+Redis"
+    - "α7: internal/app coverage baseline tracked but gate threshold pending calibration"
+    - "Sγ: Playwright e2e suite — STAGE not reachable until STAGING_KUBECONFIG configured"
+  blockers:
+    - "STAGING_KUBECONFIG repo secret not configured — blocks deploy-staging.yml + all STAGE smoke tests"
+  sε_commit_range:
+    first: b5002d6b
+    last: 6b426e83
+    commits: 5
+    contract_mismatches_found: 0
+    gosec_high_fixed: 15
+    bun_audit_upgrades: none  # bun audit returns 404 on dev host (npm registry unreachable); no CVEs detected via local lockfile graph
+    gitleaks: "no secrets found in HEAD (history cleaned in story 6-8)"
+    uat_handbook_sections: 6
+    adr_path: doc/decisions/2026-05-26-bridge-endpoint-tenant-resolution.md
+
+# ============================================================
+# HORIZON PLAN 2026-05-27 (三 Horizon 战略图) — tracking
+# plan file: ~/.claude/plans/wobbly-churning-mango.md
+# ⚠ 决策编号是 *独立* 体系，与上方 open_decisions D1-D4 不重叠:
+#   Horizon D1 (fork)  == open_decisions.D1_fork_strategy (Option A) ✔ 同一事
+#   Horizon D2 (H2 押注 = Bet A MCP) ≠ open_decisions.D2_external_saas
+#   Horizon D3/D4/D5 也与 open_decisions D3/D4 无关。不要混读。
+# ============================================================
+horizon_plan_2026_05_27:
+  decisions_user_approved_prior_session:
+    H_D1_fork: "Option A — retire newapi (= open_decisions.D1_fork_strategy)"
+    H_D2_bet: "Bet A — MCP Gateway 启动"
+    H_D3_seed_timing: "H1 期内顺便埋"
+    H_D5_e2e: "现在配 KUBECONFIG (待 user 配 STAGING_KUBECONFIG secret)"
+    H_D4_vertical_sku: "deferred — not blocking H1 (plan 推荐 法律, 选择留待 Seed 2)"
+  h1_status:
+    H1_0_newapi_retire: "ADR done (doc/decisions/2026-05-27-d1-newapi-retire.md); impl R-1..R-5 未启"
+    H1_1_scim_saml: "design done (story-h1-1-scim-saml.md); blocked on Okta trial (user)"
+    H1_2_whitelabel: not-started
+    H1_3_ha_multimaster: >
+      code-complete 2026-05-29 (commit a4dd2006) — DB-lease leader election
+      (leader_elections / migration 018), common.IsLeader() gating all
+      master-only loops + boot migration, no HPA (3 static replicas on R6-stage).
+      Clock-injected unit tests green. STAGE-gated: real kill-leader-pod
+      failover drill pending. ADR adr-2026-05-29-leader-election.md.
+    H1_4_secret_rotation: >
+      code-complete 2026-05-29 (commit fb583b13) — leader-gated token
+      auto-rotation (tokens.auto_rotate_days/rotated_at, migration 017),
+      app.RotateDueTokens + audit + owner email. Clock-injected unit tests
+      green. STAGE-gated: real SMTP delivery pending. ADR adr-2026-05-29.
+    H1_5_prod_cutover: "gated on H1.0..H1.4"
+  h2_bet_a_mcp:
+    spike_doc: _bmad-output/planning-artifacts/story-h2-a-mcp-gateway-spike.md   # done 2026-05-28
+    spike_status: design-complete   # execution + real-client validation NOT done (§4.1③)
+    key_finding: >
+      6 first-party MCP servers already exist (zitadel/k8s/platform/tally/kova/zita-mcp),
+      ALL stdio-only. Gateway value = stdio↔HTTP bridge + multi-tenant front door
+      (auth/scope/audit/billing), NOT building more servers.
+    grep_verified_absent: ["internal/mcp/", "mcp.lurus.cn", "MCP_TOOLS_REGISTRY",
+                           "mcp.tool_invoked", "mcp_servers table", "mcp_tool_invocations table"]
+    audit_taxonomy_delta: "51 → 53 (add ActionMCPToolInvoked + ActionMCPServerRegistered)"
+    open_decisions_for_user:
+      D2_1: "build gateway core now vs hold for explicit internal customer?"
+      D2_2: "first fronted server: lurus-platform-mcp (rec) vs lurus-tally-mcp?"
+      D2_3: "internal/friendly customer exists for ≥10-tool-call validation gate?"
+    blast_radius: "internal/mcp/ + 2 migrations + 1 route file — bounded rollback if no-go"
+  e2e_sgamma:
+    status: "specs scaffolded (e2/e3/e4 + 11-2), blocked on STAGING_KUBECONFIG secret (user)"
+    specs: ["story-e2-token-scope-rejection", "story-e3-audit-export",
+            "story-e4-quota-threshold-audit", "story-11-2-token-persistence"]
+  h1_tail_tenant_isolation_audit:   # Plan 留尾 "WithoutTenantIsolation 审计" — done 2026-05-28
+    plan_claim_corrected: "Plan said '102 处 WithoutTenantIsolation'; grep found 14 occurrences /
+                           7 files (incl. 1 func def + 1 comment + several in test files). Real
+                           prod call sites ~10. §4.1① — the 102 number was wrong."
+    finding: "HIGH cross-tenant isolation bypass FIXED — handleSessionFallback derived tenant from
+              URL :tenant_slug, not the authenticated user. A session user could read another
+              tenant's credit-pool balance via the slug; the TENANT_MISMATCH guard was defeated by
+              same-source comparison. Doc: security-2026-05-28-session-fallback-cross-tenant.md"
+    fix: "zitadel_auth.go handleSessionFallback (both branches) → tenant = user.TenantId"
+    regression_test: "TestZitadelAuth_SessionFallback_TenantFromUserNotSlug — PROVEN to FAIL on
+                      unpatched code, PASS on fix (§4.1③ independence verified)"
+    audit_scope: "all tenant-context setters reviewed (UserAuth/JWT/fallback/playground/oauth/
+                  internal-api); only session-fallback was vulnerable"
+    deferred_defense_in_depth: "GORM plugin hard-coded allowlist + fail-open update/delete noted as
+                               latent (no active leak), deferred to a dedicated integration-tested
+                               PR — broad blast radius, not bundled into the surgical auth fix"
+    tests_green: "go build ./... ✓ ; middleware ZitadelAuth* + new regression ✓ ; repo isolation ✓"

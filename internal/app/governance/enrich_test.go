@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	"github.com/LurusTech/lurus-hub/internal/domain/entity"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -224,5 +225,184 @@ func TestEnrichLogParams_NoClientIPInOther(t *testing.T) {
 
 	if _, exists := params.Other["client_ip"]; exists {
 		t.Error("client_ip should NOT be in Other map (privacy: controlled by RecordIpLog setting)")
+	}
+}
+
+// ── Cost attribution (migration 029) ─────────────────────────────────────────
+//
+// EnrichLogParams is the single chokepoint every RecordConsumeLog call site
+// passes through, so it is the only place project attribution has to be wired.
+// A log row that leaves here without its project is permanently unattributable
+// — attribution cannot be backfilled.
+
+func TestEnrichLogParams_ProjectIdFromRelayInfo(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{
+		StartTime: time.Now(),
+		ProjectId: 42,
+	}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if params.ProjectId != 42 {
+		t.Errorf("ProjectId = %d, want 42 (RelayInfo is the primary source — settlement has no gin.Context)", params.ProjectId)
+	}
+}
+
+func TestEnrichLogParams_ProjectIdFallsBackToContext(t *testing.T) {
+	c := newTestContext()
+	// Relay paths that assemble a RelayInfo without genBaseRelayInfo leave
+	// ProjectId at 0; the gin context set by SetupContextForToken is the
+	// fallback.
+	c.Set(string(constant.ContextKeyProjectId), 7)
+	info := &relaycommon.RelayInfo{StartTime: time.Now()}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if params.ProjectId != 7 {
+		t.Errorf("ProjectId = %d, want 7 (context fallback)", params.ProjectId)
+	}
+}
+
+func TestEnrichLogParams_ProjectIdRelayInfoWinsOverContext(t *testing.T) {
+	c := newTestContext()
+	c.Set(string(constant.ContextKeyProjectId), 7)
+	info := &relaycommon.RelayInfo{StartTime: time.Now(), ProjectId: 42}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if params.ProjectId != 42 {
+		t.Errorf("ProjectId = %d, want 42 (RelayInfo must win — it is the settlement-path source of truth)", params.ProjectId)
+	}
+}
+
+func TestEnrichLogParams_ProjectIdUnassignedStaysZero(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now()}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	// 0 is a legitimate first-class value ("unassigned"). Substituting
+	// anything else would break the invariant that per-project spend sums to
+	// the tenant total — unlike SourceProduct, which DOES have a default.
+	if params.ProjectId != 0 {
+		t.Errorf("ProjectId = %d, want 0 — unassigned must stay unassigned, not be defaulted", params.ProjectId)
+	}
+}
+
+// TestEnrichLogParams_SourceProductFromRelayInfo is the settlement-side half
+// of the cross-product attribution chain (Workstream 0): RelayInfo has no
+// gin.Context by the time PostConsumeQuota runs, so whatever
+// genBaseRelayInfo resolved has to survive unchanged through here into the
+// log row's Other.source_product.
+func TestEnrichLogParams_SourceProductFromRelayInfo(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now(), SourceProduct: "kova"}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if got := params.Other["source_product"]; got != "kova" {
+		t.Errorf("Other[source_product] = %v, want %q", got, "kova")
+	}
+}
+
+// TestEnrichLogParams_SourceProductDefaultsWhenEmpty covers relay paths that
+// never resolve SourceProduct (MJ/Task/WS before this workstream, or any
+// future caller that forgets to): the log row must still get the default
+// product id, never an empty/missing key that would make the column
+// unfilterable.
+func TestEnrichLogParams_SourceProductDefaultsWhenEmpty(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now()}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if got := params.Other["source_product"]; got != ratio_setting.DefaultSourceProduct {
+		t.Errorf("Other[source_product] = %v, want default %q", got, ratio_setting.DefaultSourceProduct)
+	}
+}
+
+// ── L2-REQUEST-IDENTITY: session_id / end_user ────────────────────────────
+
+func TestEnrichLogParams_SessionIdWrittenWhenNonEmpty(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now(), SessionId: "conv-42"}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if got := params.Other["session_id"]; got != "conv-42" {
+		t.Errorf("Other[session_id] = %v, want %q", got, "conv-42")
+	}
+}
+
+func TestEnrichLogParams_SessionIdAbsentWhenEmpty(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now()}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if _, exists := params.Other["session_id"]; exists {
+		t.Error("Other[session_id] should be absent, not an empty string, when RelayInfo carries none")
+	}
+}
+
+func TestEnrichLogParams_EndUserWrittenWhenNonEmpty(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now(), EndUserHash: "0123456789abcdef"}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if got := params.Other["end_user"]; got != "0123456789abcdef" {
+		t.Errorf("Other[end_user] = %v, want the hash", got)
+	}
+}
+
+func TestEnrichLogParams_EndUserAbsentWhenEmpty(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now()}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if _, exists := params.Other["end_user"]; exists {
+		t.Error("Other[end_user] should be absent when RelayInfo carries no EndUserHash")
+	}
+}
+
+// TestEnrichLogParams_UpstreamRequestId_WrittenOnlyWhenPresent covers the
+// vendor-request-id capture's settlement-path half: written verbatim when
+// provider.doRequest populated RelayInfo.UpstreamRequestId, absent (not an
+// empty string) when the upstream sent none of the headers in
+// upstreamRequestIdHeaders.
+func TestEnrichLogParams_UpstreamRequestId_WrittenOnlyWhenPresent(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now(), UpstreamRequestId: "vend-req-abc123"}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if got := params.Other["upstream_request_id"]; got != "vend-req-abc123" {
+		t.Errorf("Other[upstream_request_id] = %v, want %q", got, "vend-req-abc123")
+	}
+}
+
+func TestEnrichLogParams_UpstreamRequestId_AbsentWhenEmpty(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now()}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+
+	if _, exists := params.Other["upstream_request_id"]; exists {
+		t.Error("Other[upstream_request_id] should be absent, not an empty string, when RelayInfo carries none")
+	}
+}
+
+// The recorded wallet charge travels RelayInfo -> log params unchanged: this
+// hook is the only path from settlement to logs.charged_cny4.
+func TestEnrichLogParams_CarriesTheWalletCharge(t *testing.T) {
+	c := newTestContext()
+	info := &relaycommon.RelayInfo{StartTime: time.Now(), WalletChargeCNY4: 12_345}
+	params := &entity.RecordConsumeLogParams{Other: make(map[string]interface{})}
+	EnrichLogParams(c, info, params)
+	if params.ChargedCNY4 != 12_345 {
+		t.Errorf("ChargedCNY4 = %d, want 12345", params.ChargedCNY4)
 	}
 }

@@ -6,14 +6,14 @@ import (
 	"net/http"
 	"strings"
 
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider/openrouter"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
-	"github.com/LurusTech/lurus-hub/internal/adapter/provider/openrouter"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
-	"github.com/LurusTech/lurus-hub/internal/app"
 
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
@@ -103,6 +103,46 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	return helper.ObjectData(c, lastStreamResponse)
 }
 
+// sendFinalStreamData sends the last raw SSE chunk of a stream. When the
+// upstream inlined usage in that chunk (containStreamUsage==true upstream),
+// this is the only place the response's usage reaches the client:
+// HandleFinalResponse's synthetic-usage-frame branch is skipped whenever the
+// chunk already carries usage. So the chunk's usage gets the charged cost
+// (helper.ApplyChargedCost, which also drops an OpenRouter upstream's own
+// cost) and, outside forceFormat/thinkToContent, the x_lurus extension.
+//
+// A chunk without a usage object, one that does not parse, or one with
+// nothing to change goes out untouched through sendStreamData — never
+// invents or drops a frame.
+func sendFinalStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, forceFormat bool, thinkToContent bool, lurusExt *types.LurusUsageExtension) error {
+	if data == "" {
+		return sendStreamData(c, info, data, forceFormat, thinkToContent)
+	}
+
+	var bodyMap map[string]interface{}
+	if err := common.Unmarshal(common.StringToByteSlice(data), &bodyMap); err != nil {
+		return sendStreamData(c, info, data, forceFormat, thinkToContent)
+	}
+
+	usageMap, ok := bodyMap["usage"].(map[string]interface{})
+	if !ok {
+		return sendStreamData(c, info, data, forceFormat, thinkToContent)
+	}
+	if !helper.ApplyChargedCost(usageMap, lurusExt) {
+		return sendStreamData(c, info, data, forceFormat, thinkToContent)
+	}
+	if lurusExt != nil && !forceFormat && !thinkToContent {
+		usageMap["x_lurus"] = lurusExt
+	}
+
+	merged, err := common.Marshal(bodyMap)
+	if err != nil {
+		return sendStreamData(c, info, data, forceFormat, thinkToContent)
+	}
+
+	return sendStreamData(c, info, string(merged), forceFormat, thinkToContent)
+}
+
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		logger.LogError(c, "invalid response or response body")
@@ -126,6 +166,12 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
+	// sawDone tracks whether the upstream stream ended with a recognized "[DONE]"
+	// terminator vs. an abnormal exit (client cancel, streaming timeout, upstream
+	// EOF mid-stream). Used below to suppress billing on the abnormal path instead
+	// of silently charging for a truncated/dropped response.
+	var sawDone bool
+
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
 		if lastStreamData != "" {
 			err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
@@ -143,7 +189,19 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			streamItems = append(streamItems, data)
 		}
 		return true
-	})
+	}, &sawDone)
+
+	// Incomplete before the caller received anything (the newest chunk is held
+	// back, so it counts as undelivered): fail over instead of answering
+	// in-band. Must run before the held-back chunk is flushed below. Nothing
+	// is billed and nothing is written; see helper.FailoverIncompleteStream.
+	// Streams that already delivered frames fall through to the in-band error
+	// further down.
+	if !sawDone && !streamSawFinish(streamItems) {
+		if apiErr := helper.FailoverIncompleteStream(c, info); apiErr != nil {
+			return &dto.Usage{}, apiErr
+		}
+	}
 
 	// 对音频模型，从倒数第二个stream data中提取usage信息
 	if isAudioModel && secondLastStreamData != "" {
@@ -170,9 +228,32 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
 
+	// When the upstream inlines usage in the last chunk (containStreamUsage),
+	// that chunk is sent below via sendFinalStreamData and never reaches
+	// HandleFinalResponse's synthetic-usage-frame branch, so the perception
+	// extension has to be computed and attached here instead. Run the same
+	// per-vendor cache-token post-processing used for the final billed usage
+	// so x_lurus.cached_tokens matches (e.g. DeepSeek's cache-hit remap);
+	// applyUsagePostProcessing only ever fills a zero CachedTokens, so
+	// running it here and again below on the billed usage is idempotent.
+	//
+	// sawDone is required as well, and is already final by this point. An
+	// abnormally-ended stream (upstream died after emitting its usage chunk
+	// but before "[DONE]") is deliberately not billed — usage is zeroed a few
+	// lines down for exactly that reason — so quoting a cost on the frame the
+	// client receives would advertise a charge that never happens. The
+	// pre-existing synthetic-frame path has the same property by accident,
+	// because it runs after the zeroing; this one has to say so explicitly.
+	var lastLurusExt *types.LurusUsageExtension
+	if containStreamUsage && sawDone {
+		applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
+		estimatedQuota := helper.EstimateQuotaFromUsage(info, usage)
+		lastLurusExt = helper.ComputeLurusExtension(info, usage, estimatedQuota)
+	}
+
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		if shouldSendLastResp {
-			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			_ = sendFinalStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent, lastLurusExt)
 		}
 	}
 
@@ -186,7 +267,29 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		usage.CompletionTokens += toolCount * 7
 	}
 
+	// Abnormal stream end (no "[DONE]" seen): do not bill. ResponseText2Usage always
+	// sets PromptTokens to the pre-estimate, so totalTokens is never 0 here even when
+	// the response was truncated/dropped mid-stream — zero it out so the existing
+	// totalTokens==0 safety net in postConsumeQuota suppresses the charge. Streams that
+	// completed normally (sawDone==true) are untouched.
+	if !sawDone {
+		usage = &dto.Usage{}
+	}
+
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
+
+	// No terminator and no finish_reason: the upstream stopped mid-answer
+	// (idle timeout, reset, EOF). The caller gets its wire's error frame
+	// instead of an invented normal end. A stream that delivered its
+	// finish_reason but no [DONE] is complete for the caller and keeps the
+	// normal end (it is still not billed, above). When the caller itself hung
+	// up there is nobody left to tell.
+	if !sawDone && !streamSawFinish(streamItems) && helper.ClientListening(c, info) {
+		// Nothing is billed (usage is zeroed above). The error return is what
+		// makes the relay loop record a breaker failure and release the
+		// pre-consumed quota; its renderer skips the already-written frame.
+		return usage, HandleIncompleteStream(c, info, lastStreamData)
+	}
 
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 
@@ -229,6 +332,11 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	// Hand the completed text to the opt-in body archive (migration 052). Cheap
+	// (already parsed) and inert unless a consenting tenant's request reaches
+	// repo.archiveLogBody; streams never get here, so they archive uncaptured.
+	stashResponseText(c, simpleResponse)
+
 	forceFormat := false
 	if info.ChannelSetting.ForceFormat {
 		forceFormat = true
@@ -268,18 +376,30 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if usageModified {
 			bodyMap["usage"] = simpleResponse.Usage
 		}
-		if lurusExt != nil {
-			if usageMap, ok := bodyMap["usage"].(map[string]interface{}); ok {
+		// The usage written to the client states the charged cost
+		// (helper.ApplyChargedCost). The struct paths edit a copy:
+		// simpleResponse.Usage is returned for billing, where an OpenRouter
+		// channel's own usage.cost is still read as the upstream cost.
+		if usageMap, ok := bodyMap["usage"].(map[string]interface{}); ok {
+			helper.ApplyChargedCost(usageMap, lurusExt)
+			if lurusExt != nil {
 				usageMap["x_lurus"] = lurusExt
-			} else {
-				// usage field is a struct (from usageModified), re-read after marshal
-				simpleResponse.Usage.XLurus = lurusExt
-				bodyMap["usage"] = simpleResponse.Usage
 			}
+		} else if lurusExt != nil {
+			// usage field is a struct (from usageModified)
+			out := simpleResponse.Usage
+			out.XLurus = lurusExt
+			out.Cost = lurusExt.ChargedUSD
+			bodyMap["usage"] = out
 		}
 		if forceFormat {
-			simpleResponse.Usage.XLurus = lurusExt
-			responseBody, err = common.Marshal(simpleResponse)
+			out := simpleResponse
+			out.XLurus = lurusExt
+			out.Cost = nil
+			if lurusExt != nil {
+				out.Cost = lurusExt.ChargedUSD
+			}
+			responseBody, err = common.Marshal(out)
 			if err != nil {
 				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 			}
@@ -310,39 +430,6 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	return &simpleResponse.Usage, nil
 }
 
-func streamTTSResponse(c *gin.Context, resp *http.Response) {
-	c.Writer.WriteHeaderNow()
-
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
-		logger.LogWarn(c, "streaming not supported")
-		_, err := io.Copy(c.Writer, resp.Body)
-		if err != nil {
-			logger.LogWarn(c, err.Error())
-		}
-		return
-	}
-
-	buffer := make([]byte, 4096)
-	for {
-		n, err := resp.Body.Read(buffer)
-		//logger.LogInfo(c, fmt.Sprintf("streamTTSResponse read %d bytes", n))
-		if n > 0 {
-			if _, writeErr := c.Writer.Write(buffer[:n]); writeErr != nil {
-				logger.LogError(c, writeErr.Error())
-				break
-			}
-			flusher.Flush()
-		}
-		if err != nil {
-			if err != io.EOF {
-				logger.LogError(c, err.Error())
-			}
-			break
-		}
-	}
-}
-
 func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.NewAPIError, *dto.RealtimeUsage) {
 	if info == nil || info.ClientWs == nil || info.TargetWs == nil {
 		return types.NewError(fmt.Errorf("invalid websocket connection"), types.ErrorCodeBadResponse), nil
@@ -358,9 +445,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	receiveChan := make(chan []byte, 100)
 	errChan := make(chan error, 2)
 
-	usage := &dto.RealtimeUsage{}
-	localUsage := &dto.RealtimeUsage{}
-	sumUsage := &dto.RealtimeUsage{}
+	ledger := &realtimeLedger{}
 
 	gopool.Go(func() {
 		defer func() {
@@ -403,10 +488,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 					return
 				}
 				logger.LogInfo(c, fmt.Sprintf("type: %s, textToken: %d, audioToken: %d", realtimeEvent.Type, textToken, audioToken))
-				localUsage.TotalTokens += textToken + audioToken
-				localUsage.InputTokens += textToken + audioToken
-				localUsage.InputTokenDetails.TextTokens += textToken
-				localUsage.InputTokenDetails.AudioTokens += audioToken
+				ledger.addLocalInput(textToken, audioToken)
 
 				err = helper.WssString(c, targetConn, string(message))
 				if err != nil {
@@ -452,23 +534,13 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 				if realtimeEvent.Type == dto.RealtimeEventTypeResponseDone {
 					realtimeUsage := realtimeEvent.Response.Usage
 					if realtimeUsage != nil {
-						usage.TotalTokens += realtimeUsage.TotalTokens
-						usage.InputTokens += realtimeUsage.InputTokens
-						usage.OutputTokens += realtimeUsage.OutputTokens
-						usage.InputTokenDetails.AudioTokens += realtimeUsage.InputTokenDetails.AudioTokens
-						usage.InputTokenDetails.CachedTokens += realtimeUsage.InputTokenDetails.CachedTokens
-						usage.InputTokenDetails.TextTokens += realtimeUsage.InputTokenDetails.TextTokens
-						usage.OutputTokenDetails.AudioTokens += realtimeUsage.OutputTokenDetails.AudioTokens
-						usage.OutputTokenDetails.TextTokens += realtimeUsage.OutputTokenDetails.TextTokens
-						err := preConsumeUsage(c, info, usage, sumUsage)
-						if err != nil {
+						// The ledger moves the usage into the running sum under its
+						// lock; the quota call below runs outside it.
+						billed := ledger.settleUpstream(realtimeUsage)
+						if err := app.PreWssConsumeQuota(c, info, &billed); err != nil {
 							errChan <- fmt.Errorf("error consume usage: %v", err)
 							return
 						}
-						// 本次计费完成，清除
-						usage = &dto.RealtimeUsage{}
-
-						localUsage = &dto.RealtimeUsage{}
 					} else {
 						textToken, audioToken, err := app.CountTokenRealtime(info, *realtimeEvent, info.UpstreamModelName)
 						if err != nil {
@@ -476,23 +548,14 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 							return
 						}
 						logger.LogInfo(c, fmt.Sprintf("type: %s, textToken: %d, audioToken: %d", realtimeEvent.Type, textToken, audioToken))
-						localUsage.TotalTokens += textToken + audioToken
 						info.IsFirstRequest = false
-						localUsage.InputTokens += textToken + audioToken
-						localUsage.InputTokenDetails.TextTokens += textToken
-						localUsage.InputTokenDetails.AudioTokens += audioToken
-						err = preConsumeUsage(c, info, localUsage, sumUsage)
-						if err != nil {
+						billed := ledger.settleLocalInput(textToken, audioToken)
+						if err := app.PreWssConsumeQuota(c, info, &billed); err != nil {
 							errChan <- fmt.Errorf("error consume usage: %v", err)
 							return
 						}
-						// 本次计费完成，清除
-						localUsage = &dto.RealtimeUsage{}
-						// print now usage
 					}
-					logger.LogInfo(c, fmt.Sprintf("realtime streaming sumUsage: %v", sumUsage))
-					logger.LogInfo(c, fmt.Sprintf("realtime streaming localUsage: %v", localUsage))
-					logger.LogInfo(c, fmt.Sprintf("realtime streaming localUsage: %v", localUsage))
+					logger.LogInfo(c, fmt.Sprintf("realtime streaming sumUsage: %v", ledger.sumSnapshot()))
 
 				} else if realtimeEvent.Type == dto.RealtimeEventTypeSessionUpdated || realtimeEvent.Type == dto.RealtimeEventTypeSessionCreated {
 					realtimeSession := realtimeEvent.Session
@@ -508,10 +571,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 						return
 					}
 					logger.LogInfo(c, fmt.Sprintf("type: %s, textToken: %d, audioToken: %d", realtimeEvent.Type, textToken, audioToken))
-					localUsage.TotalTokens += textToken + audioToken
-					localUsage.OutputTokens += textToken + audioToken
-					localUsage.OutputTokenDetails.TextTokens += textToken
-					localUsage.OutputTokenDetails.AudioTokens += audioToken
+					ledger.addLocalOutput(textToken, audioToken)
 				}
 
 				err = helper.WssString(c, clientConn, string(message))
@@ -537,17 +597,13 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	case <-c.Done():
 	}
 
-	if usage.TotalTokens != 0 {
-		_ = preConsumeUsage(c, info, usage, sumUsage)
+	// The reader goroutines may still be running here, so drain under the lock.
+	if local := ledger.drainLocal(); local.TotalTokens != 0 {
+		_ = app.PreWssConsumeQuota(c, info, &local)
 	}
 
-	if localUsage.TotalTokens != 0 {
-		_ = preConsumeUsage(c, info, localUsage, sumUsage)
-	}
-
-	// check usage total tokens, if 0, use local usage
-
-	return nil, sumUsage
+	sum := ledger.sumSnapshot()
+	return nil, &sum
 }
 
 func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.RealtimeUsage, totalUsage *dto.RealtimeUsage) error {
@@ -555,17 +611,8 @@ func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.R
 		return fmt.Errorf("invalid usage pointer")
 	}
 
-	totalUsage.TotalTokens += usage.TotalTokens
-	totalUsage.InputTokens += usage.InputTokens
-	totalUsage.OutputTokens += usage.OutputTokens
-	totalUsage.InputTokenDetails.CachedTokens += usage.InputTokenDetails.CachedTokens
-	totalUsage.InputTokenDetails.TextTokens += usage.InputTokenDetails.TextTokens
-	totalUsage.InputTokenDetails.AudioTokens += usage.InputTokenDetails.AudioTokens
-	totalUsage.OutputTokenDetails.TextTokens += usage.OutputTokenDetails.TextTokens
-	totalUsage.OutputTokenDetails.AudioTokens += usage.OutputTokenDetails.AudioTokens
-	// clear usage
-	err := app.PreWssConsumeQuota(ctx, info, usage)
-	return err
+	addRealtimeUsage(totalUsage, usage)
+	return app.PreWssConsumeQuota(ctx, info, usage)
 }
 
 func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -607,6 +654,14 @@ func applyUsagePostProcessing(info *relaycommon.RelayInfo, usage *dto.Usage, res
 	if info == nil || usage == nil {
 		return
 	}
+
+	// Every caller of this function parsed the usage off an OpenAI-wire
+	// response in this package: prompt_tokens INCLUDES cached_tokens (the
+	// vendor remaps below fill CachedTokens from DeepSeek/Zhipu/Moonshot
+	// fields whose prompt_tokens likewise count hits — DeepSeek documents
+	// prompt_tokens = cache hit + miss). The settlement paths key the
+	// prompt-base deduction on this flag; see dto.Usage.PromptTokensIncludeCached.
+	usage.PromptTokensIncludeCached = true
 
 	switch info.ChannelType {
 	case constant.ChannelTypeDeepSeek:
@@ -698,4 +753,18 @@ func extractMoonshotCachedTokensFromBody(body []byte) (int, bool) {
 	}
 
 	return 0, false
+}
+
+// stashResponseText records the assistant text of a non-streaming response on
+// the request context for the opt-in body archive. Choices are joined by a
+// blank line; reasoning text is deliberately not included.
+func stashResponseText(c *gin.Context, resp dto.OpenAITextResponse) {
+	var b strings.Builder
+	for i, choice := range resp.Choices {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(choice.StringContent())
+	}
+	common.SetContextKey(c, constant.ContextKeyResponseText, b.String())
 }

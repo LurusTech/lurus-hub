@@ -4,7 +4,35 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"sync/atomic"
+	"time"
+
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 )
+
+// panicLogSink is the sink for panic-recovery log lines emitted by the
+// detached goroutines below. In production it is always nil, so logging goes
+// to SysError — behavior is unchanged. Tests install a hook so they can wait
+// for the detached goroutine's log call to complete before the test returns;
+// otherwise the leaked SysError call runs concurrently with later tests that
+// reset the global slog logger and read their private log buffers (data race).
+var panicLogSink atomic.Pointer[func(string)]
+
+func logGoroutinePanic(msg string) {
+	if h := panicLogSink.Load(); h != nil {
+		(*h)(msg)
+		return
+	}
+	SysError(msg)
+}
+
+// recordAndLogPanic counts a recovered goroutine panic and logs it. Called only
+// from the actual recover() sites — NOT from the "exceeded max retries" summary,
+// which is not itself a panic and would otherwise over-report panics_recovered.
+func recordAndLogPanic(msg string) {
+	metrics.RecordPanic("goroutine")
+	logGoroutinePanic(msg)
+}
 
 // SafeGo starts a goroutine with panic recovery.
 // If the function panics, it logs the error and recovers.
@@ -13,7 +41,7 @@ func SafeGo(f func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				SysError(fmt.Sprintf("panic in SafeGo: %v\n%s", r, debug.Stack()))
+				recordAndLogPanic(fmt.Sprintf("panic in SafeGo: %v\n%s", r, debug.Stack()))
 			}
 		}()
 		f()
@@ -26,7 +54,7 @@ func SafeGoWithContext(ctx context.Context, f func(ctx context.Context)) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				SysError(fmt.Sprintf("panic in SafeGoWithContext: %v\n%s", r, debug.Stack()))
+				recordAndLogPanic(fmt.Sprintf("panic in SafeGoWithContext: %v\n%s", r, debug.Stack()))
 			}
 		}()
 		f(ctx)
@@ -39,7 +67,7 @@ func SafeGoNamed(name string, f func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				SysError(fmt.Sprintf("panic in SafeGo[%s]: %v\n%s", name, r, debug.Stack()))
+				recordAndLogPanic(fmt.Sprintf("panic in SafeGo[%s]: %v\n%s", name, r, debug.Stack()))
 			}
 		}()
 		f()
@@ -57,7 +85,7 @@ func MustGo(f func(), maxRetries int) {
 				defer func() {
 					if r := recover(); r != nil {
 						retries++
-						SysError(fmt.Sprintf("panic in MustGo (retry %d): %v\n%s", retries, r, debug.Stack()))
+						recordAndLogPanic(fmt.Sprintf("panic in MustGo (retry %d): %v\n%s", retries, r, debug.Stack()))
 					}
 				}()
 				f()
@@ -65,7 +93,7 @@ func MustGo(f func(), maxRetries int) {
 
 			// If we reach here without panic, we're done
 			if maxRetries > 0 && retries >= maxRetries {
-				SysError(fmt.Sprintf("MustGo exceeded max retries (%d)", maxRetries))
+				logGoroutinePanic(fmt.Sprintf("MustGo exceeded max retries (%d)", maxRetries))
 				return
 			}
 
@@ -73,4 +101,41 @@ func MustGo(f func(), maxRetries int) {
 			return
 		}
 	}()
+}
+
+// RunTickSafe runs one iteration of a long-lived background loop and recovers
+// a panic from it, so the loop keeps ticking. SafeGoWithContext only wraps the
+// whole loop once: a single panic is recovered and then the goroutine is gone
+// for the pod's lifetime, silently stopping the task. Wrapping each tick
+// instead turns that into one lost pass. It reports whether tick panicked;
+// the panic is counted under panics_recovered_total{source="background_tick"}
+// and logged with the task name.
+func RunTickSafe(name string, tick func()) (panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			metrics.RecordPanic("background_tick")
+			logGoroutinePanic(fmt.Sprintf("panic in background tick [%s]: %v\n%s", name, r, debug.Stack()))
+		}
+	}()
+	tick()
+	return false
+}
+
+// SuperviseLoop runs loop until it returns normally, restarting it after
+// backoff when it panics. For loops owned by other packages whose bodies are
+// not individually tick-wrapped: under a bare errgroup goroutine a panic would
+// exit the whole process. A normal return (ctx cancelled) ends supervision;
+// ctx cancellation also cuts the backoff short.
+func SuperviseLoop(ctx context.Context, name string, backoff time.Duration, loop func(ctx context.Context)) {
+	for {
+		if !RunTickSafe(name, func() { loop(ctx) }) {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+	}
 }

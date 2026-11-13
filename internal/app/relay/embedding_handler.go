@@ -9,7 +9,9 @@ import (
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/model_setting"
 	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/bifrosteng"
 	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
 	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
@@ -35,15 +37,34 @@ func EmbeddingHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
 
+	if bifrosteng.ShouldHandleEmbeddings(info.ApiType) {
+		usage, bifrostErr := bifrosteng.DispatchEmbedding(c, info, request)
+		if bifrostErr != nil {
+			return bifrostErr
+		}
+		postConsumeQuota(c, info, usage)
+		return nil
+	}
+	bifrosteng.ObserveEngine(bifrosteng.EngineLegacy, bifrosteng.ModeEmbeddings, "ok")
+
 	adaptor := GetAdaptor(info.ApiType)
 	if adaptor == nil {
 		return types.NewError(fmt.Errorf("invalid api type: %d", info.ApiType), types.ErrorCodeInvalidApiType, types.ErrOptionWithSkipRetry())
 	}
 	adaptor.Init(info)
 
+	// input_type / task are only forwarded by some adaptors; elsewhere the
+	// converted body would silently drop them. Pass-through forwards the raw
+	// body, so the check does not apply there.
+	if !model_setting.GetGlobalSettings().PassThroughRequestEnabled && !info.ChannelSetting.PassThroughBodyEnabled {
+		if apiErr := helper.CheckEmbeddingUnsupportedParams(request, info.ChannelType); apiErr != nil {
+			return apiErr
+		}
+	}
+
 	convertedRequest, err := adaptor.ConvertEmbeddingRequest(c, info, *request)
 	if err != nil {
-		return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+		return convertRequestError(err)
 	}
 	jsonData, err := json.Marshal(convertedRequest)
 	if err != nil {

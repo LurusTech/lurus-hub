@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
@@ -20,14 +22,32 @@ import (
 
 const maxLogCount = 1000000
 
-var logCount int
+// defaultLogFileRetain is how many rotated oneapi-*.log files pruneLogFiles
+// keeps when LOG_FILE_RETAIN isn't set.
+const defaultLogFileRetain = 3
+
+var logCount atomic.Int64
 var setupLogLock sync.Mutex
-var setupLogWorking bool
+var setupLogWorking atomic.Bool
+
+// currentLogFd is the *os.File SetupLogger last swapped into
+// gin.DefaultWriter/DefaultErrorWriter. Tracked so the previous fd can be
+// closed instead of leaked on every rotation.
+var currentLogFd atomic.Pointer[os.File]
+
+// logFdCloseGrace is how long SetupLogger waits before closing the fd it
+// just replaced. A concurrent goroutine may have already read the old
+// gin.DefaultWriter/ErrorWriter value before this rotation's swap landed
+// (there is no lock around those package vars on the read side), so closing
+// immediately could turn an in-flight write into an error; a short grace
+// period lets any such write finish first. Var, not const, so tests can
+// shrink it instead of sleeping the production value.
+var logFdCloseGrace = 2 * time.Second
 
 // SetupLogger configures file-based logging with rotation
 func SetupLogger() {
 	defer func() {
-		setupLogWorking = false
+		setupLogWorking.Store(false)
 	}()
 	if *common.LogDir != "" {
 		ok := setupLogLock.TryLock()
@@ -50,6 +70,46 @@ func SetupLogger() {
 		// Update slog writers as well
 		common.SetSlogWriter(gin.DefaultWriter)
 		common.SetSlogErrWriter(gin.DefaultErrorWriter)
+
+		if prev := currentLogFd.Swap(fd); prev != nil {
+			// Read the grace period here, on the caller's goroutine, so the
+			// closer never touches the package variable (a test shrinks it
+			// between SetupLogger calls; reading it inside the goroutine
+			// raced with that write under -race).
+			grace := logFdCloseGrace
+			go func(f *os.File) {
+				time.Sleep(grace)
+				_ = f.Close()
+			}(prev)
+		}
+
+		pruneLogFiles(*common.LogDir, common.GetEnvOrDefault("LOG_FILE_RETAIN", defaultLogFileRetain))
+	}
+}
+
+// pruneLogFiles keeps only the newest keep rotated oneapi-*.log files in
+// dir, deleting the rest. Rotation (above) creates a new file every time
+// checkLogRotation trips; nothing removed the old ones, so a long-lived pod
+// (deploy/k8s: data is an emptyDir, no persistent disk, 30G root on R6) grew
+// one file per rotation forever. oneapi-<YYYYMMDDHHMMSS>.log's name is
+// itself lexicographically sortable by creation time, so a plain string
+// sort is enough — no need to stat mtimes.
+func pruneLogFiles(dir string, keep int) {
+	// keep<=0 (LOG_FILE_RETAIN unset to 0, or set to a negative value) falls
+	// back to defaultLogFileRetain rather than disabling pruning: a value of
+	// 0 has no "never prune, grow the emptyDir forever" meaning here.
+	if keep <= 0 {
+		keep = defaultLogFileRetain
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "oneapi-*.log"))
+	if err != nil || len(matches) <= keep {
+		return
+	}
+	sort.Strings(matches)
+	for _, old := range matches[:len(matches)-keep] {
+		if rmErr := os.Remove(old); rmErr != nil {
+			slog.Warn("failed to prune rotated log file", "file", old, "error", rmErr)
+		}
 	}
 }
 
@@ -85,10 +145,13 @@ func LogDebug(ctx context.Context, msg string, args ...any) {
 
 // checkLogRotation checks if log rotation is needed
 func checkLogRotation() {
-	logCount++ // we don't need accurate count, so no lock here
-	if logCount > maxLogCount && !setupLogWorking {
-		logCount = 0
-		setupLogWorking = true
+	if logCount.Add(1) <= maxLogCount {
+		return
+	}
+	// 越过阈值就归零：轮转已在进行时若不归零，计数会随每条日志无界增长。
+	logCount.Store(0)
+	// 只有抢到标志位的调用方才启动轮转，避免并发重复触发。
+	if setupLogWorking.CompareAndSwap(false, true) {
 		gopool.Go(func() {
 			SetupLogger()
 		})
@@ -123,7 +186,29 @@ func LogQuota(quota int) string {
 	}
 }
 
-// FormatQuota formats quota value based on display type setting
+// FormatQuotaASCII renders a quota as a plain-ASCII USD amount, whatever the
+// operator has set QuotaDisplayType to. It exists for messages that go out on
+// the API wire.
+//
+// FormatQuota below is display-type dependent by design — the operator picks
+// the currency their logs and console speak. That is the wrong dependency for
+// an error.message: a machine-facing 402 became "＄0.000002" on a default
+// deployment (the fullwidth U+FF04 this package has carried from upstream)
+// and "¥0.0000142" on a CNY one. The cycle-13 AST language gate did not see
+// either, because it scans string LITERALS under middleware/repo/relay and
+// this text is interpolated in from internal/pkg/logger — found instead by a
+// live UAT probe on 2026-09-21, after the claim "the 402 is ASCII on all
+// three wires" had already been written down for the middleware path that
+// was true of.
+//
+// The unit is the API's own: quota / common.QuotaPerUnit, the baseline-USD
+// number every other wire field is denominated in.
+func FormatQuotaASCII(quota int) string {
+	return fmt.Sprintf("$%.6f", float64(quota)/common.QuotaPerUnit)
+}
+
+// FormatQuota formats quota value based on display type setting.
+// NOT for wire messages — see FormatQuotaASCII above.
 func FormatQuota(quota int) string {
 	q := float64(quota)
 	switch operation_setting.GetQuotaDisplayType() {

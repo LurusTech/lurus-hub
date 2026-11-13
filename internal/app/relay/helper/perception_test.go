@@ -6,6 +6,7 @@ import (
 	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 )
 
@@ -93,8 +94,15 @@ func TestComputeLurusExtension_BillingModes(t *testing.T) {
 }
 
 func TestComputeLurusExtension_CostAndBalance(t *testing.T) {
+	// LB is the CNY wallet unit; quota is USD-priced. At 5 CNY/USD one LB
+	// is QuotaPerUnit/5 quota (currency.LucToLut).
+	prevRate := operation_setting.USDExchangeRate
+	operation_setting.USDExchangeRate = 5
+	t.Cleanup(func() { operation_setting.USDExchangeRate = prevRate })
+	lb := common.QuotaPerUnit / 5
+
 	info := &relaycommon.RelayInfo{
-		UserQuota: int(common.QuotaPerUnit * 10), // 10 LB
+		UserQuota: int(lb * 10), // 10 LB
 		PriceData: types.PriceData{
 			ModelRatio: 2.0,
 			GroupRatioInfo: types.GroupRatioInfo{
@@ -105,7 +113,7 @@ func TestComputeLurusExtension_CostAndBalance(t *testing.T) {
 	usage := &dto.Usage{
 		PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 42},
 	}
-	quota := int(common.QuotaPerUnit * 2) // 2 LB cost
+	quota := int(lb * 2) // 2 LB cost
 	ext := ComputeLurusExtension(info, usage, quota)
 
 	if ext.CostLB != 2.0 {
@@ -138,5 +146,40 @@ func TestComputeLurusExtension_NegativeBalance(t *testing.T) {
 	ext := ComputeLurusExtension(info, &dto.Usage{}, 200)
 	if ext.BalanceRemaining != 0 {
 		t.Errorf("negative balance should be 0: got %f", ext.BalanceRemaining)
+	}
+}
+
+// TestEstimateQuotaFromUsage_TierCrossingMatchesSettlement is the cycle-8 plan
+// §8 L5 B-F2 oracle. The perception path runs while the response is being
+// written, before postConsumeQuota settles the same request, so it used to
+// report the pre-consume tier while the wallet was debited at the resettled
+// one — a request-cost header worth half the real charge on a call whose
+// actual prompt tokens cross a configured threshold. Both numbers are computed
+// here from the same RelayInfo: the estimate a client sees, and the ratio the
+// settlement path would use.
+func TestEstimateQuotaFromUsage_TierCrossingMatchesSettlement(t *testing.T) {
+	seedRatios(t, `{"perception-tier-model":1.0}`, `{}`, `{"default":1.0}`, map[string]map[string]float64{})
+	seedContextTiers(t, `{"perception-tier-model":[{"threshold_tokens":0,"model_ratio":1.0},{"threshold_tokens":3000,"model_ratio":2.0}]}`)
+
+	// Pre-consume: a small estimate, so ModelPriceHelper picks the base rung.
+	info := &relaycommon.RelayInfo{OriginModelName: "perception-tier-model", UsingGroup: "default"}
+	if _, err := ModelPriceHelper(priceCtx(), info, 100, &types.TokenCountMeta{}); err != nil {
+		t.Fatalf("pre-consume: %v", err)
+	}
+	if info.PriceData.ModelRatio != 1.0 {
+		t.Fatalf("pre-consume ModelRatio = %v, want 1.0 (the estimate is below the threshold)", info.PriceData.ModelRatio)
+	}
+
+	// The response carries 4000 actual prompt tokens, above the 3000 rung.
+	usage := &dto.Usage{PromptTokens: 4000, CompletionTokens: 0, TotalTokens: 4000}
+	got := EstimateQuotaFromUsage(info, usage)
+
+	if info.PriceData.ModelRatio != 2.0 {
+		t.Errorf("ModelRatio the client-facing cost is computed from = %v, want 2.0 — the perception path must resettle before reporting, or the header disagrees with the debit",
+			info.PriceData.ModelRatio)
+	}
+	// 4000 prompt tokens at ratio 2.0 x group 1.0.
+	if want := 8000; got != want {
+		t.Errorf("estimated quota = %d, want %d (the higher tier's ratio)", got, want)
 	}
 }

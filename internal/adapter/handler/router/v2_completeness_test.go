@@ -1,0 +1,319 @@
+package router
+
+// v2_completeness_test.go — structural forcing function for v2 tenant
+// isolation, mirroring idor_completeness_test.go's pattern for the
+// /api/v2/:tenant_slug/* surface (and the handful of platform-scoped v2
+// routes alongside it). Every by-id lookup or mutation (POST/PUT/DELETE)
+// route under /api/v2/ must be either:
+//   - swept: proven by a named cross-tenant/cross-account test (comment
+//     names the test), or
+//   - exempt: justified here with the specific reason no per-id ownership
+//     check is needed (self-service, credential-is-the-resource, global
+//     catalog entry, RootJWTAuth-gated platform admin, etc).
+//
+// A newly-added, unclassified route fails this test with an actionable
+// message: you cannot ship one without either proving its isolation or
+// documenting why it needs none.
+//
+// It lives in the router package (not handler) for the same reason as
+// idor_completeness_test.go: it enumerates the real route table via
+// SetApiV2Router/engine.Routes(), and a package-handler test importing the
+// router package would form an import cycle (router imports handler).
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/gin-gonic/gin"
+)
+
+func TestV2IDOR_Completeness(t *testing.T) {
+	common.RedisEnabled = false
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	SetApiV2Router(engine)
+
+	// Proven tenant/account-isolated by a named cross-tenant test. Key =
+	// "METHOD PATH" (gin's registered path, with :params as gin writes them).
+	swept := map[string]bool{
+		// channels (internal/adapter/handler/v2_channel_idor_test.go)
+		"GET /api/v2/:tenant_slug/channels/:id":                 true, // TestGetChannelV2_CrossTenantForbidden
+		"PUT /api/v2/:tenant_slug/channels/:id":                 true, // TestUpdateChannelV2_CrossTenantForbidden
+		"DELETE /api/v2/:tenant_slug/channels/:id":              true, // TestDeleteChannelV2_CrossTenantForbidden
+		"POST /api/v2/:tenant_slug/channels/:id/test":           true, // TestChannelV2_CrossTenantForbidden
+		"GET /api/v2/:tenant_slug/channels/:id/upstream-models": true, // TestFetchUpstreamModelsV2_ChannelCrossTenantForbidden
+		// tokens (internal/adapter/handler/v2_token_test.go, v2_token_batch_test.go, v2_token_rotate_idor_test.go)
+		"PUT /api/v2/:tenant_slug/tokens/:id":           true, // TestUpdateTokenV2_TenantMismatch
+		"DELETE /api/v2/:tenant_slug/tokens/:id":        true, // TestDeleteTokenV2_NotOwned
+		"POST /api/v2/:tenant_slug/tokens/:id/rotate":   true, // TestRotateTokenV2_TenantMismatch
+		"POST /api/v2/:tenant_slug/tokens/batch-delete": true, // TestDeleteTokensV2_DeletesOwnedOnly
+		// redemptions (internal/adapter/handler/v2_redemption_test.go)
+		"DELETE /api/v2/:tenant_slug/redemptions/:id": true, // TestDeleteRedemptionV2_TenantVerification
+		// projects — migration 029 cost attribution (internal/adapter/handler/v2_project_idor_test.go).
+		// repo.GetProjectByID/UpdateProject/SoftDeleteProject all take tenantID
+		// as a mandatory positional argument, so another tenant's id resolves to
+		// ErrProjectNotFound -> 404, indistinguishable from a nonexistent id.
+		"GET /api/v2/:tenant_slug/projects/:id":          true, // TestGetProjectV2_CrossTenantNotFound
+		"PUT /api/v2/:tenant_slug/projects/:id":          true, // TestUpdateProjectV2_CrossTenantNotFound
+		"DELETE /api/v2/:tenant_slug/projects/:id":       true, // TestDeleteProjectV2_CrossTenantNotFound
+		"POST /api/v2/:tenant_slug/projects/:id/restore": true, // TestRestoreProjectV2_CrossTenantNotFound
+		// enterprise issuing (internal/adapter/handler/v2_enterprise_issue_test.go).
+		"POST /api/v2/:tenant_slug/tokens/batch":           true, // TestBatchCreateTokensV2_CrossTenantProjectRejected
+		"GET /api/v2/:tenant_slug/projects/:id/members":    true, // TestProjectMembersV2_CrossTenantIs404
+		"POST /api/v2/:tenant_slug/projects/:id/members":   true, // TestProjectMembersV2_CrossTenantIs404
+		"DELETE /api/v2/:tenant_slug/projects/:id/members": true, // TestProjectMembersV2_CrossTenantIs404
+		"POST /api/v2/:tenant_slug/invites":                true, // TestIssueMyTenantInviteV2_GrantValidation
+		"DELETE /api/v2/:tenant_slug/invites/:id":          true, // TestRevokeMyTenantInviteV2_CrossTenantIs404
+		"PUT /api/v2/:tenant_slug/models/allowlist":        true, // TestTenantModelAllowlist_CrossTenantIsolation
+		"PUT /api/v2/:tenant_slug/members/:user_id/role":   true, // TestSetTenantMemberRoleV2_CrossTenantUserIs404
+		// playground presets (internal/adapter/handler/v2_cross_tenant_isolation_test.go)
+		"DELETE /api/v2/:tenant_slug/playground/presets/:id": true, // TestDeletePresetV2_CrossTenantIsolation
+		// per-device session registry (L7, internal/adapter/handler/v2_session_revoke_test.go).
+		// RevokeSessionByIDV2/repo.GetUserSessionByID mirror ConsumeTenantInvite's
+		// not-found-shaped IDOR pattern: a row belonging to a different user 404s
+		// exactly like a nonexistent id.
+		"DELETE /api/v2/:tenant_slug/sessions/:id": true, // TestV2SessionRevokeByID_NotOwned404
+		// pricing / self-profile (internal/adapter/handler/v2_cross_tenant_isolation_test.go)
+		"POST /api/v2/:tenant_slug/pricing": true, // TestUpdatePricingV2_CrossTenantIsolation
+		"PUT /api/v2/:tenant_slug/user/me":  true, // TestUpdateSelfV2_CrossTenantIsolation
+		// billing checkout status ownership (internal/adapter/handler/v2_billing_checkout_status_idor_test.go)
+		"GET /api/v2/user/billing/checkout/:order_no/status": true, // TestGetBillingCheckoutStatus_CrossAccountIDOR
+		// chat session persistence — migration 038, cycle-10 L3
+		// (router/chat_sessions_real_chain_test.go). GetChatSessionOwned/
+		// UpdateChatSessionOwned/DeleteChatSessionOwned (repo/chat_session.go)
+		// all filter by (id, tenant_id, user_id) in one WHERE clause, so
+		// another user's session id and a nonexistent one 404 identically.
+		"GET /api/v2/:tenant_slug/chat/sessions/:id":    true, // TestChatSessionsRealChain_OwnershipFailClosed_SameShape
+		"PATCH /api/v2/:tenant_slug/chat/sessions/:id":  true, // TestChatSessionsRealChain_OwnershipFailClosed_SameShape
+		"DELETE /api/v2/:tenant_slug/chat/sessions/:id": true, // TestChatSessionsRealChain_OwnershipFailClosed_SameShape
+		// relay data control - migration 050 (internal/adapter/handler/v2_data_policy_test.go).
+		// Rules and token retention are confined by (id, scope, tenant_id) in the repo layer.
+		"PUT /api/v2/:tenant_slug/data-policy/rules/:id":            true, // TestContentRuleV2_CrossTenantIs404
+		"DELETE /api/v2/:tenant_slug/data-policy/rules/:id":         true, // TestContentRuleV2_CrossTenantIs404
+		"PUT /api/v2/:tenant_slug/data-policy/tokens/:id/retention": true, // TestTokenRetentionV2_CrossTenantIs404
+		// decision routing policy - migration 054 (internal/adapter/handler/v2_routing_policy_test.go).
+		// The repo layer confines every read/write by (tenant_id, public_model).
+		"GET /api/v2/:tenant_slug/routing-policies/:model":    true, // TestRoutingPolicyV2_CrossTenantIs404
+		"PUT /api/v2/:tenant_slug/routing-policies/:model":    true, // TestRoutingPolicyV2_CrossTenantIs404
+		"DELETE /api/v2/:tenant_slug/routing-policies/:model": true, // TestRoutingPolicyV2_CrossTenantIs404
+		// account-pool ops (internal/adapter/handler/v2_channel_pool_idor_test.go):
+		// loadStaffChannel and import's channel_id both 403 a channel of another tenant.
+		"GET /api/v2/:tenant_slug/channels/:id/health":             true, // TestPoolOps_CrossTenantStaffForbidden
+		"POST /api/v2/:tenant_slug/channels/:id/keys/:idx/test":    true, // TestPoolOps_CrossTenantStaffForbidden
+		"POST /api/v2/:tenant_slug/channels/:id/keys/:idx/restore": true, // TestPoolOps_CrossTenantStaffForbidden
+		"PUT /api/v2/:tenant_slug/channels/:id/keys/:idx/settings": true, // TestPoolOps_CrossTenantStaffForbidden
+		"POST /api/v2/:tenant_slug/channels/import":                true, // TestPoolOps_CrossTenantStaffForbidden (channel_id append)
+		"GET /api/v2/:tenant_slug/channels/:id/usage":              true, // TestChannelUsageV2_Authz (foreign-tenant channel 403, no data leaked)
+		// opt-in body archive - migration 052 (internal/adapter/handler/v2_log_body_test.go).
+		"GET /api/v2/:tenant_slug/logs/:request_id/body": true, // TestLogBodyV2_CrossTenantIs404
+	}
+
+	// Not a cross-tenant/cross-account IDOR surface, each with the reason no
+	// per-id ownership check is needed.
+	exempt := map[string]string{
+		// ---- self-service: acts on the caller's own session/identity, no addressable id ----
+		"POST /api/v2/oauth/logout":                    "self-service: clears the authenticated caller's own session, no resource id",
+		"POST /api/v2/auth/zita-logout":                "self-service: idempotent clear of the caller's own session/cookie, no resource id",
+		"POST /api/v2/:tenant_slug/playground/run":     "self-service: runs the caller's own prompt against models, no stored per-id resource accessed",
+		"POST /api/v2/:tenant_slug/chat/send":          "self-service: sends the caller's own message, no stored per-id resource",
+		"DELETE /api/v2/:tenant_slug/sessions/current": "self-service: revokes the caller's own current session; literal \"current\" segment, not an :id param",
+		"DELETE /api/v2/:tenant_slug/sessions/others":  "self-service: RevokeOtherSessionsV2 revokes only the caller's OWN other sessions (repo.RevokeOtherUserSessions scopes by the caller's user_id); literal \"others\" segment, not an :id param",
+		"POST /api/v2/:tenant_slug/user/heartbeat":     "inline raw-token auth (UserHeartbeat resolves the caller's own Token.Key); self-scoped, no separate resource id",
+		"POST /api/v2/user/billing/checkout":           "CreateBillingCheckout scopes to getIdentityAccountID(c) — the caller's own linked platform account; cannot target another account",
+
+		// ---- create endpoints that stamp the caller's own tenant/user; cannot target another's ----
+		"POST /api/v2/:tenant_slug/playground/presets": "CreatePresetV2 stamps the caller's own (tenant_id, user_id); cannot target another's",
+		"POST /api/v2/:tenant_slug/tokens":             "CreateTokenV2 stamps the caller's own tenant_id/user_id from tenantCtx; cannot target another tenant",
+		"POST /api/v2/:tenant_slug/channels":           "CreateChannelV2 stamps the caller's tenant_id from tenantCtx; cannot target another tenant",
+		"POST /api/v2/:tenant_slug/redemptions":        "CreateRedemptionV2 stamps the caller's own tenant_id; cannot target another tenant",
+		"POST /api/v2/:tenant_slug/projects":           "CreateProjectV2 stamps the caller's own tenant_id from tenantCtx; cannot target another tenant",
+		"POST /api/v2/:tenant_slug/invites/redeem":     "self-service: RedeemMyTenantInviteV2 applies the grant to the caller's OWN user row only, and repo.RedeemInviteForExistingUser refuses (404, code left unspent) any code whose tenant is not the caller's own (TestRedeemMyTenantInviteV2_CrossTenantRejectedAndNotConsumed)",
+		"POST /api/v2/:tenant_slug/redeem":             "self-service: RedeemCodeV2 redeems into the caller's own balance (mirrors v1's POST /api/user/topup exemption)",
+		"POST /api/v2/:tenant_slug/chat/sessions":      "CreateChatSessionV2 stamps the caller's own (tenant_id, user_id) from tenantCtx (migration 038, cycle-10 L3); cannot target another tenant or user",
+
+		// ---- credential-is-the-resource: the token/code presented IS the auth, mirrors v1's rationale ----
+		"POST /api/v2/:tenant_slug/provision":  "public entitlement-token exchange: the platform entitlement token (verified offline against the platform JWKS) is the credential",
+		"POST /api/v2/:tenant_slug/plan-grant": "public entitlement-token exchange: the platform entitlement token is the credential and PlanGrantV2 credits only the hub user bound to its sub (lurus_account_id), refusing an account pinned to another tenant with 403 TENANT_MISMATCH (same rule as ProvisionV2)",
+		"POST /api/v2/switch/redeem":           "anonymous activation-code redemption (Phase D Track 2.1): the code itself is the credential, no authenticated caller to cross-tenant-check",
+		"POST /api/v2/switch/heartbeat":        "inline raw-token auth (Token.Key); self-scoped to the token owner",
+		"POST /api/v2/switch/reconciliation":   "inline raw-token auth; self usage-reconciliation for the token owner",
+		"POST /api/v2/switch/user/topup":       "inline raw-token auth; self-service topup for the token owner",
+
+		// ---- global catalog entities: no tenant_id column at all (verified: entity/model_meta.go) ----
+		"POST /api/v2/:tenant_slug/models":       "CreateModelV2: entity.Model has no tenant_id column (global catalog); tenant_slug is validated only for route existence, never as a data filter — and because the write is global the handler gates on requirePlatformRoot, not tenant-admin",
+		"DELETE /api/v2/:tenant_slug/models/:id": "DeleteModelV2: same — global catalog entry, mirrors v1's POST /api/channel/fix \"global maintenance, not a per-tenant data mutation\" exemption",
+
+		// ---- read-only preview: computes a diff, never persists ----
+		"POST /api/v2/:tenant_slug/pricing/preview": "PreviewPricingV2: read-only dry-run of the same batch UpdatePricingV2 accepts — does not call repo.UpdateOption and does not bump PricingVersion (TestV2PricingPreview_NeverPersists); root-gated (requirePlatformRoot) for the same reason as the write route above",
+
+		// ---- conditionally-registered routes (only present under specific env/config; exempted defensively) ----
+		"GET /api/v2/me/zita":              "guarded by common.ZitaClient.AuthMiddleware(); resolves the caller's own SDK identity, no resource id",
+		"POST /api/v2/auth/zita-bootstrap": "guarded by common.ZitaClient.AuthMiddleware() + BootstrapRateLimit; self-service SDK identity bootstrap, no resource id",
+		"POST /api/v2/bridge/exchange":     "registers only when E2E_BRIDGE_TOKEN is set (STAGE/CI); the bridge token itself is the credential, same class as switch/redeem",
+		"POST /api/v2/desk/device/code":    "Hub Desk device-code start: anonymous BootstrapRateLimit; device_code is the capability token, no tenant resource id",
+		"POST /api/v2/desk/device/token":   "Hub Desk device-code poll: anonymous; mints caller's own hubdesk sk after approve, no cross-tenant target",
+		"POST /api/v2/desk/device/approve": "Hub Desk device-code approve: UserAuth self-service binds the caller's own user_id to a pending code",
+
+		// ---- pure external proxy: no stored resource, no ownership concept ----
+		"POST /api/v2/lutu/search": "PostWebSearch is a stateless proxy to Tavily search keyed only by the request body's free-text query; there is no stored per-tenant resource to leak cross-tenant via an id. " +
+			"Gated by an explicit middleware.RequireOIDCToken() on the route (api-v2-router.go) — it previously registered with no effective auth (group OptionalZitaIdentity never aborts), which let any caller burn the " +
+			"paid Tavily budget. The Lutu APP is a consumer OIDC identity (authenticates against identity.lurus.cn, no newhub tenant), so RequireOIDCToken — not TokenAuth or OIDCAuth — is the correct gate; see lutu_search_auth_test.go.",
+
+		// ---- platform admin surface: RootJWTAuth-gated (single global root role, not tenant-scoped) ----
+		// Root manages every tenant/user/mapping/option/audit record by design —
+		// mirrors v1's RootAuth-gated exemption for POST /api/channel/:id/key.
+		"POST /api/v2/admin/tenants":                                "RootJWTAuth-gated (admin_jwt_auth.go hasRole(roles,\"root\")): platform-wide tenant management is the endpoint's purpose",
+		"GET /api/v2/admin/tenants/:id":                             "RootJWTAuth-gated: root manages every tenant by id, by design",
+		"PUT /api/v2/admin/tenants/:id":                             "RootJWTAuth-gated: root manages every tenant by id, by design",
+		"DELETE /api/v2/admin/tenants/:id":                          "RootJWTAuth-gated: root manages every tenant by id, by design",
+		"POST /api/v2/admin/tenants/:id/enable":                     "RootJWTAuth-gated: root manages every tenant by id, by design",
+		"POST /api/v2/admin/tenants/:id/disable":                    "RootJWTAuth-gated: root manages every tenant by id, by design",
+		"POST /api/v2/admin/tenants/:id/suspend":                    "RootJWTAuth-gated: root manages every tenant by id, by design",
+		"GET /api/v2/admin/tenants/:id/stats":                       "RootJWTAuth-gated: root reads stats for every tenant by id, by design",
+		"GET /api/v2/admin/tenants/:id/model-limits":                "RootJWTAuth-gated (requireModelLimitTenant only 404s on a nonexistent tenant id): root manages every tenant's model limits by design",
+		"PUT /api/v2/admin/tenants/:id/model-limits":                "RootJWTAuth-gated: root manages every tenant's model limits by design",
+		"DELETE /api/v2/admin/tenants/:id/model-limits":             "RootJWTAuth-gated: root manages every tenant's model limits by design",
+		"GET /api/v2/admin/tenants/:id/model-allowlist":             "RootJWTAuth-gated (requireModelLimitTenant only 404s on a nonexistent tenant id): root manages every tenant's model allow-list by design",
+		"PUT /api/v2/admin/tenants/:id/model-allowlist":             "RootJWTAuth-gated: root manages every tenant's model allow-list by design; the sole writer of the tenant_configs models.allowlist row",
+		"DELETE /api/v2/admin/tenants/:id/model-allowlist":          "RootJWTAuth-gated: root manages every tenant's model allow-list by design",
+		"PUT /api/v2/admin/tenants/:id/switch-teampack":             "RootJWTAuth-gated: root publishes a reseller's signed team pack by design; :id is resolved to a tenant row (id, then slug; \"default\" refused) and the pack is keyed on that tenant's id, so there is no caller-supplied foreign resource id to cross-check",
+		"DELETE /api/v2/admin/tenants/:id/switch-teampack":          "RootJWTAuth-gated: root withdraws a reseller's team pack by design; idempotent, keyed on the resolved tenant id only",
+		"POST /api/v2/admin/tenants/:id/credit-pool":                "RootJWTAuth-gated: root manages every tenant's credit pool by design (ADR 2026-05-18 §4.1)",
+		"GET /api/v2/admin/tenants/:id/credit-pool":                 "RootJWTAuth-gated: root manages every tenant's credit pool by design",
+		"POST /api/v2/admin/tenants/:id/credit-pool/topup":          "RootJWTAuth-gated: root manages every tenant's credit pool by design",
+		"GET /api/v2/admin/tenants/:id/credit-pool/usage":           "RootJWTAuth-gated: root manages every tenant's credit pool by design",
+		"DELETE /api/v2/admin/tenants/:id/credit-pool":              "RootJWTAuth-gated: root manages every tenant's credit pool by design",
+		"POST /api/v2/admin/tenants/:id/invites":                    "RootJWTAuth-gated: root mints onboarding invite codes for every tenant by design (N2)",
+		"GET /api/v2/admin/tenants/:id/invites":                     "RootJWTAuth-gated: root reads every tenant's invite list by design; projection is prefix-only (see TestListTenantInvites_NeverReturnsFullCode, internal/adapter/handler/tenant_invite_admin_test.go)",
+		"PUT /api/v2/admin/tenants/:id/members/:user_id/role":       "RootJWTAuth-gated: root assigns the first admin / payer of any tenant by design; repo.SetTenantMemberRole requires the user to belong to the addressed tenant (foreign user 404, TestSetTenantMemberRoleAdmin)",
+		"DELETE /api/v2/admin/tenants/:id/invites/:invite_id":       "RootJWTAuth-gated: repo.RevokeTenantInvite scopes by (id, tenant_id) itself — a code belonging to a different tenant 404s as not-found, same as the credit-pool group above",
+		"GET /api/v2/admin/mappings/:id":                            "RootJWTAuth-gated: root reads platform user-identity mappings across every tenant by design",
+		"DELETE /api/v2/admin/mappings/:id":                         "RootJWTAuth-gated: root manages platform user-identity mappings across every tenant by design",
+		"GET /api/v2/admin/users/:id":                               "RootJWTAuth-gated: root reads any platform user for the admin edit drawer by design",
+		"PUT /api/v2/admin/users/:id":                               "RootJWTAuth-gated: root manages platform admin users across every tenant by design",
+		"DELETE /api/v2/admin/users/:id":                            "RootJWTAuth-gated: root manages platform admin users across every tenant by design",
+		"DELETE /api/v2/admin/users/:id/sessions":                   "RootJWTAuth-gated: same class as /admin/users/:id above — root revokes any user's per-device sessions by design (L7 compromised-account runbook step), not a per-tenant ownership check",
+
+		// Platform-staff channel facade (AdminJWTAuth). Same handlers as
+		// deprecated /api/channel — global channel catalog / fleet ops, not a
+		// tenant-scoped resource. Cross-tenant is the product purpose.
+		"GET /api/v2/admin/channels/:id":                    "AdminJWTAuth platform-staff channel facade: global channel row by id, mirrors v1 GET /api/channel/:id",
+		"GET /api/v2/admin/channels/test/:id":               "AdminJWTAuth platform-staff channel facade: per-channel probe, mirrors v1 GET /api/channel/test/:id",
+		"GET /api/v2/admin/channels/update_balance/:id":     "AdminJWTAuth platform-staff channel facade: per-channel balance refresh, mirrors v1",
+		"GET /api/v2/admin/channels/fetch_models/:id":       "AdminJWTAuth platform-staff channel facade: upstream model list for one channel, mirrors v1",
+		"GET /api/v2/admin/channels/ollama/version/:id":     "AdminJWTAuth platform-staff channel facade: ollama version probe, mirrors v1",
+		"POST /api/v2/admin/channels":                      "AdminJWTAuth platform-staff channel facade: create channel(s), mirrors v1 POST /api/channel/",
+		"PUT /api/v2/admin/channels":                       "AdminJWTAuth platform-staff channel facade: update channel, mirrors v1 PUT /api/channel/",
+		"DELETE /api/v2/admin/channels/:id":                 "AdminJWTAuth platform-staff channel facade: delete one channel, mirrors v1",
+		"DELETE /api/v2/admin/channels/disabled":            "AdminJWTAuth platform-staff channel facade: purge disabled channels, mirrors v1",
+		"POST /api/v2/admin/channels/batch":                 "AdminJWTAuth platform-staff channel facade: batch delete, mirrors v1",
+		"POST /api/v2/admin/channels/batch/tag":             "AdminJWTAuth platform-staff channel facade: batch tag, mirrors v1",
+		"POST /api/v2/admin/channels/tag/enabled":           "AdminJWTAuth platform-staff channel facade: enable by tag, mirrors v1",
+		"POST /api/v2/admin/channels/tag/disabled":          "AdminJWTAuth platform-staff channel facade: disable by tag, mirrors v1",
+		"PUT /api/v2/admin/channels/tag":                    "AdminJWTAuth platform-staff channel facade: edit tag metadata, mirrors v1",
+		"POST /api/v2/admin/channels/fix":                   "AdminJWTAuth + RootAuth: fix abilities across the fleet, mirrors v1",
+		"POST /api/v2/admin/channels/fetch_models":          "AdminJWTAuth platform-staff channel facade: fetch models from unsaved form, mirrors v1",
+		"POST /api/v2/admin/channels/ollama/pull":           "AdminJWTAuth platform-staff channel facade: ollama pull, mirrors v1",
+		"POST /api/v2/admin/channels/ollama/pull/stream":    "AdminJWTAuth platform-staff channel facade: ollama pull stream, mirrors v1",
+		"DELETE /api/v2/admin/channels/ollama/delete":       "AdminJWTAuth platform-staff channel facade: ollama delete model, mirrors v1",
+		"POST /api/v2/admin/channels/copy/:id":              "AdminJWTAuth platform-staff channel facade: copy channel, mirrors v1",
+		"POST /api/v2/admin/channels/multi_key/manage":      "AdminJWTAuth platform-staff channel facade: multi-key manage, mirrors v1",
+		"POST /api/v2/admin/channels/:id/key":               "AdminJWTAuth + RootAuth + SecureVerificationRequired: reveal upstream key, mirrors v1 POST /api/channel/:id/key",
+		"POST /api/v2/admin/prefill-groups":                 "AdminJWTAuth platform-staff: global prefill presets (no tenant_id), mirrors v1 /api/prefill_group",
+		"PUT /api/v2/admin/prefill-groups":                  "AdminJWTAuth + RootAuth: update global prefill preset, mirrors v1",
+		"DELETE /api/v2/admin/prefill-groups/:id":           "AdminJWTAuth + RootAuth: delete global prefill preset, mirrors v1",
+		"PUT /api/v2/admin/options":                                 "RootJWTAuth-gated: system-wide options, not a per-tenant resource",
+		"POST /api/v2/admin/switch/presets":                         "RootJWTAuth-gated: platform-wide Switch presets, not a per-tenant resource",
+		"GET /api/v2/admin/internal-keys/:id/tenants":               "RootJWTAuth-gated: :id addresses an internal_api_keys row (platform-wide credential), not a tenant's own data; root manages every key's whitelist by design",
+		"POST /api/v2/admin/internal-keys/:id/tenants":              "RootJWTAuth-gated: same as above — grants a tenant onto a platform-wide internal API key, not a per-tenant mutation",
+		"DELETE /api/v2/admin/internal-keys/:id/tenants/:tenant_id": "RootJWTAuth-gated: same as above — revokes a tenant from a platform-wide internal API key",
+
+		// Session-affinity purge (L5, routing-resilience-limits-11). Bindings
+		// live in session_affinity.go's own Redis/in-process store, not a
+		// tenant table — root purges any binding by design, same class as the
+		// internal-keys/tenants routes above.
+		"DELETE /api/v2/admin/routing/affinity":      "RootJWTAuth-gated: bulk purge-all of session-affinity bindings (requires ?all=true — PurgeAllAffinityBindingsV2 400s without it); a process-wide cache-steering optimisation, not a per-tenant resource",
+		"DELETE /api/v2/admin/routing/affinity/:key": "RootJWTAuth-gated: :key addresses one HMAC-derived affinity binding (session_affinity.go), not a tenant's own data — root purges any binding by design",
+
+		// TOTP admin escape hatch (L6, auth-security-06/07/25). :id addresses
+		// a user_totps row across every tenant, same class as
+		// /admin/users/:id above — root manages any user's 2FA enrollment by
+		// design, additionally gated by SecureVerificationRequired (the
+		// acting root's own step-up), not a per-tenant ownership check.
+		"POST /api/v2/admin/security/users/:id/totp/force-disable": "RootJWTAuth-gated: root manages any user's TOTP enrollment by design, same class as /admin/users/:id; additionally requires the acting root's own SecureVerificationRequired step-up wired on the real route (TestSetApiV2Router_ForceDisableTotp_RequiresOwnStepUp in router/v2_admin_security_wiring_test.go — TestAdminTotpForceDisable_RequiresStepUp hand-mounts the middleware and stays green if the real route loses it)",
+
+		// Delegated admin permission grants (L4, auth-security-17/18,
+		// console-ux-36). Grant MANAGEMENT (who holds a grant) is
+		// RootJWTAuth-gated under adminRoute — only root decides who gets
+		// delegated access, mirrors every other /admin/* write above.
+		// Grants themselves are GLOBAL this cycle (CreateGrantV2 rejects a
+		// non-null tenant_id as GRANT_INVALID), so there is no tenant
+		// dimension to isolate. What a grant UNLOCKS (the four audit GETs,
+		// auditRoute) is a SEPARATE, narrower RootOrGranted gate, proven by
+		// TestRootOrGranted_* in the middleware package and
+		// TestAuditRoutes_MountedUnderRootOrGranted here.
+		"POST /api/v2/admin/authz/grants":       "RootJWTAuth-gated: root mints delegated permission grants for any user by design; grants are global (no tenant_id) this cycle",
+		"DELETE /api/v2/admin/authz/grants/:id": "RootJWTAuth-gated: root revokes any delegated permission grant by design, same not-found-shaped 404 for absent/already-revoked ids as RevokeTenantInvite above",
+
+		// Relay data control (migration 050): platform rules and override templates are
+		// global (no tenant_id dimension), written only behind RootJWTAuth.
+		"POST /api/v2/admin/content-rules":                     "RootJWTAuth-gated: creates a platform-scope content rule (scope fixed to platform in the handler, never read from the body)",
+		"PUT /api/v2/admin/content-rules/:id":                  "RootJWTAuth-gated: repo.GetContentRule confines the id to scope=platform, so a tenant rule id 404s",
+		"DELETE /api/v2/admin/content-rules/:id":               "RootJWTAuth-gated: repo.DeleteContentRule confines the id to scope=platform",
+		"POST /api/v2/admin/channel-templates":                 "RootJWTAuth-gated: override templates are platform-wide, not a per-tenant resource",
+		"PUT /api/v2/admin/channel-templates/:id":              "RootJWTAuth-gated: override templates are platform-wide, not a per-tenant resource",
+		"DELETE /api/v2/admin/channel-templates/:id":           "RootJWTAuth-gated: override templates are platform-wide, not a per-tenant resource",
+		"POST /api/v2/admin/channel-templates/:id/apply":       "RootJWTAuth-gated: platform staff bulk-apply a template to chosen channels by design (per-channel results, audited)",
+		"GET /api/v2/admin/channel-templates/:id/applications": "RootJWTAuth-gated read of the platform-wide template application log (append-only, no secrets)",
+		"POST /api/v2/:tenant_slug/data-policy/rules":          "CreateContentRuleV2 stamps the caller's own tenant_id from tenantCtx; cannot target another tenant",
+		"PUT /api/v2/:tenant_slug/data-policy/retention":       "PutContentRetentionV2 writes the caller's own tenant (tenantSelectionScope), no addressable id",
+		"PUT /api/v2/:tenant_slug/data-policy/sedimentation":   "PutSedimentationConsentV2 writes the caller's own tenant (tenantSelectionScope), no addressable id",
+		"GET /api/v2/admin/logs/:request_id/body":              "RootJWTAuth-gated platform-staff read of an archived body across tenants by design (audited, 404 on miss)",
+
+		// Account TOTP + settings (v1 → v2 migration). Handlers read the
+		// session user id only — TenantSlugGuard binds the slug; there is no
+		// addressable foreign user/tenant resource id to IDOR against.
+		"PUT /api/v2/:tenant_slug/user/setting":                     "UpdateUserSetting writes the session user only; TenantSlugGuard confines the slug; no foreign user id in the path",
+		"POST /api/v2/:tenant_slug/user/totp/enroll":                "TotpEnroll mutates the session user's enrollment only; TenantSlugGuard confines the slug",
+		"POST /api/v2/:tenant_slug/user/totp/confirm":               "TotpConfirm mutates the session user's enrollment only; TenantSlugGuard confines the slug",
+		"POST /api/v2/:tenant_slug/user/totp/disable":               "TotpDisable mutates the session user's enrollment only; SecureVerificationRequired + TenantSlugGuard",
+		"POST /api/v2/:tenant_slug/user/totp/backup-codes/regenerate": "RegenerateTotpBackupCodes mutates the session user's codes only; SecureVerificationRequired + TenantSlugGuard",
+	}
+
+	isMutation := func(m string) bool {
+		return m == http.MethodPost || m == http.MethodPut || m == http.MethodDelete
+	}
+	// hasResourceID reports whether path carries a URL param other than
+	// :tenant_slug (the tenant-scope selector, not a resource id).
+	hasResourceID := func(path string) bool {
+		for _, seg := range strings.Split(path, "/") {
+			if strings.HasPrefix(seg, ":") && seg != ":tenant_slug" {
+				return true
+			}
+		}
+		return false
+	}
+	inScope := func(path string) bool {
+		return strings.HasPrefix(path, "/api/v2/")
+	}
+
+	for _, rt := range engine.Routes() {
+		if !inScope(rt.Path) {
+			continue
+		}
+		if !hasResourceID(rt.Path) && !isMutation(rt.Method) {
+			continue
+		}
+		key := rt.Method + " " + rt.Path
+		if swept[key] {
+			continue
+		}
+		if _, ok := exempt[key]; ok {
+			continue
+		}
+		t.Errorf("tenant/account-scoped route %q is neither swept by a cross-tenant/cross-account test nor "+
+			"exempted — add a cross-tenant test or an exemption with justification here", key)
+	}
+}

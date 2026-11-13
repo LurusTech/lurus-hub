@@ -35,7 +35,11 @@ var (
 		[]string{"method", "path"},
 	)
 
-	// RelayRequestsTotal counts relay requests by provider and model
+	// RelayRequestsTotal counts relay requests by provider, model, status, and
+	// the cross-product attribution tag (X-Lurus-Product; see
+	// ratio_setting.ResolveSourceProduct). status includes "client_gone" —
+	// the caller hung up before the stream finished, distinct from a
+	// completed "success" — see relayOutcome in the handler package.
 	RelayRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
@@ -43,7 +47,7 @@ var (
 			Name:      "relay_requests_total",
 			Help:      "Total number of relay requests to upstream providers",
 		},
-		[]string{"provider", "model", "status"},
+		[]string{"provider", "model", "status", "product"},
 	)
 
 	// RelayDuration measures upstream API latency
@@ -80,15 +84,19 @@ var (
 		[]string{"provider", "model", "type"}, // type: input, output
 	)
 
-	// QuotaConsumed tracks quota consumption
+	// QuotaConsumed tracks quota consumption. Labeled by tenant only: a per-user
+	// label would make the series count grow with the (never-shrinking) user
+	// population × tenants, which unbounds Prometheus cardinality on the relay
+	// hot path. Per-user quota detail lives in the consumption log and audit
+	// trail, not in a metric label.
 	QuotaConsumed = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
 			Subsystem: subsystem,
 			Name:      "quota_consumed_total",
-			Help:      "Total quota consumed",
+			Help:      "Total quota consumed, by tenant",
 		},
-		[]string{"tenant_id", "user_id"},
+		[]string{"tenant_id"},
 	)
 
 	// RetryAttempts counts retry attempts
@@ -102,6 +110,77 @@ var (
 		[]string{"provider", "reason"},
 	)
 
+	// RelayErrorsTotal classifies terminal relay failures by provider, model, and
+	// error_type (O1). Recorded once per failed request at the relay's final-error
+	// defer — terminal outcomes only, never per-retry (RetryAttempts covers that),
+	// and success skips it. error_type is one of {upstream_5xx, upstream_4xx,
+	// upstream_timeout, upstream_rate_limit, upstream_insufficient_balance,
+	// insufficient_quota, internal}; see types.RelayErrorType. This is the missing
+	// "WHY is a provider failing" signal —
+	// RelayRequestsTotal{status="error"} only says THAT it failed.
+	RelayErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "relay_errors_total",
+			Help:      "Terminal relay errors by provider, model, error_type, and product",
+		},
+		[]string{"provider", "model", "error_type", "product"},
+	)
+
+	// RelayFailoverTotal counts failover events: a request abandoning one channel
+	// for another (O2). reason is one of {breaker_open (skipped a channel whose
+	// circuit breaker is Open), upstream_error (retried onto a new channel after an
+	// upstream/provider failure)}. A separate series from RetryAttempts — this is
+	// the churn signal: sustained failover means capacity is thin or a provider is
+	// flapping. provider labels the channel being failed OVER FROM.
+	RelayFailoverTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "relay_failover_total",
+			Help:      "Relay failover events by provider (failed-over-from) and reason",
+		},
+		[]string{"provider", "reason"},
+	)
+
+	// FailoverSuppressedTotal counts retries that were deliberately NOT attempted
+	// because failing over would have corrupted the client's response. The only
+	// reason today is stream_already_started: bytes were already flushed, so a
+	// second attempt would concatenate a duplicate body onto the same writer.
+	//
+	// Operationally this is a demand signal, not an error: a rising rate means
+	// upstreams are dropping requests MID-STREAM, which retries cannot paper over
+	// and which relay_failover_total structurally cannot show (those requests
+	// never reach a second channel). No provider label — the counter is read as a
+	// gateway-wide rate, and the per-channel attribution already lives on
+	// relay_errors_total.
+	FailoverSuppressedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "relay_failover_suppressed_total",
+			Help:      "Retries suppressed to protect an already-started client response, by reason",
+		},
+		[]string{"reason"},
+	)
+
+	// SessionAffinityTotal tracks conversation-to-channel pinning outcomes.
+	// result: hit (pinned channel reused), miss (no binding yet), stale (binding
+	// existed but the channel is no longer eligible → fell back to weighted
+	// selection). A hit rate that collapses toward zero means bindings are
+	// expiring faster than conversations turn, i.e. the upstream prompt cache is
+	// being paid for repeatedly.
+	SessionAffinityTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "session_affinity_total",
+			Help:      "Session-affinity channel pinning outcomes by result (hit/miss/stale)",
+		},
+		[]string{"result"},
+	)
+
 	// ActiveConnections tracks current active connections
 	ActiveConnections = promauto.NewGauge(
 		prometheus.GaugeOpts{
@@ -112,15 +191,24 @@ var (
 		},
 	)
 
-	// ChannelHealth tracks channel availability
-	ChannelHealth = promauto.NewGaugeVec(
+	// NATSConnected reports whether the JetStream publisher currently holds a
+	// live broker connection: 1 connected, 0 not. Written by
+	// internal/pkg/nats/publisher.go from the client's connect/disconnect/
+	// reconnect/closed callbacks.
+	//
+	// 0 is the correct steady state on a deployment with LLM_QUOTA_NATS_ENABLED
+	// off (UAT today) — the publisher is never built, so nothing ever sets it.
+	// "Off" and "broker unreachable" are therefore the same value here; the
+	// distinguishing signal is whether the deployment sets the enable flag at
+	// all. ⚠️ NOT ALERTED: nothing in deploy/r6-host-netdata/health.d/ reads
+	// this series yet (see O2 in the cycle 12 plan).
+	NATSConnected = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: subsystem,
-			Name:      "channel_health",
-			Help:      "Channel health status (1=healthy, 0=unhealthy)",
+			Name:      "nats_connected",
+			Help:      "JetStream publisher connection state: 1=connected, 0=disconnected or disabled",
 		},
-		[]string{"channel_id", "channel_name", "provider"},
 	)
 
 	// CacheHits tracks cache hit/miss ratio
@@ -132,29 +220,6 @@ var (
 			Help:      "Cache hit/miss counts",
 		},
 		[]string{"cache_type", "result"}, // result: hit, miss
-	)
-
-	// ChannelConsecutiveErrors tracks consecutive errors per channel
-	// Reset to 0 on successful request, incremented on each error
-	ChannelConsecutiveErrors = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "channel_consecutive_errors",
-			Help:      "Consecutive error count per channel (resets on success)",
-		},
-		[]string{"channel_id", "channel_name", "provider"},
-	)
-
-	// ChannelErrorsTotal tracks total channel errors
-	ChannelErrorsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "channel_errors_total",
-			Help:      "Total errors per channel",
-		},
-		[]string{"channel_id", "channel_name", "provider", "error_type"},
 	)
 
 	// CircuitBreakerState tracks per-channel breaker state (0=closed, 1=open, 2=half_open)
@@ -189,12 +254,386 @@ var (
 		},
 		[]string{"channel_id"},
 	)
+
+	// RelayOverheadDuration measures newhub-side latency before the first
+	// upstream attempt (requestStart → first channel_select). SLO target:
+	// how much delay newhub itself adds. Excludes upstream wall time.
+	RelayOverheadDuration = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "relay_overhead_duration_seconds",
+			Help:      "Newhub overhead before first upstream call (excludes upstream wall time)",
+			Buckets:   []float64{.0005, .001, .002, .005, .01, .025, .05, .1, .25, .5, 1},
+		},
+	)
+
+	// RelayTotalDuration measures end-to-end Relay() handler duration including
+	// retries and upstream wall time. Labeled per provider/model so SLOs can be
+	// sliced by which upstream is degrading.
+	RelayTotalDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "relay_total_duration_seconds",
+			Help:      "End-to-end Relay() handler duration including retries and upstream wall time",
+			Buckets:   []float64{.05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120},
+		},
+		[]string{"provider", "model", "status", "product"},
+	)
+
+	// CreditPoolDebitTotal counts every successful debit against a tenant
+	// credit pool (ADR 2026-05-18 §3.1). Bumped from the post-consume quota
+	// path that joins quota_consume + DebitPoolInTx in one transaction.
+	CreditPoolDebitTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_debit_total",
+			Help:      "Total debits from tenant credit pools, by tenant",
+		},
+		[]string{"tenant_id"},
+	)
+
+	// CreditPoolBalance reflects the current_balance column of each pool.
+	// Set from DebitPoolInTx + TopupPool call-sites, and from the scheduled
+	// reset pass (internal/app/credit_pool_reset.go) whenever
+	// CREDIT_POOL_RESET_MODE=enforce actually refills a pool.
+	//
+	// ⚠️ NOT ALERTED, NOT DASHBOARDED. This used to say "Resellers watch this
+	// on their Grafana panel; the CreditPoolBalanceLow alert fires under 20%
+	// ceiling" — neither one is true. The Grafana dashboard was undeployed
+	// JSON (never applied by any kustomization) and has been deleted; the rule
+	// of that name is a PrometheusRule CRD no kustomization deploys, and R6
+	// has no Prometheus Operator to accept it anyway.
+	//
+	// What the pool-reset/alert lane DID wire: crossing a pool's
+	// alert_threshold_pct runs the threshold publisher
+	// (internal/pkg/nats/pool_threshold.go), subject to a caller-side
+	// precheck (internal/app/quota.go maybeAlertPoolThreshold) that skips
+	// the call outright while the pool's alert_fired_at is inside the same
+	// 1h dedup window — it does not run on every crossing, only the ones
+	// the precheck lets through. When it does run and both of the
+	// publisher's own dedup layers also let it through, it marks
+	// tenant_credit_pools.alert_fired_at and the caller writes a
+	// billing.pool_threshold audit row either way (delivered or not); it
+	// increments CreditPoolAlertTotal{delivery="nats"} only when
+	// LLM_QUOTA_NATS_ENABLED and the publish itself succeeds, and
+	// CreditPoolAlertTotal{delivery="recorded_only"} when NATS is disabled or
+	// no publisher is configured — a crossing that is marked/audited but
+	// whose publish attempt fails increments neither label and is counted via
+	// CreditPoolAlertHookErrorTotal instead. None of that
+	// reaches an on-call rotation. A low or exhausted tenant credit pool
+	// stays visible only by reading this gauge, the audit trail, the
+	// counter, or the admin
+	// credit-pool endpoints. See alert_wiring_honesty_test.go, which fails go
+	// test if this drifts back.
+	CreditPoolBalance = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_balance",
+			Help:      "Current tenant credit pool balance",
+		},
+		[]string{"tenant_id"},
+	)
+
+	// CreditPoolResetTotal counts every pool the scheduled reset pass
+	// (internal/app/credit_pool_reset.go, CREDIT_POOL_RESET_MODE) evaluated
+	// as due, labeled by tenant and action: "reset" (enforce mode, balance
+	// actually refilled to ceiling) or "observed" (observe mode, or the
+	// rehearsal endpoint's ?mode=observe — no write). The default mode is
+	// observe, so a fresh deployment's series is all "observed" until an
+	// operator turns enforcement on.
+	CreditPoolResetTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_reset_total",
+			Help:      "Tenant credit pools evaluated by the scheduled reset pass, by tenant and action (reset/observed)",
+		},
+		[]string{"tenant_id", "action"},
+	)
+
+	// CreditPoolAlertTotal counts every time the pool-threshold publisher
+	// (internal/pkg/nats/pool_threshold.go) actually fires — its own schema
+	// + Redis dedup let the crossing through — labeled by tenant and
+	// delivery: "nats" is incremented only after the payload has actually
+	// been handed to nats.Publish without error; "recorded_only" is
+	// incremented right after alert_fired_at is durably marked, for the
+	// case NATS is disabled (or no publisher wired). A publish that is
+	// attempted but fails does NOT increment either label — that crossing
+	// is still marked/audited (fired=true reaches the caller with
+	// delivery="recorded_only" and a non-nil error) but is counted as an
+	// honest delivery failure via CreditPoolAlertHookErrorTotal instead, so
+	// this series never claims "nats" for a payload that never left the
+	// process. Suppressed (deduped) crossings are not counted here — that
+	// is the point of dedup.
+	CreditPoolAlertTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_alert_total",
+			Help:      "Tenant credit pool threshold crossings that fired (post-dedup), by tenant and delivery (nats/recorded_only)",
+		},
+		[]string{"tenant_id", "delivery"},
+	)
+
+	// CreditPoolAlertHookErrorTotal counts post-consume debits where the
+	// threshold-crossing alert hook (internal/app/quota.go maybeAlertPoolThreshold)
+	// itself failed (infrastructure error from PublishPoolThreshold — DB
+	// unreachable, publish enqueue failed). Never blocks or alters the debit
+	// that triggered it; this counter is the honest signal that a crossing
+	// went undelivered.
+	CreditPoolAlertHookErrorTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_alert_hook_error_total",
+			Help:      "Post-consume debits whose pool-threshold alert hook failed (debit itself unaffected)",
+		},
+	)
+
+	// CreditPoolOverdraftTotal counts post-consume debits that found the pool
+	// already exhausted and were recorded as overdraft (negative balance +
+	// relay_overdraft draw row) instead of being dropped. A non-zero rate means
+	// the relay gate admitted requests that out-raced the pool balance — debt
+	// is repaid by the next topup. P0-3 fix (2026-06-10).
+	CreditPoolOverdraftTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_overdraft_total",
+			Help:      "Post-consume pool debits recorded as overdraft (pool was exhausted), by tenant",
+		},
+		[]string{"tenant_id"},
+	)
+
+	// CreditPoolDebitLostTotal counts post-consume pool debits that failed with
+	// a hard DB error (not exhaustion) and could NOT be recorded — the honest
+	// residual gap after P0-3. Every increment is a known conservation-law
+	// violation that needs manual reconciliation; alert on any increase.
+	// ALERTABLE: lurus_gateway_credit_pool_debit_lost_total
+	CreditPoolDebitLostTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_debit_lost_total",
+			Help:      "Post-consume pool debits dropped due to hard DB errors (conservation-law violations)",
+		},
+	)
+
+	// CreditPoolLookupMissTotal counts post-consume debits that never reached the
+	// debit step because the tenant's pool row could not be resolved, labeled by
+	// reason:
+	//   no_pool      — ErrPoolNotFound: the tenant has no credit pool row. Either a
+	//                  legitimately un-pooled (unlimited) tenant, or a tenant-id
+	//                  drift where an orphaned token points at a tenant that never
+	//                  got a pool row. A rising rate on a tenant that SHOULD be
+	//                  pooled is the drift signal — the relay silently under-bills.
+	//   lookup_error — a hard DB error resolving the pool row; pool-gating state is
+	//                  unknown and the debit was skipped. Alert on any increase.
+	// ALERTABLE: lurus_gateway_credit_pool_lookup_miss_total
+	CreditPoolLookupMissTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_lookup_miss_total",
+			Help:      "Post-consume pool debits skipped because the pool row was unresolved, by tenant and reason (no_pool/lookup_error)",
+		},
+		[]string{"tenant_id", "reason"},
+	)
+
+	// ProvisioningKeysCreatedTotal counts Provisioning-API key creations.
+	// Bumped from the POST /internal/v1/provisioning/tenants/:slug/keys handler.
+	// Used to measure Switch-Reseller adoption rate during Q3 pilot.
+	ProvisioningKeysCreatedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "provisioning_keys_created_total",
+			Help:      "Provisioning-API issued keys, by tenant",
+		},
+		[]string{"tenant_id"},
+	)
+
+	// PoolExhaustedRejections counts relay requests rejected because the
+	// tenant credit pool balance reached zero. Labeled by tenant_id and
+	// pool_kind (currently always "relay" — extensible for future pool types).
+	//
+	// ⚠️ NOT ALERTED. This used to say "Alert:
+	// NewhubPoolExhaustedRejections fires when rate > 5/min sustained for 5
+	// minutes", citing a rule file — the only reference to that file anywhere in
+	// the repository, and it reads as an operational guarantee. Nothing fires:
+	// the rule file is a PrometheusRule CRD, it is not in any kustomization, and
+	// R6 runs no Prometheus Operator to accept it. An exhausted tenant credit
+	// pool pages nobody today; it is visible only by reading this counter.
+	// See alert_wiring_honesty_test.go, which fails go test if this drifts back.
+	PoolExhaustedRejections = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "pool_exhausted_rejections_total",
+			Help:      "Total relay requests denied because the tenant credit pool is exhausted",
+		},
+		[]string{"tenant_id", "pool_kind"},
+	)
+
+	// BillingDebitAmountCNY observes the CNY amount of every confirmed wallet
+	// charge to lurus-platform — both directions of it: a pre-auth settling
+	// (op="settle", quota.go PostConsumeQuota) and a direct wallet debit
+	// (op="debit", common.DebitWallet via DebitWalletGRPC). Labeled by
+	// product (the cross-product attribution tag, not tenant_id — tenant is
+	// not the caller's unit of billing here, product is) and op, so the two
+	// legs stay distinguishable in the same series instead of one silently
+	// going unobserved. Buckets cover typical LLM cost range: fractions of
+	// fen to hundreds of yuan.
+	BillingDebitAmountCNY = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "billing_debit_amount_cny",
+			Help:      "CNY amount per confirmed wallet charge to lurus-platform, by product and op (debit/settle)",
+			Buckets:   []float64{0.0001, 0.001, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 50, 100},
+		},
+		[]string{"product", "op"},
+	)
+
+	// CreditPoolNotConfiguredTotal counts relay requests that hit a missing
+	// tenant credit pool row under the CREDIT_POOL_REQUIRED gradual-enforcement
+	// flag (internal/pkg/setting.GetCreditPoolRequired). Labeled by tenant_id
+	// and the action actually taken: "log" (bypassed but counted) or
+	// "enforce" (rejected 402). "off" is intentionally never counted here — it
+	// is the legacy no-signal bypass and must stay byte-identical to
+	// pre-flag behaviour.
+	CreditPoolNotConfiguredTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "credit_pool_not_configured_total",
+			Help:      "Relay requests hitting a missing tenant credit pool row, by tenant and CREDIT_POOL_REQUIRED action (log/enforce)",
+		},
+		[]string{"tenant_id", "action"},
+	)
+
+	// ConsumerAudienceMismatchTotal counts requests reaching the consumer OIDC
+	// gate (middleware.RequireOIDCToken) with an "aud" claim that matches
+	// neither OIDC_CLIENT_ID, OIDC_ALLOWED_AUDIENCES nor
+	// OIDC_CONSUMER_AUDIENCES, labeled by the action actually taken: "log"
+	// (admitted but counted) or "enforce" (rejected 401). Deliberately not
+	// labeled by audience — "aud" is attacker-controlled on a rejected token
+	// and would let an unauthenticated caller mint unbounded label values.
+	// "off" is never counted: it is the pre-flag issuer-only behaviour.
+	ConsumerAudienceMismatchTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "consumer_audience_mismatch_total",
+			Help:      "Consumer-gate requests whose JWT audience is not allow-listed, by OIDC_CONSUMER_AUD_REQUIRED action (log/enforce)",
+		},
+		[]string{"action"},
+	)
+
+	// ResponseRegistryErrorsTotal counts response_registry write failures
+	// (cycle-8 L7, tasks-plugins-12): relay.ResponsesHelper's post-consume
+	// insert hook is best-effort on purpose — a registry write must never
+	// fail the billed POST /v1/responses it belongs to — so this counter is
+	// the ONLY visibility into a failing insert; nothing else surfaces it to
+	// the caller. Nonzero and rising means GET/DELETE
+	// /v1/responses/:response_id are silently unable to retrieve responses
+	// that were, in fact, billed and created.
+	ResponseRegistryErrorsTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "response_registry_errors_total",
+			Help:      "response_registry write failures on the POST /v1/responses hot path (never fails the response itself)",
+		},
+	)
+
+	// AdminWriteUnauditedTotal counts admin/internal-admin write requests
+	// (POST/PUT/PATCH/DELETE under /api/v2/admin or /internal/admin) where
+	// the handler completed the request without ever calling
+	// governance.RecordAuditEvent — middleware.AuditWriteGuard's fallback
+	// path. It is mounted on adminRoute and the internal adminGroup only;
+	// the root-gated POST /api/v2/:tenant_slug/pricing route is covered by
+	// its own audit call and the CI structural test
+	// (router/audit_coverage_test.go), not by this guard or this counter.
+	// Any nonzero value means a route is producing typed
+	// admin.write_unaudited rows instead of its own action-specific audit
+	// event; the label is the route's registered gin pattern
+	// (c.FullPath(), e.g. "/api/v2/admin/tenants/:id"), so cardinality is
+	// bounded by the (small, admin-only) route table.
+	AdminWriteUnauditedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "admin_write_unaudited_total",
+			Help:      "Admin/internal-admin write requests where no explicit governance.RecordAuditEvent call happened during the request",
+		},
+		[]string{"route"},
+	)
+
+	// TaskMediaGuardRejectionsTotal counts a task-media-proxy request refused
+	// (or truncated) by VideoProxy (GET /v1/videos/:task_id/content) or
+	// GetTaskArtifactContent (GET
+	// /v1/tasks/:platform/:task_id/artifacts/:key/content) — cycle-8 L9's
+	// operator ruling on the round-1 acceptance findings. route distinguishes
+	// the two handlers ("video_proxy" / "artifact_content"); reason is one
+	// of "scheme", "self_url", "size_cap" or "egress_check" (checks both
+	// handlers run as of cycle-9 L4, which closed the gap where VideoProxy
+	// never called app.ValidateOutboundURL) or
+	// "upstream_error" (the fetch itself failed or returned non-200 — not
+	// a guard rejection, but counted here by both handlers too).
+	// "size_cap" also covers the unknown-Content-Length case where the
+	// stream is stopped at the cap after a 200 has already been written (see
+	// task_media_guard.go/video_proxy.go): the request was not rejected
+	// up front there, only truncated, but it is still counted so the cap
+	// being hit at all is visible to a scraper.
+	TaskMediaGuardRejectionsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "task_media_guard_rejections_total",
+			Help:      "Task/video media proxy requests refused (or truncated) by a scheme/self-URL/egress/size-cap check, or that failed upstream, by route and reason",
+		},
+		[]string{"route", "reason"},
+	)
 )
 
-// RecordRelayRequest records a relay request with its outcome
-func RecordRelayRequest(provider, model, status string, durationSec float64) {
-	RelayRequestsTotal.WithLabelValues(provider, model, status).Inc()
+// RecordRelayRequest records a relay request with its outcome and the
+// cross-product attribution tag. RelayDuration stays provider/model only —
+// it measures upstream latency, which does not vary by caller product.
+func RecordRelayRequest(provider, model, status, product string, durationSec float64) {
+	RelayRequestsTotal.WithLabelValues(provider, model, status, product).Inc()
 	RelayDuration.WithLabelValues(provider, model).Observe(durationSec)
+}
+
+// RecordRelayError records a terminal relay failure classified by error_type (O1)
+// and the cross-product attribution tag. Call once per failed request from the
+// relay's final-error path.
+func RecordRelayError(provider, model, errorType, product string) {
+	RelayErrorsTotal.WithLabelValues(provider, model, errorType, product).Inc()
+}
+
+// RecordRelayFailover records a failover event (O2). reason is "breaker_open"
+// (skipped an Open-breaker channel) or "upstream_error" (retried onto a new
+// channel after an upstream failure).
+func RecordRelayFailover(provider, reason string) {
+	RelayFailoverTotal.WithLabelValues(provider, reason).Inc()
+}
+
+// RecordFailoverSuppressed records a retry that was withheld to keep an
+// already-started client response intact. reason is "stream_already_started".
+func RecordFailoverSuppressed(reason string) {
+	FailoverSuppressedTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordSessionAffinity records one affinity lookup outcome: "hit", "miss" or
+// "stale". Called once per first-attempt channel selection that carried a
+// session key.
+func RecordSessionAffinity(result string) {
+	SessionAffinityTotal.WithLabelValues(result).Inc()
 }
 
 // RecordTokens records token usage
@@ -207,29 +646,21 @@ func RecordTokens(provider, model string, inputTokens, outputTokens int) {
 	}
 }
 
-// RecordQuotaConsumed records quota consumption
-func RecordQuotaConsumed(tenantID, userID string, quota int64) {
-	QuotaConsumed.WithLabelValues(tenantID, userID).Add(float64(quota))
+// RecordQuotaConsumed records quota consumption for a tenant. Per-user
+// attribution is intentionally not a metric label (see QuotaConsumed).
+func RecordQuotaConsumed(tenantID string, quota int64) {
+	QuotaConsumed.WithLabelValues(tenantID).Add(float64(quota))
 }
 
-// RecordChannelError increments consecutive error count for a channel
-func RecordChannelError(channelID, channelName, provider, errorType string) {
-	ChannelConsecutiveErrors.WithLabelValues(channelID, channelName, provider).Inc()
-	ChannelErrorsTotal.WithLabelValues(channelID, channelName, provider, errorType).Inc()
-}
-
-// ResetChannelErrors resets consecutive error count on successful request
-func ResetChannelErrors(channelID, channelName, provider string) {
-	ChannelConsecutiveErrors.WithLabelValues(channelID, channelName, provider).Set(0)
-}
-
-// SetChannelHealth sets channel health status (1=healthy, 0=unhealthy)
-func SetChannelHealth(channelID, channelName, provider string, healthy bool) {
-	value := 0.0
-	if healthy {
-		value = 1.0
+// RecordCacheHit records a cache hit or miss for the given cache type. Used to
+// measure wallet-balance cache effectiveness, which directly gauges how often
+// the P1-2 cached-balance degrade path even has data to work with.
+func RecordCacheHit(cacheType string, hit bool) {
+	result := "miss"
+	if hit {
+		result = "hit"
 	}
-	ChannelHealth.WithLabelValues(channelID, channelName, provider).Set(value)
+	CacheHits.WithLabelValues(cacheType, result).Inc()
 }
 
 // RecordCircuitBreakerState sets the breaker state gauge for a channel.
@@ -245,4 +676,148 @@ func RecordCircuitBreakerTrip(channelID string) {
 // RecordCircuitBreakerRejection increments the rejection counter.
 func RecordCircuitBreakerRejection(channelID string) {
 	CircuitBreakerRejections.WithLabelValues(channelID).Inc()
+}
+
+// RecordRelayOverhead records newhub-side overhead before first upstream call.
+// SLO target: P99 < 50ms.
+func RecordRelayOverhead(durationSec float64) {
+	RelayOverheadDuration.Observe(durationSec)
+}
+
+// RecordRelayTotal records end-to-end Relay() handler duration.
+// status is "success", "error", or "client_gone" (see handler.relayOutcome).
+func RecordRelayTotal(provider, model, status, product string, durationSec float64) {
+	RelayTotalDuration.WithLabelValues(provider, model, status, product).Observe(durationSec)
+}
+
+// RecordPoolExhaustedRejection increments the pool exhaustion rejection counter.
+// poolKind should be "relay" for relay-path rejections.
+func RecordPoolExhaustedRejection(tenantID, poolKind string) {
+	PoolExhaustedRejections.WithLabelValues(tenantID, poolKind).Inc()
+}
+
+// RecordBillingDebit records the CNY amount of a confirmed wallet charge.
+// op is "debit" (direct WalletDebit) or "settle" (pre-auth settlement).
+// product may be empty for requests with no resolved attribution tag.
+func RecordBillingDebit(product, op string, amountCNY float64) {
+	BillingDebitAmountCNY.WithLabelValues(product, op).Observe(amountCNY)
+}
+
+// RecordPoolNotConfigured increments CreditPoolNotConfiguredTotal for a
+// tenant/action pair. action must be "log" or "enforce" — never "off".
+func RecordPoolNotConfigured(tenantID, action string) {
+	CreditPoolNotConfiguredTotal.WithLabelValues(tenantID, action).Inc()
+}
+
+// RecordConsumerAudienceMismatch increments ConsumerAudienceMismatchTotal.
+// action must be "log" or "enforce" — never "off".
+func RecordConsumerAudienceMismatch(action string) {
+	ConsumerAudienceMismatchTotal.WithLabelValues(action).Inc()
+}
+
+// RecordResponseRegistryError increments ResponseRegistryErrorsTotal.
+func RecordResponseRegistryError() {
+	ResponseRegistryErrorsTotal.Inc()
+}
+
+// SetNATSConnected publishes the JetStream publisher's connection state.
+func SetNATSConnected(connected bool) {
+	if connected {
+		NATSConnected.Set(1)
+		return
+	}
+	NATSConnected.Set(0)
+}
+
+// LogRetentionDeletedTotal / LogRetentionPendingRows are cycle-13 L6's log
+// retention task's two series, declared here (L10) so the netdata alarm
+// this cycle adds (newhub_log_retention_backlog) and the task itself
+// (internal/lifecycle/log_retention.go, started from cmd/server/main.go by
+// the cycle-13 wiring pass) target one stable name. The task writes both
+// through RecordLogRetention / SetLogRetentionPending on every pass of every
+// ENABLED leg; a leg whose window is 0 (LOG_RETENTION_DAYS and
+// LOG_RETENTION_MONEY_DAYS default to 0 = off; DOWNLOAD_LOG_RETENTION_DAYS
+// defaults to 90 = on) never runs, so its `table` label is absent rather
+// than zero — read that as "retention off for that table", not "task
+// broken" (doc/runbook/log-retention.md).
+var (
+	// LogRetentionDeletedTotal counts rows the log-retention task has
+	// deleted, cumulative, by table ("logs" or "download_logs" per the
+	// plan's two retention tasks).
+	LogRetentionDeletedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "log_retention_deleted_total",
+			Help:      "Rows deleted by the log-retention task, cumulative, by table",
+		},
+		[]string{"table"},
+	)
+
+	// LogRetentionPendingRows is the row count the log-retention task's most
+	// recent pass still had left to delete when it hit its per-pass batch
+	// cap (LOG_RETENTION_MAX_BATCHES_PER_PASS) — i.e. the backlog it did
+	// NOT get to this pass, by table. 0 means the last pass cleared
+	// everything past the cutoff it looked for.
+	LogRetentionPendingRows = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: subsystem,
+			Name:      "log_retention_pending_rows",
+			Help:      "Rows still past the retention cutoff after the log-retention task's most recent pass, by table",
+		},
+		[]string{"table"},
+	)
+)
+
+// RecordLogRetention adds n (rows deleted in one pass) to
+// LogRetentionDeletedTotal for the given table. Call with n==0 is a no-op
+// increment (still fine — Add(0) does not create a phantom event) but
+// callers should prefer skipping the call entirely when nothing ran.
+func RecordLogRetention(table string, n int) {
+	LogRetentionDeletedTotal.WithLabelValues(table).Add(float64(n))
+}
+
+// SetLogRetentionPending publishes the backlog LogRetentionPendingRows
+// gauge for the given table. Call once per pass, even when n==0 — a
+// GaugeVec exports no series at all for a label it has never been Set with,
+// so skipping the zero case would make "backlog cleared" indistinguishable
+// from "this table's pass never ran".
+func SetLogRetentionPending(table string, n int) {
+	LogRetentionPendingRows.WithLabelValues(table).Set(float64(n))
+}
+
+// ShutdownCutRequestsTotal counts requests that were still in flight when a
+// graceful-shutdown budget (GRACEFUL_SHUTDOWN_TIMEOUT) expired and were
+// therefore cut. Written from lifecycle.Drainer.Shutdown's
+// budget-exceeded arm (internal/lifecycle/drain.go) via
+// RecordShutdownCutRequests below; grep that helper for the current set of
+// call sites.
+//
+// Read it as a best-effort record, not an exact one. The increment happens
+// in the last instants of the process: the pod exits immediately after, and
+// the go.d scrape interval is 10s against a NodePort that round-robins
+// across replicas, so a given drain's increment is more likely to be lost
+// with the process than collected. It is a counter because a scrape that
+// DOES land is then comparable across pods; the paired
+// "graceful shutdown: budget exceeded" SysLog line (kept in drain.go) is
+// the record that survives regardless. No netdata alarm is bound to it for
+// that reason — see doc/runbook/graceful-drain.md.
+var ShutdownCutRequestsTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: subsystem,
+		Name:      "shutdown_cut_requests_total",
+		Help:      "Requests still in flight when a graceful-shutdown budget expired (best effort: the process exits right after)",
+	},
+)
+
+// RecordShutdownCutRequests adds n cut requests to
+// ShutdownCutRequestsTotal. n <= 0 is ignored so a shutdown that cut
+// nothing cannot be mistaken for one that did.
+func RecordShutdownCutRequests(n int) {
+	if n <= 0 {
+		return
+	}
+	ShutdownCutRequestsTotal.Add(float64(n))
 }

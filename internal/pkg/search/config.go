@@ -100,6 +100,8 @@ func initializeLogsIndex() error {
 		"quota",       // Quota / 额度
 		"model_name",  // Model name / 模型名称 (also filterable)
 		"username",    // Username / 用户名 (also filterable)
+		"project_id",  // Cost-attribution project / 成本归集项目 (migration 029)
+		"employee_ref", // Employee attribution / 员工归属 (migration 045)
 	}
 	// Convert to []interface{}
 	filterableAttributes := make([]interface{}, len(filterableAttributesStr))

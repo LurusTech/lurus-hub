@@ -16,8 +16,50 @@ import (
 var RDB *redis.Client
 var RedisEnabled = true
 
+// redisTTLNoExpire 是 TTL 命令对「key 存在但没有过期时间」的返回值（-2 表示 key
+// 不存在）。这类 key 仍必须照常写入，只是不需要重设过期时间；否则对持久化 key
+// 的自增/写入会被静默丢弃（限流计数、配额缓存等因此失效）。
+const redisTTLNoExpire = time.Duration(-1)
+
 func RedisKeyCacheSeconds() int {
 	return SyncFrequency
+}
+
+// Bounded outbound Redis budget (cycle 12 §2). go-redis ships
+// ContextTimeoutEnabled=false, which makes the client ignore the caller's
+// context deadline for the command round trip: a server that accepts the
+// connection and then stops answering costs every command the full ReadTimeout
+// (3s by default) no matter how little budget the caller had left. These
+// defaults plus the flag are what turn a caller deadline into a real bound —
+// TestRedisOptions_CallerDeadlineBoundsCommand measured 3.00s before and
+// ~0.2s after.
+const (
+	// defaultRedisOpTimeoutMS bounds one command's read and one command's write.
+	defaultRedisOpTimeoutMS = 1000
+	// defaultRedisDialTimeoutMS bounds establishing a new connection, which has
+	// to cover DNS plus TCP plus any AUTH round trip, hence the larger value.
+	defaultRedisDialTimeoutMS = 2000
+)
+
+// applyRedisTimeouts installs the bounded timeout set on a parsed option struct.
+// Operator knobs: REDIS_OP_TIMEOUT_MS (read and write), REDIS_DIAL_TIMEOUT_MS.
+// PoolTimeout is read timeout + 1s, go-redis' own convention for "wait for a
+// free connection slightly longer than one command may take". MaxRetries is 1
+// (go-redis default 3) so a dead backend costs at most one extra round trip;
+// with ContextTimeoutEnabled on, a retry past the caller's deadline fails
+// instantly anyway.
+func applyRedisTimeouts(opt *redis.Options) {
+	if opt == nil {
+		return
+	}
+	op := time.Duration(GetEnvOrDefault("REDIS_OP_TIMEOUT_MS", defaultRedisOpTimeoutMS)) * time.Millisecond
+	dial := time.Duration(GetEnvOrDefault("REDIS_DIAL_TIMEOUT_MS", defaultRedisDialTimeoutMS)) * time.Millisecond
+	opt.DialTimeout = dial
+	opt.ReadTimeout = op
+	opt.WriteTimeout = op
+	opt.PoolTimeout = op + time.Second
+	opt.MaxRetries = 1
+	opt.ContextTimeoutEnabled = true
 }
 
 // InitRedisClient This function is called after init()
@@ -32,19 +74,37 @@ func InitRedisClient() (err error) {
 		SyncFrequency = 60
 	}
 	SysLog("Redis is enabled")
-	opt, err := redis.ParseURL(os.Getenv("REDIS_CONN_STRING"))
-	if err != nil {
-		FatalLog("failed to parse Redis connection string: " + err.Error())
-	}
-	opt.PoolSize = GetEnvOrDefault("REDIS_POOL_SIZE", 10)
+	// Through ParseRedisOption, not a private twin: the exported builder is what
+	// the Redis oracles drive, and before cycle 12's repair round it had zero
+	// production callers — the bounded timeout set could have been correct in the
+	// tested path and absent from the served one without a single test noticing
+	// (TestInitRedisClientGoesThroughParseRedisOption). ParseRedisOption
+	// FatalLogs a malformed DSN, which is the same fast-fail this line had.
+	opt := ParseRedisOption()
 	RDB = redis.NewClient(opt)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err = RDB.Ping(ctx).Result()
+	// Bounded boot connect-retry (A2): a Redis pod not yet Ready when this pod
+	// boots otherwise crashes the process on the first ping. Reuse the same
+	// bounded-backoff helper + budget as the DB path. The ParseURL failure above
+	// stays an immediate FatalLog (config error, not transient). Only the boot ping is soft.
+	err = RetryConnect("redis", RetryConfig{
+		MaxAttempts: DBConnectRetries,
+		BaseDelay:   DBConnectRetryBaseDelay,
+		MaxDelay:    DBConnectRetryMaxDelay,
+	}, func(error) bool { return true }, func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), DBConnectPingTimeout)
+		defer cancel()
+		_, perr := RDB.Ping(ctx).Result()
+		return perr
+	})
 	if err != nil {
-		FatalLog("Redis ping test failed: " + err.Error())
+		// Soft failure: RDB (built above) and RedisEnabled stay as they are —
+		// ~20 call sites dereference RDB when RedisEnabled is true, and go-redis
+		// reconnects per command, so the client heals once Redis is back. A
+		// FatalLog here crash-looped the gateway through any Redis blip, though
+		// health, NATS, Meilisearch and OIDC all degrade instead.
+		SysError("Redis ping test failed, continuing degraded: " + err.Error())
+		return err
 	}
 	if DebugEnabled {
 		SysLog(fmt.Sprintf("Redis connected to %s", opt.Addr))
@@ -53,11 +113,20 @@ func InitRedisClient() (err error) {
 	return err
 }
 
+// ParseRedisOption parses REDIS_CONN_STRING and applies the pool size plus the
+// bounded timeout set. It is the single construction path: InitRedisClient
+// builds the process-wide client from it, and everything else in the repo that
+// needs options calls it too, so an oracle driven through this function is
+// driving what production serves traffic with. A malformed DSN is a
+// configuration error, not a transient one, so it fast-fails the process.
 func ParseRedisOption() *redis.Options {
 	opt, err := redis.ParseURL(os.Getenv("REDIS_CONN_STRING"))
 	if err != nil {
 		FatalLog("failed to parse Redis connection string: " + err.Error())
+		return nil
 	}
+	opt.PoolSize = GetEnvOrDefault("REDIS_POOL_SIZE", 10)
+	applyRedisTimeouts(opt)
 	return opt
 }
 
@@ -120,7 +189,7 @@ func RedisHSetObj(ctx context.Context, key string, obj interface{}, expiration t
 		}
 
 		// 处理指针类型
-		if value.Kind() == reflect.Ptr {
+		if value.Kind() == reflect.Pointer {
 			if value.IsNil() {
 				data[field.Name] = ""
 				continue
@@ -169,7 +238,7 @@ func RedisHGetObj(ctx context.Context, key string, obj interface{}) error {
 
 	// Handle both pointer and non-pointer values
 	val := reflect.ValueOf(obj)
-	if val.Kind() != reflect.Ptr {
+	if val.Kind() != reflect.Pointer {
 		return fmt.Errorf("obj must be a pointer to a struct, got %T", obj)
 	}
 
@@ -186,7 +255,7 @@ func RedisHGetObj(ctx context.Context, key string, obj interface{}) error {
 			fieldValue := v.Field(i)
 
 			// Handle pointer types
-			if fieldValue.Kind() == reflect.Ptr {
+			if fieldValue.Kind() == reflect.Pointer {
 				if value == "" {
 					continue
 				}
@@ -262,6 +331,11 @@ func RedisIncr(ctx context.Context, key string, delta int64) error {
 		_, err = txn.Exec(ctx)
 		return err
 	}
+
+	// key 存在但没有过期时间：直接自增，不需要事务重设 TTL
+	if ttl == redisTTLNoExpire {
+		return RDB.IncrBy(ctx, key, delta).Err()
+	}
 	return nil
 }
 
@@ -288,6 +362,11 @@ func RedisHIncrBy(ctx context.Context, key, field string, delta int64) error {
 		_, err = txn.Exec(ctx)
 		return err
 	}
+
+	// key 存在但没有过期时间：直接自增，不需要事务重设 TTL
+	if ttl == redisTTLNoExpire {
+		return RDB.HIncrBy(ctx, key, field, delta).Err()
+	}
 	return nil
 }
 
@@ -313,6 +392,11 @@ func RedisHSetField(ctx context.Context, key, field string, value interface{}) e
 
 		_, err = txn.Exec(ctx)
 		return err
+	}
+
+	// key 存在但没有过期时间：直接写入字段，不需要事务重设 TTL
+	if ttl == redisTTLNoExpire {
+		return RDB.HSet(ctx, key, field, value).Err()
 	}
 	return nil
 }

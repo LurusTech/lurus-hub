@@ -1,18 +1,23 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/currency"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 const (
@@ -20,7 +25,7 @@ const (
 	maxTransferCNY = 10000.0
 )
 
-// getIdentityAccountID extracts the platform account ID set by ZitadelAuth middleware.
+// getIdentityAccountID extracts the platform account ID set by OIDCAuth middleware.
 // Returns 0 if not available (platform was unreachable during auth).
 func getIdentityAccountID(c *gin.Context) int64 {
 	v, ok := c.Get("identity_account_id")
@@ -82,6 +87,61 @@ type createCheckoutRequest struct {
 	ReturnURL     string  `json:"return_url"`
 }
 
+// checkoutIntentWindow is how long two byte-identical checkout requests from
+// the same account count as ONE intent when the caller supplies no
+// Idempotency-Key. It is a fallback, not the mechanism: a client that sends
+// its own key gets exact, unbounded idempotency instead. What the console must
+// send is one key minted when the Pay button is pressed, reused for every
+// retry of THAT press and re-minted for the next one.
+//
+// Two minutes covers what the fallback is for — a double-clicked button, a
+// browser refresh, a retry after a client-side timeout — while still letting a
+// customer deliberately top up the same amount again a few minutes later. Both
+// ends of that trade-off are real: shorter loses genuine double-submits,
+// longer blocks a legitimate repeat top-up by handing back an order that may
+// already be paid.
+const checkoutIntentWindow = 2 * time.Minute
+
+// checkoutIntentNow is the clock the fallback key buckets on. A package-level
+// seam (same convention as the wallet seams in tenant_credit_pool.go) so tests
+// can pin it instead of racing a real window boundary.
+var checkoutIntentNow = time.Now
+
+// checkoutIdempotencyKey derives the key sent to the platform's checkout
+// endpoint, which dedupes on it (and 400s a request that carries none).
+//
+// Order of preference:
+//  1. the caller's Idempotency-Key header, or its X- spelling — same two-header
+//     fallback the credit-pool topup accepts;
+//  2. a DETERMINISTIC digest of the intent (account, amount, method, return
+//     URL) bucketed into checkoutIntentWindow.
+//
+// It was previously an account id plus a fresh random value per HTTP request:
+// correctly plumbed into a dedupe mechanism, then fed a value that could never
+// repeat, so two identical POSTs opened two orders.
+//
+// BLIND SPOT of the fallback: it is a wall-clock bucket, not a sliding window.
+// Two identical requests that straddle a bucket boundary — even a second
+// apart — hash to different keys and open two orders. That is why the header
+// is the real fix and the fallback only narrows the window.
+func checkoutIdempotencyKey(c *gin.Context, accountID int64, req createCheckoutRequest) string {
+	if k := strings.TrimSpace(c.GetHeader("Idempotency-Key")); k != "" {
+		return k
+	}
+	if k := strings.TrimSpace(c.GetHeader("X-Idempotency-Key")); k != "" {
+		return k
+	}
+	bucket := checkoutIntentNow().UTC().Unix() / int64(checkoutIntentWindow/time.Second)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s|%d",
+		accountID,
+		strconv.FormatFloat(req.AmountCNY, 'f', 4, 64),
+		req.PaymentMethod,
+		req.ReturnURL,
+		bucket,
+	)))
+	return "checkout-" + hex.EncodeToString(sum[:16])
+}
+
 // CreateBillingCheckout creates a wallet topup checkout session via lurus-platform.
 // POST /api/v2/user/billing/checkout
 func CreateBillingCheckout(c *gin.Context) {
@@ -103,30 +163,58 @@ func CreateBillingCheckout(c *gin.Context) {
 		return
 	}
 
-	// Generate idempotency key from request context to prevent duplicate orders
-	idempotencyKey := fmt.Sprintf("api-%d-%s", accountID, uuid.New().String()[:8])
+	// Idempotency key the platform dedupes on — caller-supplied when the
+	// client sends one, otherwise a deterministic per-intent digest. See
+	// checkoutIdempotencyKey for the window and its blind spot.
+	idempotencyKey := checkoutIdempotencyKey(c, accountID, req)
 
 	result, err := common.CreateCheckout(
 		c.Request.Context(),
 		accountID,
 		req.AmountCNY,
 		req.PaymentMethod,
-		"lurus-api",
+		ratio_setting.DefaultSourceProduct,
 		idempotencyKey,
 		req.ReturnURL,
 	)
 	if err != nil {
-		status := http.StatusServiceUnavailable
-		msg := "checkout service unavailable"
-		if strings.Contains(err.Error(), "insufficient") {
-			status = http.StatusBadRequest
-			msg = err.Error()
+		// A CheckoutError means the platform actively answered the request
+		// (not a network/5xx outage). Its Status is the platform's real HTTP
+		// status — pass a 400 through honestly with the real message so the
+		// frontend can distinguish "bad amount / no payment method configured"
+		// from "platform is down". Anything else (network error, 5xx, or no
+		// typed error at all) stays the generic 503.
+		var checkoutErr *common.CheckoutError
+		if errors.As(err, &checkoutErr) && checkoutErr.Status == http.StatusBadRequest {
+			msg := checkoutErr.Message
+			if msg == "" {
+				msg = "invalid checkout request"
+			}
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": msg,
+			})
+			return
 		}
-		c.JSON(status, gin.H{
+		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"success": false,
-			"message": msg,
+			"message": "checkout service unavailable",
 		})
 		return
+	}
+
+	// Record local ownership (order_no -> account_id) so the status poll can
+	// prove the caller owns the order: the platform's status endpoint is
+	// keyed only by order_no and takes no account parameter, so this is the
+	// only place the binding can be captured. A failure here must not fail
+	// the checkout the user already paid to start — log and continue; the
+	// status poll fails closed on a missing record, so the worst case is a
+	// re-poll after the row lands, not a lost order.
+	if result != nil && result.OrderNo != "" {
+		if err := repo.RecordCheckoutOrder(result.OrderNo, accountID, req.AmountCNY, common.GetTimestamp()); err != nil {
+			logger.LogError(c, fmt.Sprintf("record checkout order ownership failed (order_no=%s account=%d): %v",
+				result.OrderNo, accountID, err))
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -143,6 +231,36 @@ func GetBillingCheckoutStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "order_no is required",
+		})
+		return
+	}
+
+	// Ownership gate: the platform status endpoint is keyed only by order_no,
+	// so without this check any authenticated caller could poll another
+	// account's order (amount_cny/status/paid_at) by knowing or enumerating
+	// its order_no. Resolve the caller's linked platform account, then require
+	// a local ownership record that matches. Fail closed when the account is
+	// unlinked or no record exists.
+	accountID := getIdentityAccountID(c)
+	if accountID == 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"message": "platform account not linked",
+		})
+		return
+	}
+	owner, found, err := repo.CheckoutOrderAccount(orderNo)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"message": "checkout status unavailable",
+		})
+		return
+	}
+	if !found || owner != accountID {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "order not found for this account",
 		})
 		return
 	}
@@ -241,8 +359,8 @@ func TopUpV2(c *gin.Context) {
 	debitResult, err := common.DebitWalletGRPC(
 		c.Request.Context(), accountID, req.AmountCNY,
 		"product_purchase",
-		fmt.Sprintf("Wallet to lurus-api quota transfer (%.2f CNY)", req.AmountCNY),
-		"lurus-api",
+		fmt.Sprintf("Wallet to %s quota transfer (%.2f CNY)", ratio_setting.DefaultSourceProduct, req.AmountCNY),
+		ratio_setting.DefaultSourceProduct, idempotencyKey,
 	)
 	if err != nil {
 		status := http.StatusServiceUnavailable
@@ -259,14 +377,14 @@ func TopUpV2(c *gin.Context) {
 	}
 
 	// Credit product quota
-	quotaAmount := int(req.AmountCNY * common.QuotaPerUnit)
+	quotaAmount := currency.CNYToQuota(req.AmountCNY)
 	if err := repo.IncreaseUserQuota(userID, quotaAmount, true); err != nil {
 		// Rollback: credit wallet back
 		rollbackErr := common.CreditWalletGRPC(
 			c.Request.Context(), accountID, req.AmountCNY,
 			"refund",
 			fmt.Sprintf("Rollback: quota credit failed for transfer %.2f CNY", req.AmountCNY),
-			"lurus-api",
+			ratio_setting.DefaultSourceProduct, idempotencyKey+":rollback",
 		)
 		if rollbackErr != nil {
 			slog.Error("CRITICAL: wallet debited but quota credit AND rollback both failed",

@@ -1,0 +1,411 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lurus-newhub
+  namespace: lurus-newhub
+  labels:
+    app: lurus-newhub
+    environment: stage
+spec:
+  # 3 replicas (was 1) so the H1.3 DB-lease leader election can be drilled on
+  # STAGE: kill the leader pod and confirm a standby takes over within the
+  # lease TTL. Only the leader runs master-only background tasks.
+  replicas: 3
+  # One superseded ReplicaSet, not ten. Every auto-pin leaves a new RS behind
+  # and the default (10) had accumulated 11 of them per namespace, each
+  # pinning a pod template nobody can reach any more — ArgoCD does not manage
+  # ReplicaSets, so nothing was ever cleaning them up. The rollback path here
+  # is `revert the pin commit`, not `kubectl rollout undo`
+  # (doc/runbook/staging-deploy.md); 1 keeps a single undo step as a local
+  # escape hatch for the case where GitHub is unreachable from R6, which has
+  # happened (2026-09-03, ArgoCD + ImagePullBackOff).
+  revisionHistoryLimit: 1
+  selector:
+    matchLabels:
+      app: lurus-newhub
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: lurus-newhub
+        environment: stage
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Pod security baseline: non-root, drop fsGroup to the nobody uid.
+      # (Was "parity with base deploy/k8s/deployment.yaml"; that base manifest
+      # set was deleted 2026-08-24 — it still described the retired lurus-api
+      # image in ns lurus-system. This overlay is the only newhub manifest.)
+      # cycle-13 L11 graceful drain budget: preStop 5s +
+      # GRACEFUL_SHUTDOWN_TIMEOUT 75s + 10s margin for the remaining
+      # cleanup in run() (DB close, tracing shutdown, quota_data flush) = 90.
+      # Locked by deploy/k8s/deploy_consistency_test.go
+      # TestGracefulShutdownBudget; see doc/runbook/graceful-drain.md.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: lurus-newhub
+          # Pinned to an immutable digest (was floating "main"). History:
+          # 2026-08-15 reconciled to the LIVE deployment (rev 38, tag
+          # main-20260811-d12acb2, main@d12acb24, Publish run 31468773481,
+          # provenance from that run's push log); the previous pin (718f31f7,
+          # main@b6d96c91, 2026-07-16) had drifted because rolls were applied
+          # to the cluster without bumping this file.
+          # The `# pin:` line and the `image:` line below are AUTO-WRITTEN by
+          # docker-image-main.yml (bump_r6_manifest job) after every :main
+          # build, so this manifest always names the newest built image and
+          # git is the desired state (cluster catches up on the next manual
+          # ArgoCD sync / apply -k). Hand-edit only for an emergency pin, and
+          # expect the next build to overwrite it.
+          # GHCR repository name follows the GitHub repo name (hanmahong5-arch/lurus-newhub).
+          # pin: main-20261113-a4acca7 run=43373601743
+          image: ghcr.io/hanmahong5-arch/lurus-newhub@sha256:337be7cc291c5fe1e7c5dc0c90a9df5505184dac0b0fd45947682e2f92a1a03f
+          imagePullPolicy: IfNotPresent
+          # --log-dir= (empty): file-based logging is a no-op here
+          # (internal/pkg/logger/logger.go's SetupLogger gates on
+          # *common.LogDir != ""); stdout is already collected by kubelet.
+          args: ["--log-dir="]
+          # Container hardening: no priv-escalation, read-only root FS (writes go
+          # to the /data + /tmp emptyDirs below), drop all caps.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: PORT
+              value: "3000"
+            - name: TZ
+              value: "Asia/Shanghai"
+            - name: GIN_MODE
+              value: "release"
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-secrets
+                  key: SESSION_SECRET
+            - name: SQL_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-secrets
+                  key: SQL_DSN
+            - name: REDIS_CONN_STRING
+              value: "redis://redis.lurus-system.svc.cluster.local:6379/2"
+            # Downward API: this pod's own identity, published on /metrics
+            # (lurus_gateway_instance_info, X-Lurus-Instance header) so a
+            # scrape on the shared NodePort can be attributed to a specific
+            # replica. /api/health is public (no auth gate) and deliberately
+            # does not carry this identity — see checks.leader instead.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Host-only session cookie (2026-08-30 domain cutover). The old
+            # value test-newhub.lurus.cn made every browser on hub.lurus.cn
+            # silently DROP the session cookie (domain mismatch), which broke
+            # the whole SSO chain there — PKCE code_verifier lives in the
+            # session, so the callback could never succeed. test-newhub now
+            # fronts the UAT instance; empty = cookie scoped to whichever
+            # host served it, correct for the single prod domain hub.lurus.cn.
+            - name: SESSION_COOKIE_DOMAIN
+              value: ""
+            # UAT 2026-08-26 P-finding: the code default is FALSE, so from
+            # launch until 2026-08-29 the gateway recorded ZERO error logs —
+            # upstream relay failures left no queryable trace. Rows go into
+            # the shared logs table (LogTypeError). Retention is the
+            # log-retention leader task (cycle-13 L6): the window comes from
+            # LOG_RETENTION_DAYS (set below since 2026-10-10). DeleteOldLog, which the
+            # previous text named, only ever ran from the operator-driven
+            # DELETE /api/log/. Setting a window is an owner decision --
+            # read doc/runbook/log-retention.md first (money rows have their
+            # own LOG_RETENTION_MONEY_DAYS window and a 400-day floor,
+            # because the invoice endpoints SUM the logs table directly).
+            - name: ERROR_LOG_ENABLED
+              value: "true"
+            # Retention windows, set 2026-10-10 (owner delegated the decision):
+            # diagnostic rows (unknown/manage/system/error) live 180 days;
+            # money rows (topup/consume/refund) 730 days - the invoice
+            # endpoints SUM the logs table directly, so this keeps two years
+            # of statements reproducible (floor is 400). Archived prompt text
+            # (log_bodies, migration 052) has its own 30-day default and is
+            # off until a tenant consents. Runbook: doc/runbook/log-retention.md.
+            - name: LOG_RETENTION_DAYS
+              value: "180"
+            - name: LOG_RETENTION_MONEY_DAYS
+              value: "730"
+            # OIDC ON since 2026-08-23. The formerly-missing credential now
+            # exists: the platform app registry (2l-svc-platform
+            # config/apps.yaml entry `newhub`, commit ca2e25a6) registered a
+            # Web+PKCE client in the IdP and its reconciler wrote the issued
+            # client_id into lurus-newhub-secrets/OIDC_CLIENT_ID. The four
+            # settings below must stay set TOGETHER — the flag with a
+            # missing issuer/jwks leaves jwksManager nil and turns every
+            # OIDCAuth route into a 500 (InitOIDCAuth logs but does not
+            # fatal). lutu session-token clients survive since ddca5e65
+            # (#93). SSO entry: GET /api/v2/<tenant_slug>/auth/login (slug
+            # `lurus` = tenant default, mapped to the IdP org).
+            - name: OIDC_ENABLED
+              value: "true"
+            - name: OIDC_ISSUER
+              value: "https://identity.lurus.cn"
+            - name: OIDC_JWKS_URI
+              value: "https://identity.lurus.cn/oauth/v2/keys"
+            - name: OIDC_REDIRECT_URI
+              value: "https://hub.lurus.cn/api/v2/oauth/callback"
+            # Absolute post-logout target (2026-08-30). The previous unset
+            # state fell back to the relative "/login", which can never match
+            # the absolute post-logout URI registered at the IdP (derived from
+            # the apps.yaml domain), so IdP-side logout redirect always failed.
+            - name: OIDC_POST_LOGOUT_REDIRECT_URI
+              value: "https://hub.lurus.cn/"
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-secrets
+                  key: OIDC_CLIENT_ID
+            # First SSO login auto-creates the local user inside the slug
+            # tenant. Tenants stay manually provisioned — no tenant
+            # auto-create, so an unknown org can never mint itself a tenant.
+            - name: OIDC_AUTO_CREATE_USER
+              value: "true"
+            # The registered client is public (auth method NONE) — the IdP
+            # rejects its code exchange without PKCE, and the handler only
+            # sends code_challenge when this is set (isPKCEEnabled,
+            # oauth.go). Live-verified 2026-08-24: without it the authorize
+            # redirect carried no code_challenge.
+            - name: OIDC_ENABLE_PKCE
+              value: "true"
+            - name: MEILISEARCH_ENABLED
+              value: "false"
+            # Relay pre-auth against the platform wallet for identity-linked
+            # tokens (IdentityAccountID > 0); unlinked traffic keeps the pure
+            # local-quota path. Calls go over HTTP to IDENTITY_SERVICE_URL
+            # (the identity gRPC client never worked and was removed).
+            - name: BILLING_UNIFIED_ENABLED
+              value: "true"
+            # Pool-required rollout GRADUATED to enforce (runbook P3.1,
+            # 2026-08-24). The gate's graduation criterion was verified by
+            # direct DB oracle before the flip: every tenant row
+            # (default / lurus-default / switch, all status=1) has a
+            # tenant_credit_pools row, so enforce changes NOTHING for
+            # existing traffic — it is a pure guardrail against future
+            # tenants slipping into unbilled relay. A tenant with no pool
+            # row now gets HTTP 402 pool_not_configured at the relay gate.
+            # ⚠️ Tenant onboarding MUST therefore provision a credit pool
+            # row (unlimited = max_balance -1) — see
+            # doc/runbook/tenant-onboarding.md. Any unrecognized value
+            # degrades to `off` (never fail-open), and a transient pool-DB
+            # error still fails OPEN by design (pool_balance_check.go).
+            - name: CREDIT_POOL_REQUIRED
+              value: "enforce"
+            # Paid desktop SKUs: fail-closed download (OIDC + platform entitlement).
+            # Empty = gate off. Keep in sync with FixedProductDownloadGate("lurus-switch").
+            - name: RELEASE_GATED_PRODUCTS
+              value: "lurus-switch"
+            - name: IDENTITY_SERVICE_URL
+              value: "http://platform-core.lurus-platform.svc.cluster.local:18104"
+            - name: IDENTITY_PUBLIC_URL
+              value: "https://identity.lurus.cn"
+            - name: IDENTITY_SERVICE_INTERNAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-secrets
+                  key: IDENTITY_SERVICE_INTERNAL_KEY
+            - name: IDENTITY_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-secrets
+                  key: IDENTITY_SESSION_SECRET
+            - name: LURUS_WHITELABEL_MASTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-secrets
+                  key: LURUS_WHITELABEL_MASTER_SECRET
+            - name: ALLOWED_ORIGINS
+              # hub.lurus.cn is this service's own production domain.
+              # identity.lurus.cn is the OIDC issuer (IDENTITY_PUBLIC_URL); its
+              # origin must be allowed for the SSO callback/CORS to work.
+              # test-newhub.lurus.cn was REMOVED 2026-08-30: that vhost now
+              # fronts the isolated UAT instance (NodePort 30851). Keeping it
+              # here would authorize the weaker-hardened UAT origin to make
+              # credentialed cross-origin calls against production.
+              value: "https://hub.lurus.cn,https://identity.lurus.cn"
+            - name: LLM_QUOTA_NATS_ENABLED
+              value: "true"
+            - name: NATS_URL
+              # In-cluster NATS (ns messaging). The old R5 bridge
+              # 100.120.110.73:14222 is dead; the LLM_EVENTS stream and the
+              # lurus-notification consumer both live on this cluster's NATS.
+              value: "nats://nats.messaging.svc:4222"
+            - name: LLM_QUOTA_NATS_STREAM
+              value: "LLM_EVENTS"
+            - name: NODE_TYPE
+              value: "master"
+            - name: SYNC_FREQUENCY
+              value: "60"
+            # Circuit breaker: a run of upstream failures only trips a channel
+            # if the failures fall within 5 minutes of each other; older ones
+            # are forgotten (resilience.Config.FailureWindow, default off).
+            - name: CB_FAILURE_WINDOW_SEC
+              value: "300"
+            # OpenRouter free-model sync loop (openrouter_sync.AutoSyncWithContext):
+            # checks every 60 min which sync jobs are due; the free-pool job
+            # itself is scheduled daily. Unset = the loop never starts, which
+            # is why the free list in the old newapi channel went stale
+            # (2026-09-29: 3 of its 40 ":free" models were still free).
+            - name: OPENROUTER_FREE_SYNC_FREQUENCY
+              value: "60"
+            # Multi-provider CatalogSync (mig 056). Keep empty until UAT
+            # (test-newhub.lurus.cn) is green with fleetctl doctor + models sync.
+            # Routes ship with the image via AutoMigrate; ticker stays off.
+            - name: CATALOG_SYNC_FREQUENCY
+              value: ""
+            # Cycle-13 pool ceiling, sized against a MEASURED server budget
+            # (2026-09-20, R6 ns database, pod lurus-pg-0):
+            # max_connections = 100, 38 in use -- newhub 13, zitadel 8,
+            # newhub_uat 5, identity 3, lucrum 3, other 6. This deployment is
+            # the only multi-replica consumer: 3 replicas x 12 = 36.
+            # The previous rationale (2 pools x 20) was wrong for THIS
+            # deployment: a second pool exists only when LOG_SQL_DSN is set,
+            # and neither manifest sets it -- InitLogDB aliases LOG_DB to DB
+            # otherwise. deploy_consistency_test.go now counts pools that way
+            # (2 only if LOG_SQL_DSN is declared in the same manifest, else 1)
+            # instead of assuming x2 everywhere.
+            # IDLE == OPEN on purpose: ConnMaxIdleTime already reaps idle
+            # connections, so a lower idle cap only buys reconnect churn
+            # under the steady load 3 replicas produce.
+            # Lowering this is an AVAILABILITY knob, not a latency one: the deep
+            # readinessProbe's DB ping takes a pooled connection, so a saturated
+            # pool answers /api/health with 503 and pulls replicas out of the
+            # Service. See doc/runbook/db-pool-saturation.md.
+            - name: SQL_MAX_OPEN_CONNS
+              value: "12"
+            - name: SQL_MAX_IDLE_CONNS
+              value: "12"
+            # Per-tenant ceiling on concurrent relay requests: one tenant
+            # cannot spend the whole process upstream concurrency budget.
+            - name: RELAY_MAX_CONCURRENT_PER_TENANT
+              value: "64"
+            # Bifrost in-process relay engine (fusion Wave 3/4). UAT soak +
+            # go/no-go: doc/runbook/bifrost-uat-soak.md. Rollback = set
+            # RELAY_ENGINE=legacy (or remove both vars) and let ArgoCD heal.
+            # Soft-retire of owned legacy adaptors: doc/adr/bifrost-relay-engine.md.
+            - name: RELAY_ENGINE
+              value: "bifrost"
+            - name: RELAY_BIFROST_MODES
+              value: "chat,embeddings,messages"
+            # Below the 1Gi container limit so the Go heap backs off before the
+            # cgroup OOM-kills the pod.
+            - name: GOMEMLIMIT
+              value: "900MiB"
+            # cycle-13 L11: bounds only how long http.Server.Shutdown waits
+            # for in-flight requests. A stream still running when it elapses
+            # is cut, logged and counted -- the process still exits 0.
+            # Must fit inside terminationGracePeriodSeconds (90) together
+            # with the 5s preStop sleep. doc/runbook/graceful-drain.md.
+            - name: GRACEFUL_SHUTDOWN_TIMEOUT
+              value: "75s"
+            - name: LOG_FORMAT
+              value: "json"
+            # Lutu APP web_search tool — proxies to Tavily server-side
+            # so the API key stays off-device. When missing the
+            # /api/v2/lutu/search endpoint returns 503 search_disabled.
+            - name: TAVILY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: lurus-newhub-secrets
+                  key: TAVILY_API_KEY
+                  optional: true
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          startupProbe:
+            httpGet:
+              path: /api/status
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            # 5 + 120x5 = 605s. This is the whole budget a boot migration
+            # has before kubelet SIGKILLs the pod mid-statement: 039's
+            # CREATE INDEX CONCURRENTLY on the logs table runs outside a
+            # transaction, so a kill leaves an INVALID index behind. The
+            # old 30 (=155s) was under that. Locked by
+            # deploy_consistency_test.go TestStartupProbeBudgetCoversAMigration;
+            # doc/runbook/database.md publishes the same 605s.
+            failureThreshold: 120
+            timeoutSeconds: 3
+          # Liveness stays SHALLOW (/api/status, no dependency checks). A deep
+          # liveness that pinged the shared PG would restart all 3 pods at once
+          # on a DB blip — a cascading restart storm. Restarts must reflect a
+          # broken *process*, never a transient dependency. (P0-2)
+          livenessProbe:
+            httpGet:
+              path: /api/status
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+          # Readiness is DEEP (/api/health: DB ping + breaker state). This gates
+          # traffic, not restarts — a NotReady pod is pulled from the Service but
+          # not killed. CORRELATION RISK: all 3 replicas share one PG, so a PG
+          # blip flips all 3 NotReady at once = full outage, worse than the
+          # occasional 500 it replaces. Two mitigations are MANDATORY and ship
+          # WITH this change to PROD:
+          #   1. failureThreshold:3 + periodSeconds:5 ⇒ ~15s of sustained failure
+          #      before a pod leaves the Service, so a 2s PG hiccup never flaps
+          #      the fleet; timeoutSeconds:4 gives the handler's own ceiling
+          #      (DB ping budget 1.5s + Redis-touching checks up to 2s) headroom
+          #      to answer before the probe itself times out, while still
+          #      catching a truly hung DB ping.
+          #   2. P1-2 (billing breaker → cached-balance degrade) must be live so
+          #      /api/health does NOT 503 on a billing-path blip — only a true
+          #      DB-down trips readiness. DO NOT apply this readiness change to
+          #      PROD ahead of P1-2.
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 3
+            successThreshold: 1
+          # P1-4: give in-flight relay requests ~5s to drain before SIGTERM on a
+          # rolling update (maxUnavailable:0/maxSurge:1). /bin/sleep exists in the
+          # debian:bookworm-slim runtime base.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sleep", "5"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi

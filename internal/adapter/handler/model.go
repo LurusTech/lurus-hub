@@ -5,17 +5,18 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
-	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
-	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
-	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
-	"github.com/LurusTech/lurus-hub/internal/app/relay"
 	"github.com/LurusTech/lurus-hub/internal/adapter/provider/ai360"
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/provider/lingyiwanwu"
 	"github.com/LurusTech/lurus-hub/internal/adapter/provider/minimax"
 	"github.com/LurusTech/lurus-hub/internal/adapter/provider/moonshot"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/relay"
+	"github.com/LurusTech/lurus-hub/internal/app/tenantpolicy"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
@@ -109,22 +110,141 @@ func init() {
 	})
 }
 
-func ListModels(c *gin.Context, modelType int) {
-	userOpenAiModels := make([]dto.OpenAIModels, 0)
-
-	acceptUnsetRatioModel := operation_setting.SelfUseModeEnabled
-	if !acceptUnsetRatioModel {
-		userId := c.GetInt("id")
-		if userId > 0 {
-			userSettings, _ := repo.GetUserSetting(userId, false)
-			if userSettings.AcceptUnsetRatioModel {
-				acceptUnsetRatioModel = true
-			}
+// acceptUnsetRatioModels reports whether models without a configured
+// ratio/price should still be kept in discovery: platform self-use mode
+// makes this true regardless of the caller; otherwise it follows the
+// caller's own per-user AcceptUnsetRatioModel setting (proved by
+// TestVisibleModels_AcceptUnsetRatioModel_PerUser). Split out of
+// visibleModels unchanged so ListRoutableModelsV2
+// (v2_models_routable.go) can compute the same flag without a token in
+// context.
+func acceptUnsetRatioModels(c *gin.Context) bool {
+	if operation_setting.SelfUseModeEnabled {
+		return true
+	}
+	userId := c.GetInt("id")
+	if userId > 0 {
+		userSettings, _ := repo.GetUserSetting(userId, false)
+		if userSettings.AcceptUnsetRatioModel {
+			return true
 		}
 	}
+	return false
+}
+
+// tenantRoutableModels is the group / auto-union / ratio-filter / projection
+// core of visibleModels's former else-branch, split out unchanged so
+// ListRoutableModelsV2 (v2_models_routable.go) can call it directly for the
+// console's own "what can this tenant route" question. tokenGroup is read
+// from c (ContextKeyTokenGroup) because /v1/models tokens can carry a group
+// override; the v2 console caller never sets that key, so this naturally
+// falls through to the user's own group for that caller — same as before
+// this split, group resolution just wasn't a separate function.
+func tenantRoutableModels(c *gin.Context, userID int, tenantID string, acceptUnsetRatioModel bool) ([]dto.OpenAIModels, error) {
+	userOpenAiModels := make([]dto.OpenAIModels, 0)
+
+	userGroup, err := repo.GetUserGroup(userID, false)
+	if err != nil {
+		return nil, err
+	}
+	group := userGroup
+	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
+	if tokenGroup != "" {
+		group = tokenGroup
+	}
+	var models []string
+	if tokenGroup == "auto" {
+		for _, autoGroup := range app.GetUserAutoGroup(userGroup) {
+			groupModels := repo.GetGroupEnabledModelsForTenant(autoGroup, tenantID)
+			for _, g := range groupModels {
+				if !common.StringsContains(models, g) {
+					models = append(models, g)
+				}
+			}
+		}
+	} else {
+		models = repo.GetGroupEnabledModelsForTenant(group, tenantID)
+	}
+	for _, modelName := range models {
+		if !acceptUnsetRatioModel {
+			_, _, exist := ratio_setting.GetModelRatioOrPrice(modelName)
+			if !exist {
+				continue
+			}
+		}
+		if oaiModel, ok := openAIModelsMap[modelName]; ok {
+			oaiModel.SupportedEndpointTypes = repo.GetModelSupportEndpointTypes(modelName)
+			userOpenAiModels = append(userOpenAiModels, oaiModel)
+		} else {
+			userOpenAiModels = append(userOpenAiModels, dto.OpenAIModels{
+				Id:                     modelName,
+				Object:                 "model",
+				Created:                1626777600,
+				OwnedBy:                "custom",
+				SupportedEndpointTypes: repo.GetModelSupportEndpointTypes(modelName),
+			})
+		}
+	}
+	return userOpenAiModels, nil
+}
+
+// narrowByTenantAllowlist applies the tenant model allow-list to `in` —
+// only under TENANT_MODEL_ALLOWLIST_MODE=enforce with a configured
+// allow-list; observe (the default, and any tenant with no configured
+// allow-list) returns `in` unchanged. Split out of visibleModels unchanged
+// so ListRoutableModelsV2 (v2_models_routable.go) narrows the same way
+// /v1/models does, keeping the two endpoints' answers the same set for the
+// same user.
+func narrowByTenantAllowlist(tenantID string, in []dto.OpenAIModels) []dto.OpenAIModels {
+	if tenantpolicy.Mode() != tenantpolicy.ModeEnforce {
+		return in
+	}
+	allowed, configured, err := tenantpolicy.LoadModelAllowlist(tenantID)
+	if err != nil || !configured {
+		return in
+	}
+	filtered := make([]dto.OpenAIModels, 0, len(in))
+	for _, m := range in {
+		if tenantpolicy.ModelAllowed(allowed, m.Id) {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
+}
+
+// visibleModels builds the set of models this caller (relay token, scoped to
+// its owning tenant) may see in discovery. Both ListModels and RetrieveModel
+// call this, so the list and the retrieve answer come from one construction
+// instead of the two the handler used to keep separately (list used the
+// tenant-blind query, retrieve used the static catalogue regardless of
+// routability).
+//
+// Non-goal: a token carrying an explicit model_limit list (the branch below)
+// answers from that list as-is, with no tenant-routability intersection —
+// task-family models (e.g. mj_blend and friends) legitimately have no
+// ability row and would disappear from a token's discovery if they were
+// intersected against it. The tenant-routability narrowing below applies
+// only to the group path (the else branch).
+//
+// Under TENANT_MODEL_ALLOWLIST_MODE=enforce, with a configured tenant
+// allow-list, the set is additionally narrowed by tenantpolicy.ModelAllowed;
+// observe (the default) leaves it untouched — hiding under enforce only was
+// the owner's L1 answer, carried over here so discovery and the 403 the
+// relay path would give under enforce agree.
+func visibleModels(c *gin.Context) ([]dto.OpenAIModels, error) {
+	acceptUnsetRatioModel := acceptUnsetRatioModels(c)
+
+	// Every caller today reaches this through middleware.TokenAuth
+	// (relay-router.go:18-60), which injects the tenant id at auth.go:601.
+	// The empty-string branch is kept because abilityTenantScope with an
+	// empty tenant is defined as the unscoped query (ability.go).
+	tenantID, _ := repo.GetTenantID(c)
+
+	var userOpenAiModels []dto.OpenAIModels
 
 	modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
 	if modelLimitEnable {
+		userOpenAiModels = make([]dto.OpenAIModels, 0)
 		s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 		var tokenModelLimit map[string]bool
 		if ok {
@@ -154,52 +274,24 @@ func ListModels(c *gin.Context, modelType int) {
 		}
 	} else {
 		userId := c.GetInt("id")
-		userGroup, err := repo.GetUserGroup(userId, false)
+		var err error
+		userOpenAiModels, err = tenantRoutableModels(c, userId, tenantID, acceptUnsetRatioModel)
 		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": "get user group failed",
-			})
-			return
+			return nil, err
 		}
-		group := userGroup
-		tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
-		if tokenGroup != "" {
-			group = tokenGroup
-		}
-		var models []string
-		if tokenGroup == "auto" {
-			for _, autoGroup := range app.GetUserAutoGroup(userGroup) {
-				groupModels := repo.GetGroupEnabledModels(autoGroup)
-				for _, g := range groupModels {
-					if !common.StringsContains(models, g) {
-						models = append(models, g)
-					}
-				}
-			}
-		} else {
-			models = repo.GetGroupEnabledModels(group)
-		}
-		for _, modelName := range models {
-			if !acceptUnsetRatioModel {
-				_, _, exist := ratio_setting.GetModelRatioOrPrice(modelName)
-				if !exist {
-					continue
-				}
-			}
-			if oaiModel, ok := openAIModelsMap[modelName]; ok {
-				oaiModel.SupportedEndpointTypes = repo.GetModelSupportEndpointTypes(modelName)
-				userOpenAiModels = append(userOpenAiModels, oaiModel)
-			} else {
-				userOpenAiModels = append(userOpenAiModels, dto.OpenAIModels{
-					Id:                     modelName,
-					Object:                 "model",
-					Created:                1626777600,
-					OwnedBy:                "custom",
-					SupportedEndpointTypes: repo.GetModelSupportEndpointTypes(modelName),
-				})
-			}
-		}
+	}
+
+	return narrowByTenantAllowlist(tenantID, userOpenAiModels), nil
+}
+
+func ListModels(c *gin.Context, modelType int) {
+	userOpenAiModels, err := visibleModels(c)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "get user group failed",
+		})
+		return
 	}
 
 	switch modelType {
@@ -213,11 +305,20 @@ func ListModels(c *gin.Context, modelType int) {
 				Type:        "model",
 			}
 		}
+		// A day-one tenant (or a token whose model allow-list is empty) has
+		// zero routable models here — useranthropicModels[0] and [len-1] must
+		// not be read unguarded in that case, or this panics with index out
+		// of range instead of answering an empty, otherwise well-formed list.
+		var firstId, lastId interface{}
+		if len(useranthropicModels) > 0 {
+			firstId = useranthropicModels[0].ID
+			lastId = useranthropicModels[len(useranthropicModels)-1].ID
+		}
 		c.JSON(200, gin.H{
 			"data":     useranthropicModels,
-			"first_id": useranthropicModels[0].ID,
+			"first_id": firstId,
 			"has_more": false,
-			"last_id":  useranthropicModels[len(useranthropicModels)-1].ID,
+			"last_id":  lastId,
 		})
 	case constant.ChannelTypeGemini:
 		userGeminiModels := make([]dto.GeminiModel, len(userOpenAiModels))
@@ -254,16 +355,67 @@ func DashboardListModels(c *gin.Context) {
 	})
 }
 
+// EnabledListModels serves GET /api/channel/models_enabled, the channel
+// editor's "which models are live" picker. Non-root callers get the models
+// their own tenant can route (platform-shared channels plus their own); root
+// keeps the platform-wide list.
 func EnabledListModels(c *gin.Context) {
+	tenantID, isRoot := tenantScopeForDiscovery(c)
+	var models []string
+	if isRoot {
+		models = repo.GetEnabledModels()
+	} else {
+		models = repo.GetEnabledModelsForTenant(tenantID)
+	}
 	c.JSON(200, gin.H{
 		"success": true,
-		"data":    repo.GetEnabledModels(),
+		"data":    models,
 	})
 }
 
 func RetrieveModel(c *gin.Context, modelType int) {
 	modelId := c.Param("model")
-	if aiModel, ok := openAIModelsMap[modelId]; ok {
+	// "Known" here means "routable for this caller", not "present in the
+	// static per-vendor catalogue" — both answers are built from
+	// visibleModels, so the list and the retrieve answer come from one
+	// construction.
+	models, err := visibleModels(c)
+	if err != nil {
+		// A visibleModels failure (repo.GetUserGroup DB/Redis fault) is a
+		// backend fault, not "this model does not exist" — answering 404
+		// here would tell an SDK the model was deleted when the real cause
+		// is this gateway's own state being unreachable. Same wire-native
+		// envelope shape the not-found branch below uses, status 500.
+		switch modelType {
+		case constant.ChannelTypeAnthropic:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"type": "error",
+				"error": types.ClaudeError{
+					Type:    types.WireErrorType(http.StatusInternalServerError, types.ErrorTypeClaudeError),
+					Message: "failed to resolve caller's visible models",
+				},
+			})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": types.OpenAIError{
+					Message: "failed to resolve caller's visible models",
+					Type:    types.WireErrorType(http.StatusInternalServerError, types.ErrorTypeOpenAIError),
+					Code:    string(types.ErrorCodeGatewayInternal),
+				},
+			})
+		}
+		return
+	}
+	var aiModel dto.OpenAIModels
+	found := false
+	for _, m := range models {
+		if m.Id == modelId {
+			aiModel = m
+			found = true
+			break
+		}
+	}
+	if found {
 		switch modelType {
 		case constant.ChannelTypeAnthropic:
 			c.JSON(200, dto.AnthropicModel{
@@ -276,14 +428,28 @@ func RetrieveModel(c *gin.Context, modelType int) {
 			c.JSON(200, aiModel)
 		}
 	} else {
-		openAIError := types.OpenAIError{
-			Message: fmt.Sprintf("The model '%s' does not exist", modelId),
-			Type:    "invalid_request_error",
-			Param:   "model",
-			Code:    "model_not_found",
+		// A missing model is a 404, not a 200-with-error-body — and the body
+		// must be the caller's own wire envelope (mirrors the success switch
+		// above), not always the OpenAI shape regardless of which wire asked.
+		switch modelType {
+		case constant.ChannelTypeAnthropic:
+			c.JSON(http.StatusNotFound, gin.H{
+				"type": "error",
+				"error": types.ClaudeError{
+					Type:    "not_found_error",
+					Message: fmt.Sprintf("The model '%s' does not exist", modelId),
+				},
+			})
+		default:
+			openAIError := types.OpenAIError{
+				Message: fmt.Sprintf("The model '%s' does not exist", modelId),
+				Type:    "invalid_request_error",
+				Param:   "model",
+				Code:    "model_not_found",
+			}
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": openAIError,
+			})
 		}
-		c.JSON(200, gin.H{
-			"error": openAIError,
-		})
 	}
 }

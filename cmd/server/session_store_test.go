@@ -1,0 +1,200 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-gonic/gin"
+)
+
+// TestParseRedisSessionTarget pins the REDIS_CONN_STRING -> (addr, password,
+// db) parse used to build the session store. Before the SESS-DB fix, the
+// db path segment was parsed off and discarded, so every deployment's
+// browser sessions silently landed on Redis DB 0 regardless of what
+// REDIS_CONN_STRING said (colliding with whatever else lived on DB 0, while
+// channel cache / quota sync correctly followed the configured DB).
+func TestParseRedisSessionTarget(t *testing.T) {
+	cases := []struct {
+		name         string
+		url          string
+		wantAddr     string
+		wantPassword string
+		wantDB       int
+	}{
+		{"host_port_with_db", "redis://h:6379/2", "h:6379", "", 2},
+		{"password_host_port_no_db", "redis://p@h:6379", "h:6379", "p", 0},
+		{"host_port_no_db_segment", "redis://redis.lurus-system.svc:6379", "redis.lurus-system.svc:6379", "", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, password, db := parseRedisSessionTarget(tc.url)
+			if addr != tc.wantAddr {
+				t.Errorf("addr = %q, want %q", addr, tc.wantAddr)
+			}
+			if password != tc.wantPassword {
+				t.Errorf("password = %q, want %q", password, tc.wantPassword)
+			}
+			if db != tc.wantDB {
+				t.Errorf("db = %d, want %d", db, tc.wantDB)
+			}
+		})
+	}
+}
+
+// TestNewRedisSessionStore_UsesConfiguredDB is a real end-to-end proof (not
+// just parseRedisSessionTarget's pure-function unit test above) that a
+// session actually written through the store newRedisSessionStore builds
+// lands on the Redis DB the redis:// URL specified — not DB 0. It runs an
+// in-process miniredis, mounts a gin handler that sets a session value and
+// saves it, fires one request, then inspects miniredis's per-DB key sets
+// directly (bypassing the store entirely) so the assertion cannot be
+// satisfied by the store simply echoing back its own config.
+func TestNewRedisSessionStore_UsesConfiguredDB(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	store, addr, db, err := newRedisSessionStore("redis://"+mr.Addr()+"/2", []byte("test-secret"))
+	if err != nil {
+		t.Fatalf("newRedisSessionStore: %v", err)
+	}
+	if addr != mr.Addr() {
+		t.Fatalf("resolved addr = %q, want %q", addr, mr.Addr())
+	}
+	if db != 2 {
+		t.Fatalf("resolved db = %d, want 2", db)
+	}
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(sessions.Sessions("session", store))
+	engine.GET("/set", func(c *gin.Context) {
+		s := sessions.Default(c)
+		s.Set("probe", "value")
+		if err := s.Save(); err != nil {
+			c.String(http.StatusInternalServerError, "save: %v", err)
+			return
+		}
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/set", nil)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("request failed: %d body=%s", w.Code, w.Body.String())
+	}
+
+	if keys := mr.DB(2).Keys(); len(keys) == 0 {
+		t.Errorf("expected the saved session to land on Redis DB 2 (the DB the redis:// URL specified), found no keys there")
+	}
+	if keys := mr.DB(0).Keys(); len(keys) != 0 {
+		t.Errorf("expected Redis DB 0 to stay empty (session store must not silently default to DB 0), found keys: %v", keys)
+	}
+}
+
+// TestRedisSessionKeyFormat_Canary pins the assumption L7's per-device
+// session registry depends on: the Redis session store's own key for a
+// session is "session_" + session.ID() (boj/redistore's default keyPrefix,
+// redistore.go:293/410). handler.redisDeleteSessionKey (called by
+// RevokeSessionByIDV2 / RevokeOtherSessionsV2 / RevokeUserSessionsAdminV2)
+// builds that exact string itself to delete a revoked session out of
+// Redis — it has no other way to ask the store "what key did you use for
+// this session id?". If a future library bump changes the prefix (or moves
+// key construction so it no longer matches session.ID() 1:1), this goes red
+// in CI, not as a production revoke that silently fails to log anyone out.
+func TestRedisSessionKeyFormat_Canary(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	store, _, _, err := newRedisSessionStore("redis://"+mr.Addr()+"/0", []byte("canary-secret"))
+	if err != nil {
+		t.Fatalf("newRedisSessionStore: %v", err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(sessions.Sessions("session", store))
+	var capturedID string
+	engine.GET("/set", func(c *gin.Context) {
+		s := sessions.Default(c)
+		s.Set("probe", "value")
+		if err := s.Save(); err != nil {
+			c.String(http.StatusInternalServerError, "save: %v", err)
+			return
+		}
+		capturedID = s.ID()
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/set", nil)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("request failed: %d body=%s", w.Code, w.Body.String())
+	}
+	if capturedID == "" {
+		t.Fatal("session.ID() was empty after Save() — the canary has nothing to check")
+	}
+
+	wantKey := "session_" + capturedID
+	if !mr.Exists(wantKey) {
+		t.Errorf("expected Redis key %q (\"session_\"+session.ID()) to exist; it does not — a session revoke's RedisDel would be deleting the wrong key", wantKey)
+	}
+}
+
+// TestNewRedisSessionStore_RedisDownAtBootRecovers pins that a pod booting
+// while Redis is unreachable still gets the Redis session store (not nil, so
+// main.go has no reason to fall back to a cookie store its siblings cannot
+// read), and that the same store serves sessions once Redis is back.
+func TestNewRedisSessionStore_RedisDownAtBootRecovers(t *testing.T) {
+	down, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("start miniredis: %v", err)
+	}
+	addr := down.Addr()
+	down.Close() // nothing listens on addr now
+
+	store, _, _, err := newRedisSessionStore("redis://"+addr+"/2", []byte("test-secret"))
+	if err == nil {
+		t.Fatalf("expected the boot ping to report Redis unreachable")
+	}
+	if store == nil {
+		t.Fatalf("store must survive a failed boot ping")
+	}
+
+	up := miniredis.NewMiniRedis()
+	if err := up.StartAddr(addr); err != nil {
+		t.Skipf("could not re-listen on %s: %v", addr, err)
+	}
+	defer up.Close()
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(sessions.Sessions("session", store))
+	engine.GET("/set", func(c *gin.Context) {
+		s := sessions.Default(c)
+		s.Set("probe", "value")
+		if err := s.Save(); err != nil {
+			c.String(http.StatusInternalServerError, "save: %v", err)
+			return
+		}
+		c.Status(http.StatusOK)
+	})
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/set", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("after Redis came back the session save failed: %d %s", w.Code, w.Body.String())
+	}
+	if len(up.DB(2).Keys()) == 0 {
+		t.Fatalf("session did not land in Redis after recovery")
+	}
+}

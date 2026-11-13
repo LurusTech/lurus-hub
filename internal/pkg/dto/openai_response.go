@@ -52,9 +52,11 @@ func (o *OpenAITextResponse) GetOpenAIError() *types.OpenAIError {
 }
 
 type OpenAIEmbeddingResponseItem struct {
-	Object    string    `json:"object"`
-	Index     int       `json:"index"`
-	Embedding []float64 `json:"embedding"`
+	Object string `json:"object"`
+	Index  int    `json:"index"`
+	// Embedding is passed through verbatim: a float array, or a base64 string
+	// when encoding_format=base64 (decoding it as []float64 used to fail).
+	Embedding json.RawMessage `json:"embedding"`
 }
 
 type OpenAIEmbeddingResponse struct {
@@ -225,6 +227,48 @@ type Usage struct {
 	TotalTokens          int `json:"total_tokens"`
 	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
 
+	// PromptTokensIncludeCached records the WIRE SEMANTICS of PromptTokens with
+	// respect to PromptTokensDetails.CachedTokens, stamped at the point the
+	// usage is parsed off the upstream response — the only place the wire is
+	// known for certain:
+	//
+	//   true  — OpenAI-wire: prompt_tokens INCLUDES cached_tokens
+	//           (OpenAI, Azure, OpenRouter, DeepSeek hit+miss, Zhipu, Moonshot,
+	//           and every other adaptor that funnels through
+	//           provider/openai/relay-openai.go). Billing must subtract the
+	//           cached tokens from the prompt base before pricing them at
+	//           CacheRatio.
+	//   true  — also Gemini-wire (promptTokenCount "includes the number of
+	//           tokens in the cached content" per the generateContent
+	//           UsageMetadata reference; stamped in provider/gemini) and
+	//           xAI (provider/xai).
+	//   false — Anthropic-wire (input_tokens EXCLUDES cache read/creation:
+	//           provider/claude/relay-claude.go, reached natively and via
+	//           aws/vertex/ali/zhipu_4v/deepseek/moonshot Claude-format
+	//           passthroughs). No subtraction.
+	//
+	// Canonical form: this struct is the SETTLEMENT record and always keeps
+	// the semantics of the wire it was parsed from — PromptTokens means
+	// whatever that wire's prompt field means, and the flag says which.
+	// Nothing rewrites it into another wire's semantics in place. When the
+	// figure has to be PRESENTED to a caller speaking a different wire, the
+	// two methods below (AnthropicInputTokens, AsOpenAIWire) derive a display
+	// value from the record; the record itself is never changed, so the
+	// settlement paths and the consume log (which records the raw upstream
+	// prompt figure) stay on source semantics.
+	//
+	// Both settlement paths (app.PostClaudeConsumeQuota and
+	// relay/compatible_handler.go postConsumeQuota) key the prompt-base
+	// deduction on THIS flag. They used to guess it from ChannelType, which is
+	// unknowable there: the same channel type serves both wires depending on
+	// relay format (measured 2026-08-29: Claude-format on an OpenAI-wire
+	// channel over-charged cached tokens at full input price PLUS cache price —
+	// 11x on a fully cached prompt at CacheRatio=0.1 — while OpenAI-format on
+	// aws/vertex-claude subtracted tokens the wire never included, under-
+	// charging to the point of a floored-to-1 free call).
+	// json:"-": trust only our own parse sites, never the upstream body.
+	PromptTokensIncludeCached bool `json:"-"`
+
 	PromptTokensDetails    InputTokenDetails  `json:"prompt_tokens_details"`
 	CompletionTokenDetails OutputTokenDetails `json:"completion_tokens_details"`
 	InputTokens            int                `json:"input_tokens"`
@@ -242,6 +286,53 @@ type Usage struct {
 	XLurus *types.LurusUsageExtension `json:"x_lurus,omitempty"`
 }
 
+// AnthropicInputTokens is the prompt figure in Anthropic-wire semantics:
+// input_tokens is "the number of input tokens which were not read from or used
+// to create a cache", so the caller's total input is
+// input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+// (Anthropic prompt-caching guide). When this record was parsed off a wire
+// whose prompt already includes the cached slice (flag true) the slice is
+// removed; a Claude-wire caller applying Anthropic arithmetic to the
+// unadjusted figure would count it twice. When the flag is false the record is
+// already in Anthropic semantics and is returned as is. A cached count larger
+// than the prompt is an upstream misreport; the display figure is clamped at
+// zero rather than emitting a negative token count (settlement is unaffected:
+// it never calls this).
+func (u Usage) AnthropicInputTokens() int {
+	if !u.PromptTokensIncludeCached {
+		return u.PromptTokens
+	}
+	n := u.PromptTokens - u.PromptTokensDetails.CachedTokens - u.PromptTokensDetails.CachedCreationTokens
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// AsOpenAIWire returns a DISPLAY copy in OpenAI-wire semantics: prompt_tokens
+// is the whole prompt and prompt_tokens_details.cached_tokens is the part of
+// it that was a cache hit (OpenAI Chat Completions usage reference; Gemini's
+// promptTokenCount is defined the same way). A record parsed off the Anthropic
+// wire (flag false) has PromptTokens = input_tokens, which excludes both cache
+// terms, so they are added back and total_tokens is recomputed as
+// prompt + completion. Idempotent: a record already in OpenAI semantics is
+// returned unchanged.
+//
+// Only call this on a usage whose flag was stamped at its parse site. A raw
+// OpenAI-wire chunk that was re-parsed without the stamp reads as flag=false
+// and would be double-counted. The receiver is a value: the settlement record
+// the caller holds is never modified.
+func (u Usage) AsOpenAIWire() Usage {
+	if u.PromptTokensIncludeCached {
+		return u
+	}
+	out := u
+	out.PromptTokens = u.PromptTokens + u.PromptTokensDetails.CachedTokens + u.PromptTokensDetails.CachedCreationTokens
+	out.TotalTokens = out.PromptTokens + u.CompletionTokens
+	out.PromptTokensIncludeCached = true
+	return out
+}
+
 type OpenAIVideoResponse struct {
 	Id        string `json:"id" example:"file-abc123"`
 	Object    string `json:"object" example:"file"`
@@ -253,8 +344,15 @@ type OpenAIVideoResponse struct {
 }
 
 type InputTokenDetails struct {
-	CachedTokens         int `json:"cached_tokens"`
-	CachedCreationTokens int `json:"-"`
+	CachedTokens int `json:"cached_tokens"`
+	// CachedCreationTokens is the cache-write slice of the prompt. OpenAI's wire
+	// carries it as cache_write_tokens on both chat (prompt_tokens_details) and
+	// Responses (input_tokens_details) usage: "the unadjusted number of prompt
+	// tokens written to cache", disjoint from cached_tokens and inside
+	// prompt_tokens/input_tokens; the Anthropic wire fills it from
+	// cache_creation_input_tokens (outside input_tokens). Serialized only when
+	// non-zero so callers on models without cache writes see no new key.
+	CachedCreationTokens int `json:"cache_write_tokens,omitempty"`
 	TextTokens           int `json:"text_tokens"`
 	AudioTokens          int `json:"audio_tokens"`
 	ImageTokens          int `json:"image_tokens"`
@@ -414,4 +512,15 @@ func GetOpenAIError(errorField any) *types.OpenAIError {
 			Message: fmt.Sprintf("%v", err),
 		}
 	}
+}
+
+// RawEmbedding encodes a float vector as the verbatim JSON payload of
+// OpenAIEmbeddingResponseItem.Embedding, for adaptors that build the item from
+// a vendor-specific float slice.
+func RawEmbedding(values []float64) json.RawMessage {
+	b, err := json.Marshal(values)
+	if err != nil {
+		return json.RawMessage("null")
+	}
+	return b
 }

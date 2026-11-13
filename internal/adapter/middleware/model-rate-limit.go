@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common/limiter"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
@@ -19,7 +22,68 @@ import (
 const (
 	ModelRequestRateLimitCountMark        = "MRRL"
 	ModelRequestRateLimitSuccessCountMark = "MRRLS"
+
+	// rateLimitRecordTimeout bounds the post-response success-count write.
+	// 3s, not 1s: measured live 2026-08-29, the first Redis write after an
+	// idle period blocked for exactly a 1-second budget and died on
+	// context-deadline while the immediately following command on the same
+	// goroutine succeeded instantly — a cold pooled connection pays
+	// connection establishment (dial + DNS) that a 1s budget does not absorb.
+	// Same rationale as the 3s bump in internal/app/cost_spike.go and
+	// internal/app/business_tpm.go (bizTPMRedisTimeout), which failed the
+	// same way in the same live session.
+	rateLimitRecordTimeout = 3 * time.Second
 )
+
+// r6aRateLimitDegradedLogLast throttles the fail-open log line below to at
+// most once per minute per check ("success"/"total"), mirroring
+// warnZeroWalletAmount's per-key throttle (internal/app/quota.go:1032/1064).
+// Without this, a sustained Redis outage would emit one ERROR line per relay
+// request for as long as the outage lasted, at whatever the live QPS is —
+// the metric below (r6aRateLimitDegradedLogf's caller) stays UNCONDITIONAL
+// so the counter itself never loses a single occurrence; only the log line
+// is rate-limited.
+var r6aRateLimitDegradedLogLast sync.Map // checkName(string) -> time.Time
+
+// r6aRateLimitDegradedLogFunc is a seam over common.SysError so tests can
+// observe the throttle's actual output (count calls) instead of only
+// inferring it from process-log side effects — mirrors the
+// zeroWalletWarnLogf seam in internal/app/quota.go, added for the identical
+// reason: without it, nothing distinguishes "the throttle suppressed this
+// call" from "the throttle never fired at all".
+var r6aRateLimitDegradedLogFunc = common.SysError
+
+// r6aTokenBucketAllowFunc seams the total-count token-bucket check
+// (limiter.New(ctx, rdb).Allow) behind a package var so tests can force a
+// deterministic Redis-backend error on this branch. This is necessary, not
+// cosmetic: limiter.New (internal/pkg/common/limiter/limiter.go:26) caches
+// its *RedisLimiter behind a process-wide sync.Once and ignores the rdb
+// argument on every call after the first, so once any earlier test in this
+// package has driven this branch against a live/working Redis (miniredis or
+// the real one), a later test's dead-Redis fixture can no longer make this
+// call fail — the singleton keeps talking to the first client it ever saw.
+// Overriding this var sidesteps that entirely instead of depending on test
+// file execution order to keep the singleton unset.
+var r6aTokenBucketAllowFunc = func(ctx context.Context, rdb *redis.Client, key string, opts ...limiter.Option) (bool, error) {
+	return limiter.New(ctx, rdb).Allow(ctx, key, opts...)
+}
+
+// r6aRateLimitDegradedLogf is the throttled log emitter for the fail-open
+// branches in redisRateLimitHandler (this file) and redisRateLimiterKeyed
+// (rate-limit.go). checkName is the same string passed to
+// metrics.RecordRateLimitDegraded and keys the per-check throttle: the
+// model-rate-limit family uses "model_rate_limit_success"/"_total"/"_record",
+// and the web/API family uses "web_rate_limit_backend"/"web_rate_limit_corrupt".
+func r6aRateLimitDegradedLogf(checkName, msg string) {
+	now := time.Now()
+	if last, loaded := r6aRateLimitDegradedLogLast.LoadOrStore(checkName, now); loaded {
+		if now.Sub(last.(time.Time)) < time.Minute {
+			return
+		}
+		r6aRateLimitDegradedLogLast.Store(checkName, now)
+	}
+	r6aRateLimitDegradedLogFunc(msg)
+}
 
 // 检查Redis中的请求限制
 func checkRedisRateLimit(ctx context.Context, rdb *redis.Client, key string, maxCount int, duration int64) (bool, error) {
@@ -69,7 +133,16 @@ func recordRedisRequest(ctx context.Context, rdb *redis.Client, key string, maxC
 	}
 
 	now := time.Now().Format(timeFormat)
-	rdb.LPush(ctx, key, now)
+	if err := rdb.LPush(ctx, key, now).Err(); err != nil {
+		// A lost recording silently under-counts the success dimension — the
+		// exact failure mode that kept this limiter unable to trip for two
+		// deploys (see the caller's context note). Same visibility contract
+		// as the fail-open branches above: unconditional metric, throttled
+		// log line.
+		metrics.RecordRateLimitDegraded("model_rate_limit_record")
+		r6aRateLimitDegradedLogf("record", "rate limit success recording failed: "+err.Error())
+		return
+	}
 	rdb.LTrim(ctx, key, 0, int64(maxCount-1))
 	rdb.Expire(ctx, key, time.Duration(setting.ModelRequestRateLimitDurationMinutes)*time.Minute)
 }
@@ -85,23 +158,59 @@ func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) g
 		successKey := fmt.Sprintf("rateLimit:%s:%s", ModelRequestRateLimitSuccessCountMark, userId)
 		allowed, err := checkRedisRateLimit(ctx, rdb, successKey, successMaxCount, duration)
 		if err != nil {
-			common.SysError("rate limit check success count error: " + err.Error())
-			abortWithOpenAiMessage(c, http.StatusInternalServerError, "rate_limit_check_failed")
+			// Fail OPEN, same contract as the sibling limiters
+			// (BusinessRateLimit at business_rate_limit.go:311-314,
+			// RelayConcurrencyLimit at concurrency_limit.go:35-37): a Redis hiccup
+			// must not become a relay outage. This branch was unreachable while
+			// setting.ModelRequestRateLimitEnabled defaulted to false; arming that
+			// switch (rate_limit.go:52) without this fix would have turned every
+			// such error into a 500 for every relay request.
+			//
+			// Two distinct classes of error land here, and the single metric
+			// label below does not separate them — they need different operator
+			// responses, so read the throttled log line before acting:
+			//   (1) backend unreachable — checkRedisRateLimit's LLen call fails
+			//       (model-rate-limit.go:79-82). Fix Redis.
+			//   (2) stored data corrupt — the backend is healthy but the value
+			//       at the tail of the MRRLS list does not parse as a timestamp
+			//       (model-rate-limit.go:92-95). Restarting Redis will not help;
+			//       the key needs deleting. Pinned by
+			//       TestRedisRateLimitHandler_SuccessCheckError_FailsOpen.
+			//
+			// NOT silent: metrics.RateLimitDegradedTotal increments on every
+			// occurrence (unconditional, unlike the log line below), so the
+			// degradation stays visible even if this branch fires faster than
+			// the per-minute log throttle can report it.
+			//
+			// Composite risk while Redis is down (operator decision D1,
+			// 2026-08-27): this per-model limiter, BusinessRateLimit /
+			// BusinessModelRateLimit (business_rate_limit.go) and
+			// RelayConcurrencyLimit (concurrency_limit.go) ALL fail open at the
+			// same time, and CostSpikeLimit defaults to observe-only
+			// (common.CostSpikeEnforce=false: it counts and logs a breach but
+			// does not disable the account or reject the request). During a
+			// Redis outage there is therefore no rate or cost ceiling of any
+			// kind on relay traffic — a deliberate outage-vs-outage tradeoff,
+			// not an oversight.
+			metrics.RecordRateLimitDegraded("model_rate_limit_success")
+			r6aRateLimitDegradedLogf("success", "rate limit check success count error, failing open: "+err.Error())
+			c.Next()
 			return
 		}
 		if !allowed {
 			setRateLimitResponseHeaders(c, successMaxCount, 0, duration)
-			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到请求数限制：%d分钟内最多请求%d次", setting.ModelRequestRateLimitDurationMinutes, successMaxCount))
+			c.Writer.Header().Set("X-RateLimit-Scope", "user")
+			c.Writer.Header().Set("X-RateLimit-Type", "requests")
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("user requests limit exceeded: %d per %d min (%s)", successMaxCount, setting.ModelRequestRateLimitDurationMinutes, string(types.ErrorCodeRequestRateLimitExceeded)), string(types.ErrorCodeRequestRateLimitExceeded))
 			return
 		}
 
 		//2.检查总请求数限制并记录总请求（当totalMaxCount为0时会自动跳过，使用令牌桶限流器
 		if totalMaxCount > 0 {
 			totalKey := fmt.Sprintf("rateLimit:%s", userId)
-			// 初始化
-			tb := limiter.New(ctx, rdb)
-			allowed, err = tb.Allow(
+			allowed, err = r6aTokenBucketAllowFunc(
 				ctx,
+				rdb,
 				totalKey,
 				limiter.WithCapacity(int64(totalMaxCount)*duration),
 				limiter.WithRate(int64(totalMaxCount)),
@@ -109,14 +218,19 @@ func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) g
 			)
 
 			if err != nil {
-				common.SysError("rate limit check total count error: " + err.Error())
-				abortWithOpenAiMessage(c, http.StatusInternalServerError, "rate_limit_check_failed")
+				// Same fail-open contract, metric and composite-risk note as
+				// the success-count branch above.
+				metrics.RecordRateLimitDegraded("model_rate_limit_total")
+				r6aRateLimitDegradedLogf("total", "rate limit check total count error, failing open: "+err.Error())
+				c.Next()
 				return
 			}
 
 			if !allowed {
 				setRateLimitResponseHeaders(c, totalMaxCount, 0, duration)
-				abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("您已达到总请求数限制：%d分钟内最多请求%d次，包括失败次数，请检查您的请求是否正确", setting.ModelRequestRateLimitDurationMinutes, totalMaxCount))
+				c.Writer.Header().Set("X-RateLimit-Scope", "user")
+				c.Writer.Header().Set("X-RateLimit-Type", "requests")
+				abortWithOpenAiMessage(c, http.StatusTooManyRequests, fmt.Sprintf("user total requests limit exceeded: %d per %d min including failed requests (%s)", totalMaxCount, setting.ModelRequestRateLimitDurationMinutes, string(types.ErrorCodeRequestRateLimitExceeded)), string(types.ErrorCodeRequestRateLimitExceeded))
 			}
 		}
 
@@ -125,7 +239,25 @@ func redisRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) g
 
 		// 5. 如果请求成功，记录成功请求
 		if c.Writer.Status() < 400 {
-			recordRedisRequest(ctx, rdb, successKey, successMaxCount)
+			// NOT the request context: by the time this line runs the client
+			// has usually hung up already. The relay pipeline settles quota
+			// (hundreds of ms of DB writes) between writing the response and
+			// returning through this middleware, and both one-shot clients
+			// and the host nginx (no upstream keepalive) close the connection
+			// the moment they have the full response — which cancels
+			// c.Request.Context() before the unwind reaches here. With the
+			// request context this LPush then fails instantly and silently,
+			// so the SUCCESS dimension — the only dimension the shipped
+			// defaults arm (setting/rate_limit.go:52) — never counted
+			// anything and the ceiling could never trip. Proven live
+			// 2026-08-29: three one-shot relay probes recorded nothing;
+			// two requests reusing one connection recorded the first (the
+			// connection was still open) and lost the second. Pinned by
+			// TestRedisRateLimitHandler_RecordsAfterClientDisconnect.
+			recCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(c.Request.Context()), rateLimitRecordTimeout)
+			recordRedisRequest(recCtx, rdb, successKey, successMaxCount)
+			cancel()
 		}
 	}
 }
@@ -142,8 +274,17 @@ func memoryRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) 
 		// 1. 检查总请求数限制（当totalMaxCount为0时跳过）
 		if totalMaxCount > 0 && !inMemoryRateLimiter.Request(totalKey, totalMaxCount, duration) {
 			setRateLimitResponseHeaders(c, totalMaxCount, 0, duration)
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
+			c.Writer.Header().Set("X-RateLimit-Scope", "user")
+			c.Writer.Header().Set("X-RateLimit-Type", "requests")
+			// Same wire-native JSON envelope as the redis twin above. This
+			// branch is reached only with common.RedisEnabled=false, which
+			// no deployed environment uses today; the message lock drives it
+			// directly. A bare c.Status+c.Abort here used to leave the 429
+			// with no body at all; the keyed/IP limiters in rate-limit.go
+			// still do.
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests,
+				fmt.Sprintf("user total requests limit exceeded: %d per %d min including failed requests (%s)", totalMaxCount, setting.ModelRequestRateLimitDurationMinutes, string(types.ErrorCodeRequestRateLimitExceeded)),
+				string(types.ErrorCodeRequestRateLimitExceeded))
 			return
 		}
 
@@ -152,8 +293,11 @@ func memoryRateLimitHandler(duration int64, totalMaxCount, successMaxCount int) 
 		checkKey := successKey + "_check"
 		if !inMemoryRateLimiter.Request(checkKey, successMaxCount, duration) {
 			setRateLimitResponseHeaders(c, successMaxCount, 0, duration)
-			c.Status(http.StatusTooManyRequests)
-			c.Abort()
+			c.Writer.Header().Set("X-RateLimit-Scope", "user")
+			c.Writer.Header().Set("X-RateLimit-Type", "requests")
+			abortWithOpenAiMessage(c, http.StatusTooManyRequests,
+				fmt.Sprintf("user requests limit exceeded: %d per %d min (%s)", successMaxCount, setting.ModelRequestRateLimitDurationMinutes, string(types.ErrorCodeRequestRateLimitExceeded)),
+				string(types.ErrorCodeRequestRateLimitExceeded))
 			return
 		}
 

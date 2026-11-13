@@ -51,7 +51,7 @@ func RelayMidjourneyImage(c *gin.Context) {
 		httpClient = app.GetHttpClient()
 	}
 	// SSRF protection: validate image URL before fetching
-	fetchSetting := system_setting.GetFetchSetting()
+	fetchSetting := system_setting.GetFetchSettingSnapshot()
 	if err := common.ValidateURLWithFetchSetting(midjourneyTask.ImageUrl, fetchSetting.EnableSSRFProtection, fetchSetting.AllowPrivateIp, fetchSetting.DomainFilterMode, fetchSetting.IpFilterMode, fetchSetting.DomainList, fetchSetting.IpList, fetchSetting.AllowedPorts, fetchSetting.ApplyIPFilterForDomain); err != nil {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": fmt.Sprintf("image URL rejected by SSRF protection: %v", err),
@@ -292,7 +292,7 @@ func RelayMidjourneyTaskImageSeed(c *gin.Context) *dto.MidjourneyResponse {
 		return app.MidjourneyErrorWrapper(constant.MjRequestError, "get_channel_info_failed")
 	}
 	if channel.Status != common.ChannelStatusEnabled {
-		return app.MidjourneyErrorWrapper(constant.MjRequestError, "该任务所属渠道已被禁用")
+		return app.MidjourneyErrorWrapper(constant.MjRequestError, "channel_disabled")
 	}
 	c.Set("channel_id", originTask.ChannelId)
 	c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", channel.Key))
@@ -466,7 +466,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 				return app.MidjourneyErrorWrapper(constant.MjRequestError, "get_channel_info_failed")
 			}
 			if channel.Status != common.ChannelStatusEnabled {
-				return app.MidjourneyErrorWrapper(constant.MjRequestError, "该任务所属渠道已被禁用")
+				return app.MidjourneyErrorWrapper(constant.MjRequestError, "channel_disabled")
 			}
 			c.Set("base_url", channel.GetBaseURL())
 			c.Set("channel_id", originTask.ChannelId)
@@ -652,12 +652,6 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 	return nil
-}
-
-type taskChangeParams struct {
-	ID     string
-	Action string
-	Index  int
 }
 
 func getMjRequestPath(path string) string {

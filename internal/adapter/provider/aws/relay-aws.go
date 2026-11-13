@@ -117,6 +117,7 @@ func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor,
 			return nil, types.NewError(errors.Wrap(err, "marshal nova request"), types.ErrorCodeBadResponseBody)
 		}
 		awsReq.Body = reqBody
+		a.AwsReq = awsReq
 		return nil, nil
 	} else {
 		awsClaudeReq, err := formatRequest(c.Request.Context(), requestBody, requestHeader)
@@ -200,8 +201,12 @@ func getAwsModelID(requestModel string) string {
 }
 
 func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
+	invokeReq, ok := a.AwsReq.(*bedrockruntime.InvokeModelInput)
+	if !ok {
+		return types.NewError(errors.New("aws request not prepared"), types.ErrorCodeChannelAwsClientError), nil
+	}
 
-	awsResp, err := a.AwsClient.InvokeModel(c.Request.Context(), a.AwsReq.(*bedrockruntime.InvokeModelInput))
+	awsResp, err := a.AwsClient.InvokeModel(c.Request.Context(), invokeReq)
 	if err != nil {
 		statusCode := getAwsErrorStatusCode(err)
 		return types.NewOpenAIError(errors.Wrap(err, "InvokeModel"), types.ErrorCodeAwsInvokeError, statusCode), nil
@@ -228,7 +233,11 @@ func awsHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types
 }
 
 func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
-	awsResp, err := a.AwsClient.InvokeModelWithResponseStream(c.Request.Context(), a.AwsReq.(*bedrockruntime.InvokeModelWithResponseStreamInput))
+	streamReq, ok := a.AwsReq.(*bedrockruntime.InvokeModelWithResponseStreamInput)
+	if !ok {
+		return types.NewError(errors.New("aws request not prepared"), types.ErrorCodeChannelAwsClientError), nil
+	}
+	awsResp, err := a.AwsClient.InvokeModelWithResponseStream(c.Request.Context(), streamReq)
 	if err != nil {
 		statusCode := getAwsErrorStatusCode(err)
 		return types.NewOpenAIError(errors.Wrap(err, "InvokeModelWithResponseStream"), types.ErrorCodeAwsInvokeError, statusCode), nil
@@ -267,8 +276,12 @@ func awsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (
 
 // Nova模型处理函数
 func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) (*types.NewAPIError, *dto.Usage) {
+	invokeReq, ok := a.AwsReq.(*bedrockruntime.InvokeModelInput)
+	if !ok {
+		return types.NewError(errors.New("aws request not prepared"), types.ErrorCodeChannelAwsClientError), nil
+	}
 
-	awsResp, err := a.AwsClient.InvokeModel(c.Request.Context(), a.AwsReq.(*bedrockruntime.InvokeModelInput))
+	awsResp, err := a.AwsClient.InvokeModel(c.Request.Context(), invokeReq)
 	if err != nil {
 		statusCode := getAwsErrorStatusCode(err)
 		return types.NewOpenAIError(errors.Wrap(err, "InvokeModel"), types.ErrorCodeAwsInvokeError, statusCode), nil
@@ -292,6 +305,11 @@ func handleNovaRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor) 
 
 	if err := json.Unmarshal(awsResp.Body, &novaResp); err != nil {
 		return types.NewError(errors.Wrap(err, "unmarshal nova response"), types.ErrorCodeBadResponseBody), nil
+	}
+
+	// 安全拒答/截断生成会返回空 content 数组，先判空再索引 [0] 避免 panic
+	if len(novaResp.Output.Message.Content) == 0 {
+		return types.NewError(errors.New("nova response contains no content"), types.ErrorCodeBadResponseBody), nil
 	}
 
 	// 构造OpenAI格式响应

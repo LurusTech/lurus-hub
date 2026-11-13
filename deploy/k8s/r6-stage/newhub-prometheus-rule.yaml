@@ -1,0 +1,371 @@
+# ⚠️ REFERENCE ONLY — NOT DEPLOYED (verified 2026-09-03)
+#
+# Nothing evaluates these 20 rules. Two independent reasons:
+#
+#   1. This file is not in deploy/k8s/r6-stage/kustomization.yaml's `resources:`
+#      list, so no apply and no ArgoCD sync ever touches it.
+#   2. Adding it there would not fix that. `PrometheusRule` is a custom resource
+#      owned by the Prometheus Operator, and R6 runs no Prometheus Operator —
+#      the apply would be rejected for an unknown kind. R6's monitoring is host
+#      netdata, scraping this service's /metrics directly (go.d job "newhub");
+#      that config is host-level, not tracked under deploy/ in this repo — the
+#      nearest thing this repo does own is deploy/r6-host-nginx/, which is the
+#      edge vhost, not the monitoring config.
+#
+# It is kept as the record of what we decided was worth alerting on. Do not
+# read a rule here as an alert that fires, and do not cite this file from Go
+# source as if it were live — internal/pkg/metrics/alert_wiring_honesty_test.go
+# fails go test if that happens again.
+#
+# Two rules below are also wrong on their own terms and are left as written so
+# the correction is visible when they are ported:
+#   - HubAvailabilityBelowSLO derives RELAY availability from
+#     lurus_gateway_requests_total, which counts every HTTP request including
+#     the console. Console traffic dominates and dilutes the relay error ratio.
+#   - HubOverheadHigh subtracts p95(relay_duration_seconds) from
+#     p95(request_duration_seconds): two different populations, so the result is
+#     normally negative and can never cross the positive 0.1 threshold.
+#     lurus_gateway_relay_overhead_duration_seconds already measures this
+#     directly.
+#
+# The live alerting path is host netdata, which is already proven to deliver
+# (it pages on backup freshness today). Porting target: three rules that can
+# actually be provoked — relay_errors_total{error_type="upstream_5xx"} surges,
+# rate_limit_degraded_total > 0, and relay_failover_suppressed_total surges.
+#
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lurus-hub-alerts
+  namespace: monitoring
+  labels:
+    app: lurus-hub
+    release: kube-prom
+spec:
+  groups:
+    - name: lurus-hub-availability
+      interval: 30s
+      rules:
+        - alert: HubAvailabilityBelowSLO
+          expr: |
+            (
+              1 - sum(rate(lurus_gateway_requests_total{status=~"5.."}[5m]))
+                / sum(rate(lurus_gateway_requests_total[5m]))
+            ) * 100 < 99.5
+          for: 10m
+          labels:
+            severity: page
+            service: lurus-hub
+          annotations:
+            summary: "newhub availability {{ printf \"%.3f\" $value }}% < 99.5% SLO"
+            description: "5xx rate exceeded budget for 10m. Check upstream provider health and circuit breaker dashboard."
+
+        - alert: HubAvailabilityCritical
+          expr: |
+            (
+              1 - sum(rate(lurus_gateway_requests_total{status=~"5.."}[5m]))
+                / sum(rate(lurus_gateway_requests_total[5m]))
+            ) * 100 < 95
+          for: 2m
+          labels:
+            severity: page
+            service: lurus-hub
+          annotations:
+            summary: "newhub availability {{ printf \"%.2f\" $value }}% < 95% — major outage"
+
+    - name: lurus-hub-latency
+      interval: 30s
+      rules:
+        - alert: HubP95LatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(lurus_gateway_request_duration_seconds_bucket[5m])) by (le)
+            ) > 3
+          for: 10m
+          labels:
+            severity: ticket
+            service: lurus-hub
+          annotations:
+            summary: "p95 latency {{ printf \"%.2f\" $value }}s > 3s"
+            description: "Sustained slow requests; check upstream timeouts and channel selection."
+
+        - alert: HubGatewayOverheadHigh
+          expr: |
+            (
+              histogram_quantile(0.95, sum(rate(lurus_gateway_request_duration_seconds_bucket[5m])) by (le))
+              -
+              histogram_quantile(0.95, sum(rate(lurus_gateway_relay_duration_seconds_bucket[5m])) by (le))
+            ) > 0.1
+          for: 15m
+          labels:
+            severity: ticket
+            service: lurus-hub
+          annotations:
+            summary: "gateway overhead {{ printf \"%.3f\" $value }}s > 0.1s"
+            description: "newhub adding >100ms on top of upstream — north-star target <50ms."
+
+    - name: lurus-hub-circuit-breaker
+      interval: 30s
+      rules:
+        - alert: ChannelBreakerStuckOpen
+          expr: lurus_gateway_circuit_breaker_state == 1
+          for: 30m
+          labels:
+            severity: ticket
+            service: lurus-hub
+          annotations:
+            summary: "channel {{ $labels.channel_id }} breaker open for 30m+"
+            description: "Channel hasn't recovered. Confirm upstream provider is healthy or disable the channel manually."
+
+        - alert: ChannelBreakerFlapping
+          expr: changes(lurus_gateway_circuit_breaker_state[10m]) > 5
+          for: 5m
+          labels:
+            severity: info
+            service: lurus-hub
+          annotations:
+            summary: "channel {{ $labels.channel_id }} breaker flapping (>5 changes/10m)"
+            description: "Indicates marginal upstream health. Consider raising the breaker threshold or removing the channel."
+
+    - name: lurus-hub-quota-spikes
+      interval: 30s
+      rules:
+        - alert: CostSpikeBurstHigh
+          expr: sum(rate(lurus_gateway_requests_total{status="429"}[5m])) > 1
+          for: 5m
+          labels:
+            severity: ticket
+            service: lurus-hub
+          annotations:
+            summary: "cost-spike 429s firing at {{ printf \"%.2f\" $value }}/s"
+            description: "This expr counts EVERY 429 the gateway emits, not just cost-spike ones — the other producers are the per-token/per-model rate limits, the concurrency limit, the entitlement gate, secure-verification and TOTP, plus upstream 429s passed through by the relay. So a firing alert most likely means a rate-limit surge; treat it as such first. The cost-spike fuse can only contribute here when COST_SPIKE_ENFORCE=true, which is NOT the shipped default (see internal/pkg/common/constants.go) — under the default observe mode a cost-spike breach is counted, not blocked, so watch CostSpikeObservedRateHigh below for that signal instead."
+
+        # Observe-mode counterpart to CostSpikeBurstHigh: COST_SPIKE_ENFORCE
+        # defaults to false (internal/pkg/common/constants.go),
+        # so breaches are counted via lurus_gateway_cost_spike_breach_total
+        # but never 429 and CostSpikeBurstHigh above stays silent. This is
+        # the "observe first, collect the real distribution" rollout's
+        # actual consumer — info severity, not paged, purely to give that
+        # distribution somewhere to surface before enforce is flipped back
+        # on.
+        - alert: CostSpikeObservedRateHigh
+          expr: sum(rate(lurus_gateway_cost_spike_breach_total{action="observed"}[5m])) > 0.02
+          for: 10m
+          labels:
+            severity: info
+            service: lurus-hub
+          annotations:
+            summary: "cost-spike observed-mode breaches at {{ printf \"%.3f\" $value }}/s"
+            description: "COST_SPIKE_ENFORCE=false (observe mode): breaches are counted/logged but admitted, never blocked. Informational only — use this to gauge whether the threshold or enforce rollout needs revisiting."
+
+        - alert: QuotaCapBurstHigh
+          expr: sum(rate(lurus_gateway_requests_total{status="402"}[5m])) > 5
+          for: 10m
+          labels:
+            severity: info
+            service: lurus-hub
+          annotations:
+            summary: "402 quota-capped at {{ printf \"%.1f\" $value }}/s"
+            description: "Many users hitting MaxQuota."
+
+    - name: lurus-hub-billing
+      interval: 60s
+      rules:
+        - alert: PlatformBreakerOpen
+          expr: lurus_billing_circuit_breaker_state == 1
+          for: 5m
+          labels:
+            severity: page
+            service: lurus-hub
+          annotations:
+            summary: "lurus-platform breaker open — settlement halted"
+            description: "newhub stopped settling pre-auths to platform. Check platform health."
+
+        - alert: BillingOutboxBacklog
+          expr: lurus_billing_outbox_pending > 100
+          for: 15m
+          labels:
+            severity: ticket
+            service: lurus-hub
+          annotations:
+            summary: "billing outbox depth {{ $value }} > 100"
+
+        - alert: BillingOutboxFailures
+          expr: rate(lurus_billing_outbox_failed_total[1h]) > 0
+          for: 5m
+          labels:
+            severity: ticket
+            service: lurus-hub
+          annotations:
+            summary: "{{ $value }} pre-auths permanently failed"
+
+        - alert: CreditPoolBalanceLow
+          expr: lurus_gateway_credit_pool_balance < 1000 and lurus_gateway_credit_pool_balance > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: lurus-hub
+            component: tenant_credit_pool
+          annotations:
+            summary: "Tenant {{ $labels.tenant_id }} credit pool balance {{ $value }} below threshold"
+            description: "See doc/runbook/pool-threshold-alert.md"
+
+        - alert: CreditPoolExhausted
+          expr: lurus_gateway_credit_pool_balance <= 0
+          for: 5m
+          labels:
+            severity: page
+            service: lurus-hub
+            component: tenant_credit_pool
+          annotations:
+            summary: "Tenant {{ $labels.tenant_id }} credit pool EXHAUSTED — relay returning HTTP 402"
+
+    # P0-4: Google SRE multi-window multi-burn-rate alerts on the relay SLOs in
+    # doc/slo-relay.md. Two SLIs, each with a fast-burn and a slow-burn page:
+    #   • Availability SLO = 99.5% relay success ⇒ 0.5% error budget.
+    #       - fast: 14.4× burn (2% of 30d budget in 1h), 1h AND 5m windows
+    #       - slow:  6×  burn (5% of 30d budget in 6h), 6h AND 30m windows
+    #   • Overhead-latency SLO = 99% of relays under 50ms ⇒ 1% budget.
+    #       (overhead histogram has an le=0.05 bucket exactly at the SLO target)
+    # The short-window AND clause stops a single bad spike from alerting and then
+    # auto-resolving — the long window must ALSO be burning. Burn thresholds:
+    #   bad_rate > burn_rate × (1 − SLO).
+    - name: lurus-hub-slo-burn-rate
+      interval: 30s
+      rules:
+        - alert: RelayAvailabilityFastBurn
+          expr: |
+            (
+              sum(rate(lurus_gateway_relay_total_duration_seconds_count{status!="success"}[1h]))
+                / sum(rate(lurus_gateway_relay_total_duration_seconds_count[1h]))
+            ) > (14.4 * 0.005)
+            and
+            (
+              sum(rate(lurus_gateway_relay_total_duration_seconds_count{status!="success"}[5m]))
+                / sum(rate(lurus_gateway_relay_total_duration_seconds_count[5m]))
+            ) > (14.4 * 0.005)
+          for: 2m
+          labels:
+            severity: page
+            service: lurus-hub
+            slo: relay-availability
+          annotations:
+            summary: "relay availability fast-burn — 2% of 30d error budget in <1h"
+            description: "Relay error ratio >7.2% over both 1h and 5m. Check upstream providers + circuit breakers; runbook doc/slo-relay.md."
+
+        - alert: RelayAvailabilitySlowBurn
+          expr: |
+            (
+              sum(rate(lurus_gateway_relay_total_duration_seconds_count{status!="success"}[6h]))
+                / sum(rate(lurus_gateway_relay_total_duration_seconds_count[6h]))
+            ) > (6 * 0.005)
+            and
+            (
+              sum(rate(lurus_gateway_relay_total_duration_seconds_count{status!="success"}[30m]))
+                / sum(rate(lurus_gateway_relay_total_duration_seconds_count[30m]))
+            ) > (6 * 0.005)
+          for: 15m
+          labels:
+            severity: page
+            service: lurus-hub
+            slo: relay-availability
+          annotations:
+            summary: "relay availability slow-burn — 5% of 30d error budget in <6h"
+            description: "Relay error ratio >3% over both 6h and 30m. Sustained degradation; runbook doc/slo-relay.md."
+
+        - alert: RelayOverheadFastBurn
+          expr: |
+            (
+              1 - (
+                sum(rate(lurus_gateway_relay_overhead_duration_seconds_bucket{le="0.05"}[1h]))
+                  / sum(rate(lurus_gateway_relay_overhead_duration_seconds_count[1h]))
+              )
+            ) > (14.4 * 0.01)
+            and
+            (
+              1 - (
+                sum(rate(lurus_gateway_relay_overhead_duration_seconds_bucket{le="0.05"}[5m]))
+                  / sum(rate(lurus_gateway_relay_overhead_duration_seconds_count[5m]))
+              )
+            ) > (14.4 * 0.01)
+          for: 2m
+          labels:
+            severity: page
+            service: lurus-hub
+            slo: relay-overhead
+          annotations:
+            summary: "relay overhead fast-burn — newhub adding >50ms on too many requests"
+            description: ">14.4% of relays exceed the 50ms overhead SLO over 1h AND 5m. This is latency newhub OWNS — check channel-select + quota path, not upstream."
+
+    # B5: alerts on the Wave-2 relay error-classification (O1) + failover (O2)
+    # series. Thresholds are FIRST-CUT (no production traffic to calibrate against
+    # yet) — tune post-traffic. Restricted to upstream_* error_types so internal /
+    # insufficient_quota terminal errors don't page on a provider-health alert.
+    - name: lurus-hub-relay-errors
+      interval: 30s
+      rules:
+        - alert: RelayProviderErrorSpike
+          expr: |
+            sum by (provider, error_type) (
+              rate(lurus_gateway_relay_errors_total{error_type=~"upstream_.*"}[5m])
+            ) * 60 > 10
+          for: 10m
+          labels:
+            severity: ticket
+            service: lurus-hub
+          annotations:
+            summary: >-
+              provider {{ $labels.provider }} {{ $labels.error_type }} at
+              {{ printf "%.1f" $value }}/min
+            description: >-
+              Sustained upstream error spike for one provider/error_type (>10/min for
+              10m). Check that provider's health; cross-ref lurus_gateway_relay_failover_total
+              and lurus_gateway_circuit_breaker_state. First-cut threshold — tune post-traffic.
+
+        - alert: RelayFailoverChurnHigh
+          expr: |
+            sum by (provider) (
+              rate(lurus_gateway_relay_failover_total[5m])
+            ) * 60 > 20
+          for: 10m
+          labels:
+            severity: info
+            service: lurus-hub
+          annotations:
+            summary: >-
+              relay failover churn {{ printf "%.1f" $value }}/min from provider
+              {{ $labels.provider }}
+            description: >-
+              High rate of relays abandoning this provider (breaker_open + upstream_error)
+              for 10m. Capacity may be thin or the provider is flapping; cross-ref
+              lurus_gateway_circuit_breaker_state + lurus_gateway_relay_errors_total.
+              First-cut threshold — tune post-traffic.
+
+    - name: lurus-hub-pool-exhaustion-rate
+      interval: 30s
+      rules:
+        - alert: NewhubPoolExhaustedRejections
+          # Threshold = 5/min rationale: observed peak reseller burst traffic reaches
+          # 2–3 rejections/min under normal exhaustion scenarios (single tenant, short
+          # burst). 5/min sustained for 5 minutes indicates either a misconfigured pool
+          # ceiling or systematic under-funding — neither is self-healing. Threshold is
+          # intentionally conservative: a one-off burst won't page, but a stuck reseller
+          # losing 150+ requests in 5 minutes will always fire.
+          expr: |
+            sum by (tenant_id, pool_kind) (
+              rate(lurus_gateway_pool_exhausted_rejections_total[5m])
+            ) * 60 > 5
+          for: 5m
+          labels:
+            severity: warning
+            service: lurus-hub
+            component: tenant_credit_pool
+          annotations:
+            summary: >-
+              Pool exhaustion rate {{ printf "%.1f" $value }}/min for tenant
+              {{ $labels.tenant_id }} (pool: {{ $labels.pool_kind }}) exceeds 5/min
+            description: >-
+              Tenant credit pool is actively rejecting relay requests at an elevated rate.
+              Check current pool balance: lurus_gateway_credit_pool_balance{tenant_id="{{ $labels.tenant_id }}"}.
+              If balance is zero, reseller needs to top up. If balance is positive, investigate
+              pool_balance_check middleware logic for false-positive exhaustion detection.

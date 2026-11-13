@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
-	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
@@ -21,7 +23,13 @@ func GetAllLogs(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	logs, total, err := repo.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group)
+	// Root (platform operator) sees every tenant's logs; a tenant admin is
+	// constrained to their own tenant. AdminAuth() alone does not enforce this.
+	scope := repo.AllTenantsForAdmin()
+	if c.GetInt("role") < common.RoleRootUser {
+		scope = repo.ForTenant(c.GetString("tenant_id"))
+	}
+	logs, total, err := repo.GetAllLogs(scope, logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -64,6 +72,27 @@ func SearchAllLogs(c *gin.Context) {
 	group := c.Query("group")
 	page, _ := strconv.Atoi(c.Query("page"))
 	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+
+	// A tenant admin must never see another tenant's logs. Both the Meilisearch
+	// index and the app.SearchLogs admin fallback are cross-tenant, so scope
+	// non-root callers directly to the tenant-filtered DB search.
+	if c.GetInt("role") < common.RoleRootUser {
+		logs, err := repo.SearchAllLogs(repo.ForTenant(c.GetString("tenant_id")), keyword)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data": gin.H{
+				"items": logs,
+				"total": len(logs),
+				"page":  page,
+			},
+		})
+		return
+	}
 
 	result, err := app.SearchLogs(app.LogSearchParams{
 		Keyword:        keyword,
@@ -136,7 +165,12 @@ func SearchUserLogs(c *gin.Context) {
 
 func GetLogByKey(c *gin.Context) {
 	key := c.Query("key")
-	logs, err := repo.GetLogByKey(key)
+	// The queried key is caller-supplied, so ownership must be decided from
+	// the authenticated principal instead: TokenAuth sets both "id" (the
+	// token owner) and "tenant_id" (the token's tenant). repo.GetLogByKey
+	// refuses anything that is not the caller's own token, and returns the
+	// unknown-key shape for foreign keys so this stays out of oracle duty.
+	logs, err := repo.GetLogByKey(key, c.GetInt("id"), c.GetString("tenant_id"))
 	if err != nil {
 		c.JSON(200, gin.H{
 			"success": false,
@@ -160,8 +194,13 @@ func GetLogsStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	stat := repo.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
-	//tokenNum := repo.SumUsedToken(logType, startTimestamp, endTimestamp, modelName, username, "")
+	// Root sees platform-wide stats; a tenant admin is scoped to their tenant.
+	scope := repo.AllTenantsForAdmin()
+	if c.GetInt("role") < common.RoleRootUser {
+		scope = repo.ForTenant(c.GetString("tenant_id"))
+	}
+	stat := repo.SumUsedQuota(scope, logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	//tokenNum := repo.SumUsedToken(repo.AllTenantsForAdmin(), logType, startTimestamp, endTimestamp, modelName, username, "")
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -183,8 +222,11 @@ func GetLogsSelfStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	quotaNum := repo.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
-	//tokenNum := repo.SumUsedToken(logType, startTimestamp, endTimestamp, modelName, username, tokenName)
+	// Self stat: scope to the caller's tenant (set by authHelper for every
+	// session/access-token request). The username filter alone is not an
+	// isolation boundary once usernames are only unique per tenant.
+	quotaNum := repo.SumUsedQuota(repo.ForTenant(c.GetString("tenant_id")), logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	//tokenNum := repo.SumUsedToken(repo.ForTenant(c.GetString("tenant_id")), logType, startTimestamp, endTimestamp, modelName, username, tokenName)
 	c.JSON(200, gin.H{
 		"success": true,
 		"message": "",
@@ -207,11 +249,30 @@ func DeleteHistoryLogs(c *gin.Context) {
 		})
 		return
 	}
-	count, err := repo.DeleteOldLog(c.Request.Context(), targetTimestamp, 100)
+	// Root performs platform-wide retention cleanup; a tenant admin may only
+	// delete their own tenant's logs — never another tenant's history.
+	scope := repo.AllTenantsForAdmin()
+	scopeLabel := "all_tenants"
+	if c.GetInt("role") < common.RoleRootUser {
+		scope = repo.ForTenant(c.GetString("tenant_id"))
+		scopeLabel = c.GetString("tenant_id")
+	}
+	count, err := repo.DeleteOldLog(c.Request.Context(), scope, targetTimestamp, 100)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+
+	// Audit trail (cycle 13 L4, finding #8, which named this handler as an
+	// unbounded synchronous delete over the logs table): it previously left
+	// no trail of its own — the deleted rows' own log history vanished with
+	// them. This write goes to the separate audit_events table, which this
+	// handler cannot purge (pinned by
+	// TestDeleteHistoryLogs_RecordsLogsPurgedAudit_RowSurvivesPurge).
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionLogsPurged, governance.ResourceLog, 0,
+		fmt.Sprintf(`{"cutoff":%d,"scope":%q,"deleted":%d}`, targetTimestamp, scopeLabel, count)))
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

@@ -1,14 +1,25 @@
+FROM node:22-slim AS node
+
 FROM oven/bun:latest AS builder
+# bun stays the package manager and script runner. The node binary is here
+# so that `bun run build` executes the bundler under node (its bin has a node
+# shebang; without a node on PATH bun runs it itself), which keeps peak memory
+# well inside the CI runners. NODE_OPTIONS gives node the ~4G heap it would
+# size for itself on a 16G host instead of deriving a smaller one from the
+# container's cgroup.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
-WORKDIR /build
-COPY web/package.json .
-COPY web/bun.lock .
-RUN bun install
-COPY ./web .
-COPY ./VERSION .
-RUN DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$(cat VERSION) bun run build
+# The console (web/next). Its manifest and lockfile are copied alone first so
+# the install layer is cached until they change, not on every source edit. The
+# build writes /build/dist/next (web/next/rsbuild.config.ts); web/embed.go
+# embeds the whole of dist via all:dist.
+WORKDIR /build/next
+COPY web/next/package.json web/next/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY ./web/next .
+RUN NODE_OPTIONS=--max-old-space-size=4096 bun run build
 
-FROM golang:alpine AS builder2
+FROM golang:1.26-alpine AS builder2
 ENV GO111MODULE=on CGO_ENABLED=0
 
 ARG TARGETOS
@@ -18,9 +29,16 @@ ENV GOEXPERIMENT=greenteagc
 
 WORKDIR /build
 
-# Copy proto-go module (identity gRPC contract types)
-COPY lurus-proto-go/ /shared/lurus-proto-go/
+# Copy zita-sdk-go (identity SDK, ADR-0011) — pinned via CI checkout ref
+COPY zita-sdk-go/ /shared/zita-sdk-go/
 
+# Copy lurus-entkit (offline entitlement-token verifier, platform ADR 0030)
+COPY lurus-entkit/ /shared/lurus-entkit/
+
+# Module proxy is a build arg so CI can try a nearby mirror first; go.sum
+# pins every module's hash, so the proxy cannot change what gets built.
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 ADD go.mod go.sum ./
 RUN go mod download
 
@@ -30,7 +48,28 @@ RUN go build -ldflags "-s -w -X 'github.com/LurusTech/lurus-hub/internal/pkg/com
 
 FROM debian:bookworm-slim
 
-RUN apt-get update \
+# apt-get upgrade applies the latest Debian security patches (e.g. libgnutls30
+# 3.7.9-2+deb12u7, pulled in transitively by wget) — without it the GHA layer
+# cache can pin an older, CVE-flagged package set. Keep this so the Trivy gate
+# stays green on base-image CVEs.
+# SECURITY_REFRESH below busts the GHA layer cache: a cached RUN layer keeps
+# the package set frozen at cache time, so a CVE fixed upstream (e.g.
+# CVE-2026-45447 libssl3 deb12u2) never reaches the image until the
+# instruction text changes. Bump the date whenever Trivy flags a fixed CVE.
+ARG SECURITY_REFRESH=2026-09-14
+# DEBIAN_MIRROR (optional, e.g. http://mirrors.aliyun.com) replaces
+# deb.debian.org for this one apt run. The local CI pool reaches
+# deb.debian.org over a cross-border link that stalled this step for 20+
+# minutes on 2026-10-14/15 (4-20s per request, some never answered) while a
+# domestic mirror answered in 0.25s. Plain http on purpose: the slim base has
+# no CA bundle yet, and apt verifies every package against the archive's
+# signing keys regardless of transport. Unset = the stock sources.
+ARG DEBIAN_MIRROR=
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+        sed -i "s#http://deb.debian.org#${DEBIAN_MIRROR}#g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates tzdata libasan8 wget \
     && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates

@@ -2,11 +2,14 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/lifecycle"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,6 +17,21 @@ import (
 // GetHealthDetailed returns a detailed health check including dependency connectivity.
 // GET /api/health
 func GetHealthDetailed(c *gin.Context) {
+	// Readiness must pull this pod out of the Service's endpoint list the
+	// instant a shutdown signal is observed (lifecycle.Drainer.MarkDraining,
+	// called from main.go's shutdown goroutine before srv.Shutdown even
+	// starts waiting out its budget) — cycle 13 L11. This check stays first
+	// and unconditional, ahead of every DB/Redis/billing probe below, so a
+	// draining pod never waits on a slow dependency before reporting 503;
+	// readiness (this endpoint) and liveness (GET /api/status, gated the
+	// same way) both go through it — see doc/runbook/graceful-drain.md for
+	// why a liveness 503 here does not itself trigger an extra kubelet
+	// restart once SIGTERM has already been sent.
+	if lifecycle.IsDraining() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "draining"})
+		return
+	}
+
 	checks := make(map[string]string)
 	healthy := true
 
@@ -21,7 +39,16 @@ func GetHealthDetailed(c *gin.Context) {
 	if repo.DB != nil {
 		sqlDB, err := repo.DB.DB()
 		if err == nil {
-			if err := sqlDB.PingContext(c.Request.Context()); err != nil {
+			// Bound the ping with its own deadline (A1): a ping to a DOWN host can
+			// otherwise outlive the readinessProbe timeout window and leave a zombie
+			// pod draining traffic. That window is timeoutSeconds: 4 in both
+			// manifests as of 2026-09-19 (deploy/k8s/r6-stage/deployment.yaml:291,
+			// deploy/k8s/r6-uat/deployment.yaml:223); this comment said 2 until the
+			// value was re-read. Inline cancel — two more checks follow.
+			ctx, cancel := context.WithTimeout(c.Request.Context(), common.HealthDBPingTimeout)
+			pingErr := sqlDB.PingContext(ctx)
+			cancel()
+			if pingErr != nil {
 				checks["database"] = "unreachable"
 				healthy = false
 			} else {
@@ -35,7 +62,16 @@ func GetHealthDetailed(c *gin.Context) {
 		checks["database"] = "not_configured"
 	}
 
-	// Redis check
+	// Redis check. The 2s cap below only became real in cycle 12: go-redis sets
+	// no read timeout of its own and consults the caller's context deadline only
+	// when ContextTimeoutEnabled is set, both of which common.applyRedisTimeouts
+	// now does. Measured against a listener that accepts and never replies
+	// (health_deadline_test.go): 3.0027799s before, 1.0221447s after — the ping
+	// now ends at the client's own 1s read timeout, inside both this 2s cap and
+	// the readinessProbe timeoutSeconds: 4 that both manifests declare
+	// (deploy/k8s/r6-stage/deployment.yaml:291,
+	// deploy/k8s/r6-uat/deployment.yaml:223). 3s was never a kubelet cut-off; it
+	// was 75% of the probe window spent on one soft dependency.
 	if common.RedisEnabled && common.RDB != nil {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
@@ -44,19 +80,61 @@ func GetHealthDetailed(c *gin.Context) {
 		} else {
 			checks["redis"] = "ok"
 		}
+	} else if common.RedisEnabled {
+		// Enabled but no client: a broken wiring, not the intentional off
+		// state — give the operator a distinct label instead of "disabled".
+		checks["redis"] = "not_configured"
 	} else {
 		checks["redis"] = "disabled"
 	}
 
-	// Platform billing service check (via circuit breaker state)
-	if common.BillingUnifiedEnabled {
-		if err := common.BillingBreakerAllow(); err != nil {
+	// Schema-migration drift. Reported, never fatal: during a rolling update an
+	// old pod legitimately sees pending migrations for the duration of the roll,
+	// and failing readiness there would stall the very deploy that applies them.
+	// The value is the snapshot published at boot, so this costs no DB round trip
+	// on a probe that runs every few seconds.
+	if pending, known := metrics.PendingSchemaMigrations(); !known {
+		checks["schema_migrations"] = "unknown"
+	} else if pending > 0 {
+		checks["schema_migrations"] = fmt.Sprintf("pending:%d", pending)
+	} else {
+		checks["schema_migrations"] = "ok"
+	}
+
+	// Platform billing service check — OBSERVE the breaker, never use it.
+	// This handler is the readinessProbe target (every 5s in both manifests:
+	// deploy/k8s/r6-stage/deployment.yaml:338-344, r6-uat/deployment.yaml),
+	// and until cycle 14 it called common.BillingBreakerAllow(), which MUTATES:
+	// an open breaker past its cooldown becomes half-open there and the caller
+	// walks off with the single probe slot. The probe then reported neither
+	// success nor failure, and half-open refuses everyone else — so within one
+	// probe interval of any platform blip every real billing call was refused
+	// with "billing service recovering (probe in progress)" until the pod
+	// restarted, while this check cheerfully reported "ok" and
+	// BillingBreakerIsOpen() (false for half-open) kept the degrade path shut.
+	// BillingBreakerState is the read-only accessor; half-open is surfaced
+	// under its own label so an operator can tell "platform is down" from
+	// "we are probing it".
+	if common.BillingUnifiedEnabled() {
+		switch common.BillingBreakerState() {
+		case common.BillingBreakerStateOpen:
 			checks["billing"] = "circuit_open"
-		} else {
+		case common.BillingBreakerStateHalfOpen:
+			checks["billing"] = "circuit_half_open"
+		default:
 			checks["billing"] = "ok"
 		}
 	} else {
 		checks["billing"] = "legacy_mode"
+	}
+
+	// HA leadership. "standby" is the steady state for every replica but
+	// one — registered in healthIntentionalOffStates below so a follower is
+	// never reported as degraded for simply not holding the lease.
+	if common.IsLeader() {
+		checks["leader"] = "held"
+	} else {
+		checks["leader"] = "standby"
 	}
 
 	status := http.StatusOK
@@ -65,7 +143,41 @@ func GetHealthDetailed(c *gin.Context) {
 	}
 
 	c.JSON(status, gin.H{
-		"status": map[bool]string{true: "healthy", false: "degraded"}[healthy],
+		"status": healthBodyStatus(healthy, checks),
 		"checks": checks,
 	})
+}
+
+// healthIntentionalOffStates lists the exact check values that represent a
+// deliberate opt-out rather than a fault — these must never be reported as
+// "degraded" even though they are not literally "ok".
+var healthIntentionalOffStates = map[string]map[string]bool{
+	"redis":             {"disabled": true},
+	"billing":           {"legacy_mode": true},
+	"database":          {"not_configured": true},
+	"schema_migrations": {"unknown": true},
+	"leader":            {"held": true, "standby": true},
+}
+
+// healthBodyStatus derives the human-facing "status" word from the full set
+// of checks, independent of the HTTP status code. The code only ever moves
+// on a failed database check (readiness contract, untouched above); the body
+// word must additionally go "degraded" for soft-dependency failures — Redis
+// down, the billing breaker open, pending migrations — so an operator (or an
+// alert reading this JSON) can't mistake a replica whose rate limiters are
+// failing open for a genuinely healthy one.
+func healthBodyStatus(healthy bool, checks map[string]string) string {
+	if !healthy {
+		return "degraded"
+	}
+	for name, value := range checks {
+		if value == "ok" {
+			continue
+		}
+		if healthIntentionalOffStates[name][value] {
+			continue
+		}
+		return "degraded"
+	}
+	return "healthy"
 }

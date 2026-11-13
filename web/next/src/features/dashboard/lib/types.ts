@@ -1,0 +1,129 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
+/** One row of GET /api/v2/~/logs (handler.logView); only the fields read here. */
+export interface LogRow {
+  id?: number
+  created_at?: number
+  type?: number
+  model_name?: string
+  quota?: number
+  total_latency_ms?: number
+}
+
+/** One row of GET /api/data/self/ (entity.QuotaData): per user/model/hour. */
+export interface QuotaRow {
+  model_name?: string
+  created_at?: number
+  quota?: number
+  count?: number
+  token_used?: number
+}
+
+export interface RealtimeLogs {
+  logs: LogRow[]
+  /** Server-reported row count for the window; `logs` is only one page. */
+  total: number | null
+}
+
+export interface TrendData {
+  rows: QuotaRow[]
+  start: number
+  end: number
+}
+
+export type ConsumptionDistributionChartType = 'bar' | 'area'
+
+export type ModelAnalyticsChartTab = 'trend' | 'proportion' | 'top'
+
+/** Persisted per browser (localStorage), not per account. */
+export interface DashboardChartPreferences {
+  consumptionDistributionChart: ConsumptionDistributionChartType
+  modelAnalyticsChart: ModelAnalyticsChartTab
+  defaultTimeRangeDays: number
+  defaultTimeGranularity: 'hour' | 'day' | 'week'
+}
+
+/**
+ * What the models tab asks for. A preset (`days`) is a rolling window that is
+ * re-anchored to "now" on every fetch, so a refresh never shows a stale span;
+ * a custom range carries its own fixed `start`/`end`.
+ */
+export interface DashboardFilters {
+  /** Rolling window in days; null when a custom start/end is set. */
+  days: number | null
+  start?: Date
+  end?: Date
+  granularity: 'hour' | 'day' | 'week'
+}
+
+/** One row of GET /api/v2/~/models/performance (member + admin views). */
+export interface PerformanceRow {
+  model_name: string
+  p50_latency_ms: number
+  p95_latency_ms: number
+  error_rate: number
+  enough_samples: boolean
+  /** Volume fields are present for tenant admins only. */
+  requests?: number
+  errors?: number
+  total_tokens?: number
+  quota?: number
+  latency_samples?: number
+}
+
+export interface PerformanceData {
+  hours: number
+  minSamples: number | null
+  items: PerformanceRow[]
+}
+
+/** console_setting announcement entry (api /api/status `announcements`). */
+export interface AnnouncementItem {
+  id?: number
+  content: string
+  publishDate?: string
+  type?: 'default' | 'ongoing' | 'success' | 'warning' | 'error'
+  extra?: string
+}
+
+export interface FAQItem {
+  id?: number
+  question: string
+  answer: string
+}
+
+/**
+ * One monitor of GET /api/uptime/status (handler.Monitor). `status` is the
+ * Uptime Kuma heartbeat code; `uptime` is the 24-hour availability ratio
+ * (0..1).
+ */
+export interface UptimeMonitor {
+  name: string
+  uptime: number
+  status: number
+  /** Uptime Kuma's own sub-group of the monitor, when it has one. */
+  group?: string
+}
+
+/** One configured Uptime Kuma group (handler.UptimeGroupResult). */
+export interface UptimeGroup {
+  categoryName: string
+  monitors: UptimeMonitor[]
+}

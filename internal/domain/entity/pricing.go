@@ -15,6 +15,27 @@ type Pricing struct {
 	CompletionRatio        float64                 `json:"completion_ratio"`
 	EnableGroup            []string                `json:"enable_groups"`
 	SupportedEndpointTypes []constant.EndpointType `json:"supported_endpoint_types"`
+	// Modality is the administrator override, else the most common modality
+	// recorded on the model's abilities rows ("" = unknown).
+	Modality string `json:"modality,omitempty"`
+	// UsageUnit is "search_unit" / "audio_second" when the matching price
+	// table has an entry (even 0), otherwise "token". Filled per request by
+	// repo.GetPricingForTenant from the live option, never cached.
+	UsageUnit string `json:"usage_unit,omitempty"`
+	// SearchUnitPrice is nil (omitted) when unconfigured and a pointer to 0
+	// when explicitly free: the two must stay distinguishable.
+	SearchUnitPrice *float64 `json:"search_unit_price,omitempty"`
+	// AudioSecondPrice mirrors SearchUnitPrice for speech / transcription
+	// models billed per ceil(duration_seconds) (TokenHub 0.10).
+	AudioSecondPrice *float64 `json:"audio_second_price,omitempty"`
+	// PriceConfigured is true when the model has a fixed per-call price or an
+	// explicit/derived ratio. False means nobody priced it: by default the
+	// relay refuses the model (model_price_error), and only self-use mode or a
+	// user's AcceptUnsetRatioModel setting lets it through at the unconfigured
+	// fallback ratio. ModelRatio is then 0, not that fallback, so no consumer
+	// shows an invented price; the public catalogues omit such rows entirely
+	// (repo.PricedOnly).
+	PriceConfigured bool `json:"price_configured"`
 }
 
 type PricingVendor struct {

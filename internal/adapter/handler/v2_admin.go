@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
@@ -45,17 +47,21 @@ func ListUserMappingsV2(c *gin.Context) {
 
 	offset := (page - 1) * pageSize
 
-	// Parse filter parameters
+	// Parse filter parameters. Accept the canonical idp_subject query param and
+	// fall back to the deprecated zitadel_user_id for back-compat.
 	tenantID := c.Query("tenant_id")
-	zitadelUserID := c.Query("zitadel_user_id")
+	idpSubject := c.Query("idp_subject")
+	if idpSubject == "" {
+		idpSubject = c.Query("zitadel_user_id")
+	}
 
 	var mappings []*repo.UserIdentityMapping
 	var total int64
 	var err error
 
-	if zitadelUserID != "" {
-		// List by Zitadel user across all tenants
-		mappings, err = repo.ListUserMappingsByZitadelUser(zitadelUserID)
+	if idpSubject != "" {
+		// List by OIDC subject across all tenants
+		mappings, err = repo.ListUserMappingsByIDPSubject(idpSubject)
 		if err != nil {
 			common.SysError("Failed to list user mappings: " + err.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -232,6 +238,10 @@ func DeleteUserMappingV2(c *gin.Context) {
 		})
 		return
 	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionTenantMappingDeleted, governance.ResourceTenant, mappingID,
+		fmt.Sprintf(`{"hard_delete":%t,"lurus_user_id":%d}`, hardDelete, mapping.LurusUserID)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

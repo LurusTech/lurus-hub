@@ -15,6 +15,96 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Token validation error codes (cycle13 L3, ERRCODES-6). Attached alongside
+// the existing message text on the validator-rejection 400s of
+// CreateTokenV2/UpdateTokenV2 — the request-binding and id-parse 400s in
+// this file do not carry one, they are not validator output — so a caller
+// that wants to branch programmatically
+// doesn't have to string-match message (whose text is not itself translated
+// by this change — see token_service.go's validators, pinned by
+// internal/app/token_service_test.go and
+// internal/adapter/handler/cov_handler-identity-log_token_test.go, neither
+// owned by this lane).
+const (
+	tokenErrCodeNameInvalid       = "TOKEN_NAME_INVALID"
+	tokenErrCodeQuotaInvalid      = "TOKEN_QUOTA_INVALID"
+	tokenErrCodeExpiryInvalid     = "TOKEN_EXPIRY_INVALID"
+	tokenErrCodeRateLimitInvalid  = "TOKEN_RATE_LIMIT_INVALID"
+	tokenErrCodeScopeInvalid      = "TOKEN_SCOPE_INVALID"
+	tokenErrCodeModelLimitInvalid = "TOKEN_MODEL_LIMIT_INVALID"
+	tokenErrCodeEnableRejected    = "TOKEN_ENABLE_REJECTED"
+)
+
+// tokenView is the field-whitelisted projection returned by ListTokensV2. It
+// excludes the raw Key (the bearer secret — must never appear in a list, only
+// once on create), tenant_id (implicit from route) and the platform/provisioning
+// linkage IDs (identity_account_id, creator_user_id). Mirrors redemptionView.
+type tokenView struct {
+	Id                 int      `json:"id"`
+	Name               string   `json:"name"`
+	Key                string   `json:"key"` // masked (first4****last4); full key returned only on create/rotate
+	Status             int      `json:"status"`
+	CreatedTime        int64    `json:"created_time"`
+	AccessedTime       int64    `json:"accessed_time"`
+	ExpiredTime        int64    `json:"expired_time"`
+	RemainQuota        int      `json:"remain_quota"`
+	UsedQuota          int      `json:"used_quota"`
+	UnlimitedQuota     bool     `json:"unlimited_quota"`
+	ModelLimitsEnabled bool     `json:"model_limits_enabled"`
+	ModelLimits        string   `json:"model_limits"`
+	AllowIps           *string  `json:"allow_ips"`
+	Group              string   `json:"group"`
+	Scopes             []string `json:"scopes"` // empty array = no scope restriction (backward compat)
+	// ProjectId is the cost-attribution label (migration 029); 0 = unassigned.
+	// Safe to expose to the token owner: it is not a privilege, and the
+	// project list itself is readable by every user in the tenant.
+	ProjectId int `json:"project_id"`
+	// EmployeeRef / TrustedIdentityHeaders: enterprise attribution (migration
+	// 045). Neither is a secret; the flag is writable by tenant admins only.
+	EmployeeRef            string `json:"employee_ref"`
+	TrustedIdentityHeaders bool   `json:"trusted_identity_headers"`
+}
+
+// toTokenView projects a single repo.Token into the field-whitelisted view
+// (masked Key, no tenant/provisioning linkage). Shared by the list endpoint
+// and the update endpoint so neither can accidentally regress to leaking the
+// raw Key.
+func toTokenView(t *repo.Token) tokenView {
+	scopes := t.GetScopes()
+	if scopes == nil {
+		scopes = []string{}
+	}
+	return tokenView{
+		Id:                 t.Id,
+		Name:               t.Name,
+		Key:                maskKey(t.Key),
+		Status:             t.Status,
+		CreatedTime:        t.CreatedTime,
+		AccessedTime:       t.AccessedTime,
+		ExpiredTime:        t.ExpiredTime,
+		RemainQuota:        t.RemainQuota,
+		UsedQuota:          t.UsedQuota,
+		UnlimitedQuota:     t.UnlimitedQuota,
+		ModelLimitsEnabled: t.ModelLimitsEnabled,
+		ModelLimits:        t.ModelLimits,
+		AllowIps:           t.AllowIps,
+		Group:              t.Group,
+		Scopes:             scopes,
+		ProjectId:          t.ProjectId,
+
+		EmployeeRef:            t.EmployeeRef,
+		TrustedIdentityHeaders: t.TrustedIdentityHeaders,
+	}
+}
+
+func toTokenViews(tokens []*repo.Token) []tokenView {
+	items := make([]tokenView, 0, len(tokens))
+	for _, t := range tokens {
+		items = append(items, toTokenView(t))
+	}
+	return items
+}
+
 // ListTokensV2 retrieves the current user's tokens (v2 API with tenant context)
 // Route: GET /api/v2/:tenant_slug/tokens
 func ListTokensV2(c *gin.Context) {
@@ -41,8 +131,19 @@ func ListTokensV2(c *gin.Context) {
 
 	offset := (page - 1) * pageSize
 
-	// Get tokens for the user (filtered by tenant_id implicitly through user ownership)
-	tokens, err := repo.GetAllUserTokens(tenantCtx.UserID, offset, pageSize)
+	if scope := c.Query("scope"); scope != "" {
+		if scope != "tenant" {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "scope must be \"tenant\" or omitted"})
+			return
+		}
+		listTenantTokensV2(c, tenantCtx, page, pageSize, offset)
+		return
+	}
+
+	// Get tokens for the user scoped to the current tenant. Explicit
+	// tenant_id filter is defence-in-depth — prevents cross-tenant leakage
+	// even when TenantPlugin is not registered (e.g. hermetic tests).
+	tokens, err := repo.GetUserTokensByTenant(tenantCtx.UserID, tenantCtx.TenantID, offset, pageSize)
 	if err != nil {
 		common.SysError("Failed to get tokens: " + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -52,13 +153,13 @@ func ListTokensV2(c *gin.Context) {
 		return
 	}
 
-	// Get total count
-	total, _ := repo.CountUserTokens(tenantCtx.UserID)
+	// Get total count (same tenant scope as the list query)
+	total, _ := repo.CountUserTokensByTenant(tenantCtx.UserID, tenantCtx.TenantID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"items":     tokens,
+			"items":     toTokenViews(tokens),
 			"total":     total,
 			"page":      page,
 			"page_size": pageSize,
@@ -81,14 +182,23 @@ func CreateTokenV2(c *gin.Context) {
 
 	// Parse request body
 	var req struct {
-		Name               string `json:"name" binding:"required"`
-		ExpiredTime        int64  `json:"expired_time"`        // -1 for never expires
-		RemainQuota        int    `json:"remain_quota"`        // Initial quota
-		UnlimitedQuota     bool   `json:"unlimited_quota"`     // Unlimited quota flag
-		ModelLimitsEnabled bool   `json:"model_limits_enabled"` // Enable model limits
-		ModelLimits        string `json:"model_limits"`         // JSON string of model limits
-		AllowIps           string `json:"allow_ips"`            // Comma-separated allowed IPs
-		Group              string `json:"group"`                // Token group
+		Name               string   `json:"name" binding:"required"`
+		ExpiredTime        int64    `json:"expired_time"`         // -1 for never expires
+		RemainQuota        int      `json:"remain_quota"`         // Initial quota
+		UnlimitedQuota     bool     `json:"unlimited_quota"`      // Unlimited quota flag
+		ModelLimitsEnabled bool     `json:"model_limits_enabled"` // Enable model limits
+		ModelLimits        string   `json:"model_limits"`         // JSON string of model limits
+		AllowIps           string   `json:"allow_ips"`            // Comma-separated allowed IPs
+		Group              string   `json:"group"`                // Token group
+		Scopes             []string `json:"scopes"`               // Relay scope allowlist (empty = unrestricted)
+		RateLimitRPM       int      `json:"rate_limit_rpm"`       // Requests/min ceiling (0 = unlimited)
+		RateLimitTPM       int      `json:"rate_limit_tpm"`       // Tokens/min ceiling (0 = unlimited)
+		ProjectId          int      `json:"project_id"`           // Cost-attribution project (0 = unassigned)
+		// EmployeeRef: employee this key is issued to ("" = none); unique per tenant.
+		EmployeeRef string `json:"employee_ref"`
+		// TrustedIdentityHeaders: honour X-Lurus-Employee / X-Lurus-Dept on this
+		// key. Tenant admin only (403 otherwise).
+		TrustedIdentityHeaders bool `json:"trusted_identity_headers"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -103,8 +213,9 @@ func CreateTokenV2(c *gin.Context) {
 	// Validate token name
 	if err := app.ValidateTokenName(req.Name); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": err.Error(),
+			"success":    false,
+			"message":    err.Error(),
+			"error_code": tokenErrCodeNameInvalid,
 		})
 		return
 	}
@@ -112,9 +223,67 @@ func CreateTokenV2(c *gin.Context) {
 	// Validate quota
 	if err := app.ValidateTokenQuota(req.RemainQuota, req.UnlimitedQuota); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": err.Error(),
+			"success":    false,
+			"message":    err.Error(),
+			"error_code": tokenErrCodeQuotaInvalid,
 		})
+		return
+	}
+
+	// Validate expiry upper bound (unit mistakes would mean "never expires")
+	if err := app.ValidateTokenExpiredTime(req.ExpiredTime); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success":    false,
+			"message":    err.Error(),
+			"error_code": tokenErrCodeExpiryInvalid,
+		})
+		return
+	}
+
+	// Validate per-minute rate limits (0 = unlimited)
+	if err := app.ValidateRateLimits(req.RateLimitRPM, req.RateLimitTPM); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success":    false,
+			"message":    err.Error(),
+			"error_code": tokenErrCodeRateLimitInvalid,
+		})
+		return
+	}
+
+	// Validate the model allowlist (ERRCODES-6 / cycle13 L3): a stray comma
+	// producing an empty entry would otherwise key GetModelLimitsMap on "",
+	// and an oversized value would otherwise fail at INSERT with a raw
+	// "value too long" driver error.
+	if err := app.ValidateTokenModelLimits(req.ModelLimits, req.ModelLimitsEnabled); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success":    false,
+			"message":    err.Error(),
+			"error_code": tokenErrCodeModelLimitInvalid,
+		})
+		return
+	}
+
+	// Normalize and validate scopes — invalid values reject with 400.
+	scopesNormalized, err := app.NormalizeTokenScopes(req.Scopes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success":    false,
+			"message":    err.Error(),
+			"error_code": tokenErrCodeScopeInvalid,
+		})
+		return
+	}
+
+	// Cost attribution (migration 029): the project must belong to the
+	// CALLER'S OWN tenant. Without this check a member could stamp their
+	// spend onto another tenant's project id — there is no foreign key, so
+	// the database would happily store it and the other tenant's report would
+	// silently gain rows it cannot explain.
+	if !validateTokenProject(c, tenantCtx.TenantID, req.ProjectId) {
+		return
+	}
+
+	if !checkEnterpriseTokenFields(c, tenantCtx, req.EmployeeRef, 0, req.TrustedIdentityHeaders) {
 		return
 	}
 
@@ -142,9 +311,24 @@ func CreateTokenV2(c *gin.Context) {
 		allowIps = &req.AllowIps
 	}
 
+	// Stamp the platform account link from the CALLER's own user row (never
+	// from the request body — there is no such field on it). Without this
+	// PostConsumeQuota's wallet-debit gate never fires for a v2-created
+	// token, no matter how the caller's platform account is linked. No link
+	// leaves the field at zero, same as an unlinked v1 token.
+	ownerID, identityAccountID := tenantCtx.UserID, repo.IdentityAccountIDForUser(tenantCtx.UserID)
+	if req.EmployeeRef != "" {
+		// An admin-issued (employee_ref) key is booked to the tenant's payer,
+		// exactly like the roster endpoint; 409 payer_not_set without one.
+		var ok bool
+		if ownerID, identityAccountID, ok = resolveKeyOwner(c, tenantCtx); !ok {
+			return
+		}
+	}
+
 	// Create token with tenant context
 	token := repo.Token{
-		UserId:             tenantCtx.UserID,
+		UserId:             ownerID,
 		TenantId:           tenantCtx.TenantID,
 		Name:               req.Name,
 		Key:                key,
@@ -157,10 +341,22 @@ func CreateTokenV2(c *gin.Context) {
 		ModelLimits:        req.ModelLimits,
 		AllowIps:           allowIps,
 		Group:              req.Group,
+		Scopes:             scopesNormalized,
+		RateLimitRPM:       req.RateLimitRPM,
+		RateLimitTPM:       req.RateLimitTPM,
+		ProjectId:          req.ProjectId,
+		IdentityAccountID:  identityAccountID,
+
+		EmployeeRef:            req.EmployeeRef,
+		TrustedIdentityHeaders: req.TrustedIdentityHeaders,
 	}
 
 	err = token.Insert()
 	if err != nil {
+		if repo.IsUniqueViolation(err) {
+			respondEmployeeRefConflict(c)
+			return
+		}
 		common.SysError("Failed to create token: " + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -176,9 +372,11 @@ func CreateTokenV2(c *gin.Context) {
 		"success": true,
 		"message": "Token created successfully",
 		"data": gin.H{
-			"id":   token.Id,
-			"name": token.Name,
-			"key":  "sk-" + token.Key, // Return full key only on creation
+			"id":                       token.Id,
+			"name":                     token.Name,
+			"key":                      "sk-" + token.Key, // Return full key only on creation
+			"employee_ref":             token.EmployeeRef,
+			"trusted_identity_headers": token.TrustedIdentityHeaders,
 		},
 	})
 }
@@ -227,15 +425,25 @@ func UpdateTokenV2(c *gin.Context) {
 
 	// Parse request body
 	var req struct {
-		Name               string `json:"name"`
-		ExpiredTime        int64  `json:"expired_time"`
-		RemainQuota        int    `json:"remain_quota"`
-		UnlimitedQuota     *bool  `json:"unlimited_quota"`
-		ModelLimitsEnabled *bool  `json:"model_limits_enabled"`
-		ModelLimits        string `json:"model_limits"`
-		AllowIps           string `json:"allow_ips"`
-		Group              string `json:"group"`
-		Status             *int   `json:"status"`
+		Name               string    `json:"name"`
+		ExpiredTime        int64     `json:"expired_time"`
+		RemainQuota        *int      `json:"remain_quota"` // nil = no change; explicit 0 sets to zero
+		UnlimitedQuota     *bool     `json:"unlimited_quota"`
+		ModelLimitsEnabled *bool     `json:"model_limits_enabled"`
+		ModelLimits        *string   `json:"model_limits"` // nil = no change; "" clears the allowlist
+		AllowIps           *string   `json:"allow_ips"`    // nil = no change; "" clears (unrestricted)
+		Group              string    `json:"group"`
+		Status             *int      `json:"status"`
+		Scopes             *[]string `json:"scopes"`         // nil = no change; non-nil (incl. []) = replace allowlist
+		RateLimitRPM       *int      `json:"rate_limit_rpm"` // nil = no change; 0 resets to unlimited
+		RateLimitTPM       *int      `json:"rate_limit_tpm"` // nil = no change; 0 resets to unlimited
+		// ProjectId: nil = no change; 0 unassigns. A pointer, not a plain int,
+		// because 0 is a meaningful value here (unassign) rather than "absent".
+		ProjectId *int `json:"project_id"`
+		// EmployeeRef: nil = no change, "" clears. TrustedIdentityHeaders: nil =
+		// no change; turning it ON is tenant-admin only (turning it off is not).
+		EmployeeRef            *string `json:"employee_ref"`
+		TrustedIdentityHeaders *bool   `json:"trusted_identity_headers"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -251,8 +459,9 @@ func UpdateTokenV2(c *gin.Context) {
 	if req.Name != "" {
 		if err := app.ValidateTokenName(req.Name); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": err.Error(),
+				"success":    false,
+				"message":    err.Error(),
+				"error_code": tokenErrCodeNameInvalid,
 			})
 			return
 		}
@@ -260,6 +469,14 @@ func UpdateTokenV2(c *gin.Context) {
 	}
 
 	if req.ExpiredTime != 0 {
+		if err := app.ValidateTokenExpiredTime(req.ExpiredTime); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success":    false,
+				"message":    err.Error(),
+				"error_code": tokenErrCodeExpiryInvalid,
+			})
+			return
+		}
 		token.ExpiredTime = req.ExpiredTime
 	}
 
@@ -267,27 +484,43 @@ func UpdateTokenV2(c *gin.Context) {
 		token.UnlimitedQuota = *req.UnlimitedQuota
 	}
 
-	if !token.UnlimitedQuota && req.RemainQuota != 0 {
-		if req.RemainQuota < 0 {
+	if req.RemainQuota != nil && !token.UnlimitedQuota {
+		if *req.RemainQuota < 0 {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "Quota value cannot be negative",
+				"success":    false,
+				"message":    "Quota value cannot be negative",
+				"error_code": tokenErrCodeQuotaInvalid,
 			})
 			return
 		}
-		token.RemainQuota = req.RemainQuota
+		token.RemainQuota = *req.RemainQuota
 	}
 
 	if req.ModelLimitsEnabled != nil {
 		token.ModelLimitsEnabled = *req.ModelLimitsEnabled
 	}
 
-	if req.ModelLimits != "" {
-		token.ModelLimits = req.ModelLimits
+	if req.ModelLimits != nil {
+		token.ModelLimits = *req.ModelLimits
 	}
 
-	if req.AllowIps != "" {
-		token.AllowIps = &req.AllowIps
+	// Validate against the MERGED (existing + just-patched) state, not just
+	// the fields this request happened to send — a caller that only flips
+	// model_limits_enabled=true without resending model_limits must still be
+	// validated against whatever model_limits the token already has.
+	if req.ModelLimitsEnabled != nil || req.ModelLimits != nil {
+		if err := app.ValidateTokenModelLimits(token.ModelLimits, token.ModelLimitsEnabled); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success":    false,
+				"message":    err.Error(),
+				"error_code": tokenErrCodeModelLimitInvalid,
+			})
+			return
+		}
+	}
+
+	if req.AllowIps != nil {
+		token.AllowIps = req.AllowIps
 	}
 
 	if req.Group != "" {
@@ -298,8 +531,9 @@ func UpdateTokenV2(c *gin.Context) {
 		if *req.Status == common.TokenStatusEnabled {
 			if err := app.CanEnableToken(token); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{
-					"success": false,
-					"message": err.Error(),
+					"success":    false,
+					"message":    err.Error(),
+					"error_code": tokenErrCodeEnableRejected,
 				})
 				return
 			}
@@ -307,9 +541,87 @@ func UpdateTokenV2(c *gin.Context) {
 		token.Status = *req.Status
 	}
 
+	// Rate limits: nil = unchanged, explicit 0 resets to unlimited.
+	if req.RateLimitRPM != nil || req.RateLimitTPM != nil {
+		rpm, tpm := token.RateLimitRPM, token.RateLimitTPM
+		if req.RateLimitRPM != nil {
+			rpm = *req.RateLimitRPM
+		}
+		if req.RateLimitTPM != nil {
+			tpm = *req.RateLimitTPM
+		}
+		if err := app.ValidateRateLimits(rpm, tpm); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success":    false,
+				"message":    err.Error(),
+				"error_code": tokenErrCodeRateLimitInvalid,
+			})
+			return
+		}
+		token.RateLimitRPM = rpm
+		token.RateLimitTPM = tpm
+	}
+
+	// Cost attribution (migration 029): nil = unchanged, 0 = unassign, and any
+	// other value must resolve inside the CALLER'S OWN tenant.
+	if req.ProjectId != nil {
+		if !validateTokenProject(c, tenantCtx.TenantID, *req.ProjectId) {
+			return
+		}
+		token.ProjectId = *req.ProjectId
+	}
+
+	if req.EmployeeRef != nil || req.TrustedIdentityHeaders != nil {
+		ref, trusted := token.EmployeeRef, token.TrustedIdentityHeaders
+		if req.EmployeeRef != nil {
+			ref = *req.EmployeeRef
+		}
+		if req.TrustedIdentityHeaders != nil {
+			trusted = *req.TrustedIdentityHeaders
+		}
+		if ref != token.EmployeeRef && !requireEmployeeRefAdmin(c, tenantCtx) {
+			return
+		}
+		// Only a NEW ref is checked for syntax/uniqueness, and only an
+		// enabling flip is privileged: a legacy value is never re-litigated.
+		checkRef, checkTrusted := ref, trusted && !token.TrustedIdentityHeaders
+		if ref == token.EmployeeRef {
+			checkRef = ""
+		}
+		if !checkEnterpriseTokenFields(c, tenantCtx, checkRef, token.Id, checkTrusted) {
+			return
+		}
+		token.EmployeeRef, token.TrustedIdentityHeaders = ref, trusted
+	}
+
+	// Scopes replacement is opt-in: nil = unchanged, non-nil = full replace.
+	// Sending [] clears the allowlist (= no restriction). Record both before/
+	// after in the audit event so admins can reconstruct privilege changes.
+	scopeAuditPrev := token.Scopes
+	scopeAuditChanged := false
+	if req.Scopes != nil {
+		scopesNormalized, err := app.NormalizeTokenScopes(*req.Scopes)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success":    false,
+				"message":    err.Error(),
+				"error_code": tokenErrCodeScopeInvalid,
+			})
+			return
+		}
+		if scopesNormalized != token.Scopes {
+			scopeAuditChanged = true
+		}
+		token.Scopes = scopesNormalized
+	}
+
 	// Save changes
 	err = token.Update()
 	if err != nil {
+		if repo.IsUniqueViolation(err) {
+			respondEmployeeRefConflict(c)
+			return
+		}
 		common.SysError("Failed to update token: " + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -318,12 +630,21 @@ func UpdateTokenV2(c *gin.Context) {
 		return
 	}
 
+	auditDetails := ""
+	if scopeAuditChanged {
+		detailBytes, _ := json.Marshal(map[string]string{
+			"action":     "scope_update",
+			"old_scopes": scopeAuditPrev,
+			"new_scopes": token.Scopes,
+		})
+		auditDetails = string(detailBytes)
+	}
 	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, tenantCtx.UserID,
-		governance.ActionTokenUpdated, governance.ResourceToken, tokenID, ""))
+		governance.ActionTokenUpdated, governance.ResourceToken, tokenID, auditDetails))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Token updated successfully",
-		"data":    token,
+		"data":    toTokenView(token),
 	})
 }
 
@@ -385,5 +706,56 @@ func DeleteTokenV2(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Token deleted successfully",
+	})
+}
+
+// RotateTokenV2 generates a new key for an existing token, invalidating the old one.
+// Route: POST /api/v2/:tenant_slug/tokens/:id/rotate
+func RotateTokenV2(c *gin.Context) {
+	tenantCtx, err := middleware.GetTenantContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Tenant context not found"})
+		return
+	}
+
+	tokenID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid token ID"})
+		return
+	}
+
+	token, err := repo.GetTokenByIds(tokenID, tenantCtx.UserID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "Token not found"})
+		return
+	}
+
+	if token.TenantId != tenantCtx.TenantID {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "Access denied"})
+		return
+	}
+
+	newKey, err := app.GenerateTokenKey()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to generate new key"})
+		return
+	}
+
+	if err = token.RotateKey(newKey); err != nil {
+		common.SysError("Failed to rotate token key: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Failed to rotate token key"})
+		return
+	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, tenantCtx.UserID,
+		governance.ActionAuthTokenRotated, governance.ResourceToken, tokenID, ""))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Token key rotated successfully",
+		"data": gin.H{
+			"id":  token.Id,
+			"key": "sk-" + newKey,
+		},
 	})
 }

@@ -1,17 +1,17 @@
 package common
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
-	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/model_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
@@ -79,15 +79,29 @@ type TokenCountMeta struct {
 	estimatePromptTokens int
 }
 
+// How helper.StreamScannerHandler saw the upstream stream stop; see
+// RelayInfo.StreamEndReason.
+const (
+	StreamEndTimeout        = "streaming_timeout" // no upstream frame within StreamingTimeout
+	StreamEndUpstreamClosed = "upstream_closed"   // upstream body ended (EOF/reset) before the terminator
+	StreamEndClientGone     = "client_gone"       // the caller hung up first
+)
+
 type RelayInfo struct {
-	TokenId           int
-	TokenKey          string
-	TokenGroup        string
-	UserId            int
-	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup         string // 用户所在分组
-	TokenUnlimited    bool
-	StartTime         time.Time
+	TokenId        int
+	TokenKey       string
+	TokenGroup     string
+	UserId         int
+	UsingGroup     string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup      string // 用户所在分组
+	TokenUnlimited bool
+	StartTime      time.Time
+	// UsageSource records where the settled usage figure came from when a
+	// response handler knows it better than the settlement code does:
+	// "upstream" | "estimated" | "unreported". "" = let settlement decide
+	// (nil usage -> estimated, otherwise upstream). Written to
+	// logs.usage_source (migration 053).
+	UsageSource       string
 	FirstResponseTime time.Time
 	isFirstResponse   bool
 	//SendLastReasoningResponse bool
@@ -97,26 +111,112 @@ type RelayInfo struct {
 	UsePrice               bool
 	RelayMode              int
 	OriginModelName        string
-	RequestURLPath         string
-	ShouldIncludeUsage     bool
-	DisablePing            bool // 是否禁止向下游发送自定义 Ping
-	ClientWs               *websocket.Conn
-	TargetWs               *websocket.Conn
-	InputAudioFormat       string
-	OutputAudioFormat      string
-	RealtimeTools          []dto.RealTimeTool
-	IsFirstRequest         bool
-	AudioUsage             bool
-	ReasoningEffort        string
-	UserSetting            dto.UserSetting
-	UserEmail              string
-	UserQuota              int
-	RelayFormat            types.RelayFormat
-	SendResponseCount      int
-	FinalPreConsumedQuota  int   // 最终预消耗的配额
-	IsClaudeBetaQuery      bool  // /v1/messages?beta=true
-	IdentityAccountID      int64 // lurus-platform account ID for wallet bridging (0 = not available)
-	PlatformPreAuthID      int64 // Pre-authorization ID from platform wallet (0 = not using pre-auth)
+	// SourceProduct is the resolved cross-product attribution tag for this
+	// relay (Workstream 0). Set in genBaseRelayInfo from the X-Lurus-Product
+	// header, so every relay path — chat/OpenAI/Claude/Gemini/rerank AND the
+	// MJ/Task paths that build RelayInfo directly via GenRelayInfo without
+	// going through Relay() — carries it. Carried here because the wallet
+	// settlement path (PostConsumeQuota) has no gin.Context.
+	SourceProduct string
+	// ProjectId is the cost-attribution project of the authenticated token
+	// (migration 029); 0 = unassigned. Carried here for the same reason as
+	// SourceProduct above: the settlement path (PostConsumeQuota ->
+	// EnrichLogParams -> RecordConsumeLog) has no gin.Context to read from.
+	// It is a label, never an authorization input.
+	ProjectId int
+	// EmployeeRef is the resolved employee attribution (migration 045):
+	// trusted X-Lurus-Employee header, else the token's employee_ref. Carried
+	// here for the same reason as ProjectId. A label, never an authorization
+	// input.
+	EmployeeRef      string
+	WalletChargeCNY4 int64    // wallet charge PostConsumeQuota committed to, 0.0001 CNY (-> entity.Log.ChargedCNY4)
+	UpstreamCostUSD  *float64 // what the upstream billed (OpenRouter usage.cost); nil = not reported, never 0
+	// SessionId is the caller-supplied X-Session-Id header, validated
+	// (printable ASCII, <=200 bytes) but never hashed: unlike EndUserHash it
+	// carries no persistent user identity, only a conversation-scoped
+	// correlation id the caller chose to send. Written verbatim to the log
+	// row's Other JSON. Distinct from — and must not replace — the hashed
+	// channel-affinity binding session_affinity.go derives from the same
+	// header for a different purpose (sticky routing, not correlation).
+	SessionId string
+	// EndUserHash is a one-way, tenant-scoped HMAC of the end-user identifier
+	// the caller sent on the request (OpenAI `user`, Anthropic-wire
+	// `metadata.user_id`), truncated to 16 hex chars. The raw value is never
+	// persisted — only this hash, so per-end-user cost is queryable (?
+	// session_id / a future end_user filter) without newhub becoming a store
+	// of the caller's own customers' PII.
+	EndUserHash string
+	// ConversionDropped names the caller-supplied request fields that
+	// ClaudeToOpenAIRequest / GeminiToOpenAIRequest (internal/app/convert.go)
+	// could not map, or could map only partially, onto the upstream
+	// OpenAI-wire request — e.g. a Claude-wire caller who set top_k. Set only
+	// when the converter actually dropped something the caller sent (nil
+	// otherwise), sorted, de-duplicated and capped at 16 names by
+	// boundDroppedFields. Reset at the start of each retry attempt by
+	// InitChannelMeta below, so a value set by a converter on a failed
+	// attempt cannot survive onto a later attempt's log row. Carried here for
+	// the same reason SessionId/EndUserHash are: app.GenerateTextOtherInfo
+	// reads it off RelayInfo to project conversion_dropped into the
+	// success-path log row; the terminal-error path
+	// (recordRelayErrorLog in adapter/handler/relay.go) builds its own
+	// Other map key by key and does not read this field, so a failed request
+	// carries no conversion_dropped.
+	ConversionDropped []string
+	// UpstreamRequestId is the vendor's own request/trace id, captured from
+	// the upstream HTTP response headers in provider.doRequest — the seam
+	// DoApiRequest/DoFormRequest/DoTaskApiRequest funnel through for the main
+	// upstream call; adapters that call client.Do themselves (ali image,
+	// coze, dify, ollama) leave it empty. "" when the
+	// upstream sent none of the headers we look for — that is a legitimate
+	// outcome, not a capture failure. Carried here for the same reason
+	// SessionId/EndUserHash are: the settlement path (PostConsumeQuota ->
+	// EnrichLogParams -> RecordConsumeLog) has no gin.Context, and the error
+	// path reads the equivalent value back off the gin.Context instead
+	// (relay.go recordRelayErrorLog, set by doRequest via c.Set beside this
+	// field so both paths agree without threading a new parameter).
+	UpstreamRequestId  string
+	RequestURLPath     string
+	ShouldIncludeUsage bool
+	DisablePing        bool // 是否禁止向下游发送自定义 Ping
+	ClientWs           *websocket.Conn
+	TargetWs           *websocket.Conn
+	InputAudioFormat   string
+	OutputAudioFormat  string
+	RealtimeTools      []dto.RealTimeTool
+	IsFirstRequest bool
+	AudioUsage     bool
+	// AudioDurationSeconds is measured clip length for audio_second metering
+	// (TokenHub 0.10). 0 = unknown; settlement may reverse-estimate from
+	// legacy tokens when AudioSecondPrice is configured.
+	AudioDurationSeconds float64
+	ReasoningEffort      string
+	UserSetting        dto.UserSetting
+	UserEmail          string
+	UserQuota          int
+	RelayFormat        types.RelayFormat
+	SendResponseCount  int
+	// StreamFinishReason is the last finish_reason seen while re-framing an
+	// OpenAI-wire stream for a Gemini-wire client. A content-less finish chunk
+	// is held back (openai.handleGeminiFormat) so the terminal frame — the one
+	// carrying the billed usageMetadata — is the single STOP the client sees.
+	StreamFinishReason string
+	// StreamEndReason is how the upstream stream stopped, recorded by
+	// helper.StreamScannerHandler: "" when the OpenAI-wire terminator
+	// ([DONE]) arrived, otherwise one of the StreamEnd* values. Wires with no
+	// terminator (Anthropic, Gemini) read StreamEndUpstreamClosed on every
+	// normal end too, so each handler pairs it with its own completeness
+	// signal (finish_reason seen, message_delta seen).
+	StreamEndReason       string
+	FinalPreConsumedQuota int   // 最终预消耗的配额
+	IsClaudeBetaQuery     bool  // /v1/messages?beta=true
+	IdentityAccountID     int64 // lurus-platform account ID for wallet bridging (0 = not available)
+	PlatformPreAuthID     int64 // Pre-authorization ID from platform wallet (0 = not using pre-auth)
+	// PlatformGoverned marks a request the platform wallet ADMITTED — set on
+	// every platformPreAuthorize admit path (real pre-auth, high-balance skip,
+	// degraded-cache admit). LOCAL_LEDGER_ADVISORY only relaxes the local
+	// quota gate for governed requests; unlinked/legacy traffic keeps the full
+	// local gate so advisory mode can never open a free-ride door.
+	PlatformGoverned, WalletAuthoritative bool // latter: set by PreConsumeQuota from tenants.wallet_authoritative, reused by PostConsumeQuota
 
 	PriceData types.PriceData
 
@@ -129,6 +229,24 @@ type RelayInfo struct {
 	*ResponsesUsageInfo
 	*ChannelMeta
 	*TaskRelayInfo
+}
+
+// lurusForceHTTP1ParamKey is the param_override key an operator sets to
+// force a single channel's outbound relay transport to HTTP/1.1 (L5,
+// routing-resilience-limits-13). See ApplyParamOverride/applyOperationsLegacy
+// (override.go) for the matching skip that keeps this control key out of the
+// upstream request body. Aliased to dto.ForceHTTP1ParamKey so this package
+// and the task FetchTask polls (which read the same channel param_override
+// map outside a live RelayInfo) cannot drift onto two different strings.
+const lurusForceHTTP1ParamKey = dto.ForceHTTP1ParamKey
+
+// paramOverrideBool reads a boolean control key out of a channel's raw
+// param_override map. Any non-bool value (missing key, wrong JSON type) is
+// treated as false — a malformed override must never be mistaken for an
+// explicit opt-in.
+func paramOverrideBool(paramOverride map[string]interface{}, key string) bool {
+	v, ok := paramOverride[key].(bool)
+	return ok && v
 }
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
@@ -165,6 +283,16 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	if ok {
 		channelMeta.ChannelSetting = channelSetting
 	}
+	// __lurus_force_http1 (L5): an internal control key an operator sets via
+	// the channel's existing param_override editor, not a real upstream
+	// request field — paramOverrideBool reads it here (before
+	// ApplyParamOverride strips __lurus_* keys from the outgoing body) and
+	// folds it into ChannelSetting.ForceHTTP1, which provider.doRequest reads
+	// to pick app.GetHttpClientFor's HTTP/1.1-only transport for this channel
+	// only. Absent/false leaves ChannelSetting exactly as loaded above.
+	if paramOverrideBool(paramOverride, lurusForceHTTP1ParamKey) {
+		channelMeta.ChannelSetting.ForceHTTP1 = true
+	}
 
 	channelOtherSettings, ok := common.GetContextKeyType[dto.ChannelOtherSettings](c, constant.ContextKeyChannelOtherSetting)
 	if ok {
@@ -182,6 +310,16 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	if info.Request != nil {
 		info.Request.SetModelName(info.OriginModelName)
 	}
+
+	// ConversionDropped is per-attempt diagnostics, not per-request: a retry
+	// that lands on a different channel re-selects (SetupContextForSelectedChannel)
+	// and calls InitChannelMeta before the attempt's own converter (or, for a
+	// native-format/pass-through channel, no converter at all) runs. Without
+	// this reset, a list set by attempt 1's converter would survive onto a
+	// later attempt that never went through a converter, or went through one
+	// with a different outcome — telling the caller a field was dropped when
+	// the attempt that actually settled the request delivered it.
+	info.ConversionDropped = nil
 }
 
 func (info *RelayInfo) ToString() string {
@@ -351,6 +489,18 @@ func GenRelayInfoResponses(c *gin.Context, request *dto.OpenAIResponsesRequest) 
 	return info
 }
 
+// GenRelayInfoResponsesCompact builds the RelayInfo for POST
+// /v1/responses/compact (cycle-8 L6, wire-formats-03). genBaseRelayInfo
+// already resolves RelayMode from the URL path via Path2RelayMode, so this
+// mirrors GenRelayInfoResponses' explicit set for clarity/parity rather than
+// relying on that alone.
+func GenRelayInfoResponsesCompact(c *gin.Context, request *dto.OpenAIResponsesCompactionRequest) *RelayInfo {
+	info := genBaseRelayInfo(c, request)
+	info.RelayMode = relayconstant.RelayModeResponsesCompact
+	info.RelayFormat = types.RelayFormatOpenAIResponsesCompact
+	return info
+}
+
 func GenRelayInfoGemini(c *gin.Context, request dto.Request) *RelayInfo {
 	info := genBaseRelayInfo(c, request)
 	info.RelayFormat = types.RelayFormatGemini
@@ -418,6 +568,18 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		TokenKey:       common.GetContextKeyString(c, constant.ContextKeyTokenKey),
 		TokenUnlimited: common.GetContextKeyBool(c, constant.ContextKeyTokenUnlimited),
 		TokenGroup:     tokenGroup,
+		ProjectId:      common.GetContextKeyInt(c, constant.ContextKeyProjectId),
+		EmployeeRef:    common.GetContextKeyString(c, constant.ContextKeyEmployeeRef),
+		// Workstream 0: resolve the cross-product attribution tag here, once,
+		// so every GenRelayInfo* entry point carries it — including MJ/Task,
+		// which build RelayInfo directly and never pass through Relay().
+		// Unknown/absent header -> the default product id.
+		SourceProduct: ratio_setting.ResolveSourceProductWithDefault(c.GetHeader(ratio_setting.SourceProductHeader), common.GetContextKeyString(c, constant.ContextKeyTokenSourceProduct)),
+		// L2-REQUEST-IDENTITY: request-scoped identity carried the same way
+		// SourceProduct is — resolved once here so every entry point
+		// (including MJ/Task, which build RelayInfo directly) has it.
+		SessionId:   deriveSessionId(c),
+		EndUserHash: deriveEndUserHash(c, c.GetString("tenant_id"), request),
 
 		isFirstResponse: true,
 		RelayMode:       relayconstant.Path2RelayMode(c.Request.URL.Path),
@@ -471,6 +633,8 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 			return GenRelayInfoRerank(c, request), nil
 		}
 		return nil, errors.New("request is not a RerankRequest")
+	case types.RelayFormatSystemOne:
+		return systemOneRelayInfo(c, request)
 	case types.RelayFormatGemini:
 		return GenRelayInfoGemini(c, request), nil
 	case types.RelayFormatEmbedding:
@@ -480,6 +644,11 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 			return GenRelayInfoResponses(c, request), nil
 		}
 		return nil, errors.New("request is not a OpenAIResponsesRequest")
+	case types.RelayFormatOpenAIResponsesCompact:
+		if request, ok := request.(*dto.OpenAIResponsesCompactionRequest); ok {
+			return GenRelayInfoResponsesCompact(c, request), nil
+		}
+		return nil, errors.New("request is not a OpenAIResponsesCompactionRequest")
 	case types.RelayFormatTask:
 		return genBaseRelayInfo(c, nil), nil
 	case types.RelayFormatMjProxy:
@@ -488,10 +657,6 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 		return nil, errors.New("invalid relay format")
 	}
 }
-
-//func (info *RelayInfo) SetPromptTokens(promptTokens int) {
-//	info.promptTokens = promptTokens
-//}
 
 func (info *RelayInfo) SetEstimatePromptTokens(promptTokens int) {
 	info.estimatePromptTokens = promptTokens
@@ -519,92 +684,6 @@ type TaskRelayInfo struct {
 	ConsumeQuota bool
 }
 
-type TaskSubmitReq struct {
-	Prompt         string                 `json:"prompt"`
-	Model          string                 `json:"model,omitempty"`
-	Mode           string                 `json:"mode,omitempty"`
-	Image          string                 `json:"image,omitempty"`
-	Images         []string               `json:"images,omitempty"`
-	Size           string                 `json:"size,omitempty"`
-	Duration       int                    `json:"duration,omitempty"`
-	Seconds        string                 `json:"seconds,omitempty"`
-	InputReference string                 `json:"input_reference,omitempty"`
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
-}
-
-func (t *TaskSubmitReq) GetPrompt() string {
-	return t.Prompt
-}
-
-func (t *TaskSubmitReq) HasImage() bool {
-	return len(t.Images) > 0
-}
-
-func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
-	type Alias TaskSubmitReq
-	aux := &struct {
-		Metadata json.RawMessage `json:"metadata,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(t),
-	}
-
-	if err := common.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-
-	if len(aux.Metadata) > 0 {
-		var metadataStr string
-		if err := common.Unmarshal(aux.Metadata, &metadataStr); err == nil && metadataStr != "" {
-			var metadataObj map[string]interface{}
-			if err := common.Unmarshal([]byte(metadataStr), &metadataObj); err == nil {
-				t.Metadata = metadataObj
-				return nil
-			}
-		}
-
-		var metadataObj map[string]interface{}
-		if err := common.Unmarshal(aux.Metadata, &metadataObj); err == nil {
-			t.Metadata = metadataObj
-		}
-	}
-
-	return nil
-}
-func (t *TaskSubmitReq) UnmarshalMetadata(v any) error {
-	metadata := t.Metadata
-	if metadata != nil {
-		metadataBytes, err := json.Marshal(metadata)
-		if err != nil {
-			return fmt.Errorf("marshal metadata failed: %w", err)
-		}
-		err = json.Unmarshal(metadataBytes, v)
-		if err != nil {
-			return fmt.Errorf("unmarshal metadata to target failed: %w", err)
-		}
-	}
-	return nil
-}
-
-type TaskInfo struct {
-	Code             int    `json:"code"`
-	TaskID           string `json:"task_id"`
-	Status           string `json:"status"`
-	Reason           string `json:"reason,omitempty"`
-	Url              string `json:"url,omitempty"`
-	RemoteUrl        string `json:"remote_url,omitempty"`
-	Progress         string `json:"progress,omitempty"`
-	CompletionTokens int    `json:"completion_tokens,omitempty"` // 用于按倍率计费
-	TotalTokens      int    `json:"total_tokens,omitempty"`      // 用于按倍率计费
-}
-
-func FailTaskInfo(reason string) *TaskInfo {
-	return &TaskInfo{
-		Status: "FAILURE",
-		Reason: reason,
-	}
-}
-
 // RemoveDisabledFields 从请求 JSON 数据中移除渠道设置中禁用的字段
 // service_tier: 服务层级字段，可能导致额外计费（OpenAI、Claude、Responses API 支持）
 // store: 数据存储授权字段，涉及用户隐私（仅 OpenAI、Responses API 支持，默认允许透传，禁用后可能导致 Codex 无法使用）
@@ -613,6 +692,7 @@ func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOther
 	var data map[string]interface{}
 	if err := common.Unmarshal(jsonData, &data); err != nil {
 		common.SysError("RemoveDisabledFields Unmarshal error :" + err.Error())
+		//nolint:nilerr // by design: the body is returned unchanged, not a zero value. A non-object body has no top-level field to strip, so passthrough is the correct answer; propagating would reject a request the callers would otherwise relay fine.
 		return jsonData, nil
 	}
 
@@ -640,6 +720,7 @@ func RemoveDisabledFields(jsonData []byte, channelOtherSettings dto.ChannelOther
 	jsonDataAfter, err := common.Marshal(data)
 	if err != nil {
 		common.SysError("RemoveDisabledFields Marshal error :" + err.Error())
+		//nolint:nilerr // by design: data came from Unmarshal above so it only holds JSON-native values and cannot fail to marshal; the original body stays a valid request, so returning it is a safe degrade rather than failing the relay.
 		return jsonData, nil
 	}
 	return jsonDataAfter, nil
@@ -655,6 +736,7 @@ func RemoveGeminiDisabledFields(jsonData []byte) ([]byte, error) {
 	var data map[string]interface{}
 	if err := common.Unmarshal(jsonData, &data); err != nil {
 		common.SysError("RemoveGeminiDisabledFields Unmarshal error: " + err.Error())
+		//nolint:nilerr // by design, same contract as RemoveDisabledFields above: an unparsable body has no functionResponse.id to strip, so it is returned unchanged instead of failing the request.
 		return jsonData, nil
 	}
 
@@ -684,6 +766,7 @@ func RemoveGeminiDisabledFields(jsonData []byte) ([]byte, error) {
 	jsonDataAfter, err := common.Marshal(data)
 	if err != nil {
 		common.SysError("RemoveGeminiDisabledFields Marshal error: " + err.Error())
+		//nolint:nilerr // by design: data round-tripped through Unmarshal so Marshal cannot fail here; the untouched original body is still a valid request.
 		return jsonData, nil
 	}
 	return jsonDataAfter, nil

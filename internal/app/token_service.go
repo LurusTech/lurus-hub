@@ -3,14 +3,25 @@ package app
 import (
 	"errors"
 	"fmt"
+	"strings"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 )
 
 const (
 	TokenNameMaxLength = 50
 	MaxQuotaMultiplier = 1000000000
+	// MaxTokenExpiredTime is 3000-01-01T00:00:00Z in epoch seconds. Anything
+	// later is almost certainly a unit mistake (e.g. milliseconds sent as
+	// seconds) and would silently behave like "never expires", so reject it.
+	MaxTokenExpiredTime = 32503680000
+	// MaxRateLimitPerMinute bounds rpm_limit / tpm_limit (token AND tenant
+	// dimensions). 10^9 per minute is far beyond any real workload — anything
+	// larger is a unit mistake, and the cap keeps window arithmetic (int64
+	// sums of int values) trivially overflow-free.
+	MaxRateLimitPerMinute = 1_000_000_000
 )
 
 // ValidateTokenName checks that the token name does not exceed the maximum length.
@@ -35,6 +46,91 @@ func ValidateTokenQuota(remainQuota int, unlimitedQuota bool) error {
 		return fmt.Errorf("额度值超出有效范围，最大值为 %d", maxQuotaValue)
 	}
 	return nil
+}
+
+// ValidateTokenExpiredTime checks that expired_time is within a sane range.
+// -1 (never expires) and 0 (unset) are accepted; explicit "never expires"
+// must use -1 rather than a far-future timestamp.
+func ValidateTokenExpiredTime(expiredTime int64) error {
+	if expiredTime > MaxTokenExpiredTime {
+		return errors.New("过期时间无效，不能晚于公元 3000 年，永不过期请使用 -1")
+	}
+	return nil
+}
+
+// ValidateRateLimits checks per-minute rate-limit values (RPM/TPM, token or
+// tenant dimension): non-negative and at most MaxRateLimitPerMinute. 0 means
+// unlimited and is always valid.
+func ValidateRateLimits(rpm, tpm int) error {
+	if rpm < 0 || tpm < 0 {
+		return errors.New("速率限制不能为负数（0 表示不限制）")
+	}
+	if rpm > MaxRateLimitPerMinute || tpm > MaxRateLimitPerMinute {
+		return fmt.Errorf("速率限制超出有效范围，最大值为 %d", MaxRateLimitPerMinute)
+	}
+	return nil
+}
+
+// MaxTokenModelLimitsLength matches the model_limits column's storage limit:
+// domain/entity/token.go:22 and adapter/repo/token.go:26 both declare
+// varchar(1024) (read 2026-09-20; no gate enforces that the two stay in
+// sync, so re-check both if either changes). Validating it here turns a raw
+// "value too long for type character varying(1024)" driver error (a 500 that
+// leaks the column type) into a friendly 400 before the row is ever written.
+const MaxTokenModelLimitsLength = 1024
+
+// ValidateTokenModelLimits checks the model_limits value against the
+// column's storage limit and rejects a list containing an empty entry (a
+// leading/trailing/doubled comma) — repo.Token.GetModelLimitsMap splits on
+// "," with no filtering, so an empty entry would key the map on "", which is
+// indistinguishable from "no such model" at relay time (ModelLimitsEnabled's
+// allow-list check). enabled=false skips the checks: an unused model_limits
+// value is dead data, not a validation target
+// (TestCreateTokenV2_ModelLimitsDisabledSkipsValidation pins that), matching
+// how UpdateTokenV2/CreateTokenV2 persist the pair together.
+func ValidateTokenModelLimits(modelLimits string, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	if len(modelLimits) > MaxTokenModelLimitsLength {
+		return fmt.Errorf("model_limits exceeds the maximum length of %d characters", MaxTokenModelLimitsLength)
+	}
+	for _, m := range strings.Split(modelLimits, ",") {
+		if strings.TrimSpace(m) == "" {
+			return errors.New("model_limits must not contain an empty model name (check for a stray comma)")
+		}
+	}
+	return nil
+}
+
+// NormalizeTokenScopes validates and canonicalizes a scope list. Each entry
+// must be one of types.ValidTokenScopes. Whitespace is trimmed; duplicates
+// are dropped; the result is sorted by the canonical order of
+// types.ValidTokenScopes so equal inputs produce equal stored strings (which
+// keeps audit diffs deterministic). nil/empty input returns "" — i.e. "no
+// restriction", consistent with HasScope semantics.
+func NormalizeTokenScopes(scopes []string) (string, error) {
+	if len(scopes) == 0 {
+		return "", nil
+	}
+	seen := make(map[string]struct{}, len(scopes))
+	for _, s := range scopes {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if !types.IsValidTokenScope(s) {
+			return "", fmt.Errorf("令牌权限范围无效: %q", s)
+		}
+		seen[s] = struct{}{}
+	}
+	ordered := make([]string, 0, len(seen))
+	for _, v := range types.ValidTokenScopes {
+		if _, ok := seen[v]; ok {
+			ordered = append(ordered, v)
+		}
+	}
+	return strings.Join(ordered, ","), nil
 }
 
 // CanEnableToken checks whether a token can be enabled based on its current state.
@@ -64,7 +160,31 @@ func GenerateTokenKey() (string, error) {
 }
 
 // BuildCleanToken creates a sanitized Token struct for insertion.
+//
+// ProjectId is DELIBERATELY ABSENT from this allow-list, and must stay absent.
+// Project assignment is v2-only: the v2 handler validates the id against the
+// caller's own tenant before persisting it. The v1 handlers (handler/token.go
+// AddToken / UpdateToken) bind the WHOLE request body into a repo.Token with
+// no tenant validation whatsoever — this allow-list is the only thing keeping
+// an attacker-supplied field out of the row. "Completing" the list here would
+// open an unvalidated cross-tenant project assignment.
+//
+// IdentityAccountID (the lurus-platform account link) is stamped from the
+// OWNER's user row, never from the request body — there is no field for it
+// in the allow-list above, so it cannot be attacker-supplied either. Without
+// this stamp PostConsumeQuota's wallet-debit gate (quota.go, keyed on
+// relayInfo.IdentityAccountID > 0) never fires for a self-service token, no
+// matter how the owner's platform account is linked. A user with no platform
+// link leaves the field at zero, which is correct: nothing to bill upstream.
 func BuildCleanToken(userId int, tenantId string, token *repo.Token, key string) repo.Token {
+	// repo.DB nil-guard: BuildCleanToken was previously a pure struct-copy
+	// with no DB dependency; keep that contract for callers/tests that don't
+	// wire a database (repo.DB == nil is the well-known "not wired" state
+	// used elsewhere in this codebase, e.g. lifecycle boot ordering).
+	var identityAccountID int64
+	if repo.DB != nil {
+		identityAccountID = repo.IdentityAccountIDForUser(userId)
+	}
 	return repo.Token{
 		UserId:             userId,
 		TenantId:           tenantId,
@@ -80,11 +200,19 @@ func BuildCleanToken(userId int, tenantId string, token *repo.Token, key string)
 		AllowIps:           token.AllowIps,
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
+		Scopes:             token.Scopes,
+		RateLimitRPM:       token.RateLimitRPM,
+		RateLimitTPM:       token.RateLimitTPM,
+		IdentityAccountID:  identityAccountID,
 	}
 }
 
 // ApplyTokenUpdate copies update fields from the source token to the target.
 // Returns the updated target token.
+//
+// ProjectId is DELIBERATELY ABSENT here for the same reason as in
+// BuildCleanToken above: the v1 update path performs no tenant validation on
+// the bound body, so project re-assignment stays v2-only.
 func ApplyTokenUpdate(target *repo.Token, source *repo.Token) {
 	target.Name = source.Name
 	target.ExpiredTime = source.ExpiredTime
@@ -95,4 +223,7 @@ func ApplyTokenUpdate(target *repo.Token, source *repo.Token) {
 	target.AllowIps = source.AllowIps
 	target.Group = source.Group
 	target.CrossGroupRetry = source.CrossGroupRetry
+	target.Scopes = source.Scopes
+	target.RateLimitRPM = source.RateLimitRPM
+	target.RateLimitTPM = source.RateLimitTPM
 }

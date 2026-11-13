@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
-	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
-	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/system_setting"
 
@@ -177,12 +177,8 @@ func UpdateMidjourneyTaskBulk() {
 					logger.LogError(ctx, "UpdateMidjourneyTask task error: "+err.Error())
 				} else {
 					if shouldReturnQuota {
-						err = repo.IncreaseUserQuota(task.UserId, task.Quota, false)
-						if err != nil {
-							logger.LogError(ctx, "fail to increase user quota: "+err.Error())
-						}
-						logContent := fmt.Sprintf("构图失败 %s，补偿 %s", task.MjId, logger.LogQuota(task.Quota))
-						repo.RecordLog(task.UserId, repo.LogTypeSystem, logContent)
+						refundTaskQuota(ctx, task.UserId, task.ChannelId, task.Quota,
+							fmt.Sprintf("构图失败 %s，补偿 %s", task.MjId, logger.LogQuota(task.Quota)))
 					}
 				}
 			}
@@ -201,6 +197,10 @@ func UpdateMidjourneyTaskBulkWithContext(ctx context.Context) {
 			common.SysLog("midjourney task update stopped")
 			return
 		case <-ticker.C:
+			// HA: only the leader polls task updates; non-leaders idle.
+			if !common.IsLeader() {
+				continue
+			}
 			updateMidjourneyTasks(ctx)
 		}
 	}
@@ -358,12 +358,8 @@ func updateMidjourneyTasks(ctx context.Context) {
 				logger.LogError(ctx, "UpdateMidjourneyTask task error: "+err.Error())
 			} else {
 				if shouldReturnQuota {
-					err = repo.IncreaseUserQuota(task.UserId, task.Quota, false)
-					if err != nil {
-						logger.LogError(ctx, "fail to increase user quota: "+err.Error())
-					}
-					logContent := fmt.Sprintf("构图失败 %s，补偿 %s", task.MjId, logger.LogQuota(task.Quota))
-					repo.RecordLog(task.UserId, repo.LogTypeSystem, logContent)
+					refundTaskQuota(ctx, task.UserId, task.ChannelId, task.Quota,
+						fmt.Sprintf("构图失败 %s，补偿 %s", task.MjId, logger.LogQuota(task.Quota)))
 				}
 			}
 		}
@@ -434,6 +430,17 @@ func GetAllMidjourney(c *gin.Context) {
 		MjID:           c.Query("mj_id"),
 		StartTimestamp: c.Query("start_timestamp"),
 		EndTimestamp:   c.Query("end_timestamp"),
+	}
+	// This route is mounted under middleware.AdminAuth() (role >=
+	// RoleAdminUser), not RootAuth — a tenant admin narrower than root must
+	// not see other tenants' Midjourney jobs. Mirrors GetAllChannels'
+	// isRoot/callerTenant scope (channel.go:113-114,153-154): the filter is
+	// set unconditionally for every non-root caller, including one whose
+	// session carries no tenant yet, so an empty tenant closes the page
+	// rather than falling through to the platform-wide view.
+	if c.GetInt("role") < common.RoleRootUser {
+		queryParams.TenantID = c.GetString("tenant_id")
+		queryParams.TenantScoped = true
 	}
 
 	items := repo.GetAllTasks(pageInfo.GetStartIdx(), pageInfo.GetPageSize(), queryParams)

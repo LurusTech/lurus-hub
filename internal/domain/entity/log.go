@@ -2,32 +2,113 @@ package entity
 
 // Log represents a log entry (consume, error, system, etc.)
 type Log struct {
-	Id               int    `json:"id" gorm:"index:idx_created_at_id,priority:1"`
-	UserId           int    `json:"user_id" gorm:"index;index:idx_tenant_user_created,priority:2"`
-	TenantId         string `json:"tenant_id" gorm:"type:varchar(36);index;index:idx_tenant_user_created,priority:1;default:'default'"` // Tenant isolation
-	CreatedAt        int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:2;index:idx_created_at_type;index:idx_tenant_user_created,priority:3"`
-	Type             int    `json:"type" gorm:"index:idx_created_at_type"`
-	Content          string `json:"content"`
-	Username         string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
-	TokenName        string `json:"token_name" gorm:"index;default:''"`
-	ModelName        string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
-	Quota            int    `json:"quota" gorm:"default:0"`
-	PromptTokens     int    `json:"prompt_tokens" gorm:"default:0"`
-	CompletionTokens int    `json:"completion_tokens" gorm:"default:0"`
-	UseTime          int    `json:"use_time" gorm:"default:0"`
-	IsStream         bool   `json:"is_stream"`
-	ChannelId        int    `json:"channel" gorm:"index"`
-	ChannelName      string `json:"channel_name" gorm:"->"`
-	TokenId          int    `json:"token_id" gorm:"default:0;index"`
-	Group            string `json:"group" gorm:"index"`
-	Ip               string `json:"ip" gorm:"index;default:''"`
+	Id                 int    `json:"id" gorm:"index:idx_created_at_id,priority:1"`
+	UserId             int    `json:"user_id" gorm:"index;index:idx_tenant_user_created,priority:2"`
+	TenantId           string `json:"tenant_id" gorm:"type:varchar(36);index;index:idx_tenant_user_created,priority:1;default:'default'"` // Tenant isolation
+	CreatedAt          int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:2;index:idx_created_at_type;index:idx_tenant_user_created,priority:3"`
+	Type               int    `json:"type" gorm:"index:idx_created_at_type"`
+	Content            string `json:"content"`
+	Username           string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
+	TokenName          string `json:"token_name" gorm:"index;default:''"`
+	ModelName          string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
+	Quota              int    `json:"quota" gorm:"default:0"`
+	PromptTokens       int    `json:"prompt_tokens" gorm:"default:0"`
+	CompletionTokens   int    `json:"completion_tokens" gorm:"default:0"`
+	UseTime            int    `json:"use_time" gorm:"default:0"`
+	IsStream           bool   `json:"is_stream"`
+	ChannelId          int    `json:"channel" gorm:"index"`
+	ChannelName        string `json:"channel_name" gorm:"->"`
+	TokenId            int    `json:"token_id" gorm:"default:0;index"`
+	Group              string `json:"group" gorm:"index"`
+	Ip                 string `json:"ip" gorm:"index;default:''"`
 	Other              string `json:"other"`
 	ChannelType        int    `json:"channel_type" gorm:"default:0;index:idx_gov_channel_type"`
 	RelayMode          int    `json:"relay_mode" gorm:"default:0;index:idx_gov_relay_mode"`
 	RequestFingerprint string `json:"request_fingerprint" gorm:"type:varchar(16);default:'';index:idx_gov_fingerprint"`
 	UpstreamModel      string `json:"upstream_model" gorm:"type:varchar(128);default:''"`
 	TotalLatencyMs     int    `json:"total_latency_ms" gorm:"default:0"`
+	// ProjectId is the cost-attribution dimension between tenant and token
+	// (migration 029), copied from the token that produced this row.
+	// 0 = unassigned (entity.ProjectUnassigned) — never NULL, so per-project
+	// aggregates need no COALESCE and always sum to the tenant total.
+	//
+	// NO `index:` tag, deliberately. GORM emits a plain CREATE INDEX (never
+	// CONCURRENTLY) during AutoMigrate; on the largest table in the schema
+	// that takes a ShareLock and blocks every INSERT — including the relay's
+	// own consume-log writes — and it runs inside
+	// withPGAdvisoryLock(bootAutoMigrateLockID, migrateDB) on every
+	// master-capable replica of every rolling update.
+	//
+	// It used to be true that CREATE INDEX CONCURRENTLY was unavailable in
+	// the embedded runner as well (applyOne wrapped every file body in one
+	// transaction and PostgreSQL rejects CIC inside one), which left "apply
+	// it by hand under MIGRATIONS_AUTO_RUN=false" as the only route. That is
+	// no longer the case: a migration whose first line is
+	// `-- lurus:no-transaction` runs outside any transaction, one statement
+	// at a time (internal/pkg/migration/runner.go, NoTransactionDirective),
+	// and 039_logs_tenant_created_index.sql is the first file to use it. The
+	// route for a new index on this table is that directive — still not a
+	// struct tag.
+	ProjectId int `json:"project_id" gorm:"not null;default:0"`
+	// EmployeeRef (migration 045) is the employee the request is attributed
+	// to: the trusted X-Lurus-Employee header, else the token's own
+	// employee_ref. '' = unattributed. A real column (not Other JSON) so the
+	// index in migration 047 can serve it; like ProjectId it can never be
+	// backfilled, and carries NO `index:` tag for the same reason.
+	EmployeeRef string `json:"employee_ref" gorm:"type:varchar(64);not null;default:''"`
+	// ChargedCNY4 is what this request actually took from the customer's
+	// platform wallet, in 0.0001 CNY (the wallet's own numeric(14,4) unit),
+	// recorded at settlement (migration 041). 0 = not wallet-charged: a
+	// credit-pool or local-quota request, a release, or a row written before
+	// the column existed. It is the amount of record: re-deriving it from
+	// quota later uses whatever exchange rate is current THEN, which is how
+	// invoices used to re-price history.
+	ChargedCNY4 int64 `json:"charged_cny4" gorm:"type:bigint;not null;default:0"`
+	// PricedCNY4 is what this row's quota was worth in CNY at the exchange
+	// rate current when it was recorded, in the same 0.0001 CNY unit
+	// (migration 042). Unlike ChargedCNY4 it says nothing about the wallet:
+	// a credit-pool or local-quota row gets it too, which is the point —
+	// those rows have ChargedCNY4 = 0 and were otherwise re-priced at
+	// whatever rate was current when an invoice was READ. 0 = written
+	// before the column existed (or zero quota); readers price those at
+	// today's rate and flag the figure as an estimate.
+	PricedCNY4 int64 `json:"priced_cny4" gorm:"type:bigint;not null;default:0"`
+	// ChannelKeyIdx (migration 051) is the index of the upstream key a
+	// multi-key channel used for this request; -1 = single-key channel or a
+	// row written before the column existed. Stamped by the repo log writers
+	// from the request context. NO `index:` tag (see the note above).
+	//
+	// It is a pointer on purpose: GORM treats a zero value as "unset" and
+	// substitutes the column default (-1) for it, which would silently turn
+	// key #0 into "no key". A non-nil pointer to 0 is inserted as 0; nil keeps
+	// the DB default for the writers that never learned about keys.
+	ChannelKeyIdx *int64 `json:"channel_key_idx,omitempty" gorm:"type:bigint;not null;default:-1"`
+	// Unified retrieval metering (migration 053). Real columns rather than
+	// Other-JSON keys so analytics can GROUP BY them. '' / 0 = row written
+	// before the columns existed (token semantics). NO `index:` tag (see the
+	// note above).
+	//   UsageUnit:          token | search_unit | audio_second | request
+	//   UsageQuantity:      units actually charged in that unit
+	//   UsageSource:        upstream | estimated | unreported
+	//   RetrievalDocuments: rerank = documents scored, embeddings = inputs embedded
+	UsageUnit          string `json:"usage_unit" gorm:"type:varchar(16);not null;default:''"`
+	UsageQuantity      int64  `json:"usage_quantity" gorm:"type:bigint;not null;default:0"`
+	UsageSource        string `json:"usage_source" gorm:"type:varchar(16);not null;default:''"`
+	RetrievalDocuments int    `json:"retrieval_documents" gorm:"type:integer;not null;default:0"`
 }
+
+// INDEXES ON `logs` THAT THIS STRUCT DELIBERATELY DOES NOT DECLARE
+//
+//   - idx_logs_tenant_created_id (tenant_id, created_at DESC, id DESC) is
+//     owned by migrations/039_logs_tenant_created_index.sql, which builds it
+//     CONCURRENTLY. Declaring it here as well would make AutoMigrate create
+//     the same name with a plain, lock-taking CREATE INDEX on whichever
+//     replica wins the boot lease — the exact cost 039 exists to avoid — and
+//     whichever ran first would silently decide how the other behaved.
+//
+// A `gorm:"index:idx_logs_tenant_created_id"` tag added to any field above
+// therefore reintroduces the lock. Add index DDL for this table to a
+// no-transaction migration instead.
 
 // don't use iota, avoid change log type value
 const (
@@ -41,24 +122,36 @@ const (
 )
 
 type RecordConsumeLogParams struct {
-	ChannelId        int                    `json:"channel_id"`
-	PromptTokens     int                    `json:"prompt_tokens"`
-	CompletionTokens int                    `json:"completion_tokens"`
-	ModelName        string                 `json:"model_name"`
-	TokenName        string                 `json:"token_name"`
-	Quota            int                    `json:"quota"`
-	Content          string                 `json:"content"`
-	TokenId          int                    `json:"token_id"`
-	UseTimeSeconds   int                    `json:"use_time_seconds"`
-	IsStream         bool                   `json:"is_stream"`
-	Group            string                 `json:"group"`
+	ChannelId          int                    `json:"channel_id"`
+	PromptTokens       int                    `json:"prompt_tokens"`
+	CompletionTokens   int                    `json:"completion_tokens"`
+	ModelName          string                 `json:"model_name"`
+	TokenName          string                 `json:"token_name"`
+	Quota              int                    `json:"quota"`
+	Content            string                 `json:"content"`
+	TokenId            int                    `json:"token_id"`
+	UseTimeSeconds     int                    `json:"use_time_seconds"`
+	IsStream           bool                   `json:"is_stream"`
+	Group              string                 `json:"group"`
 	Other              map[string]interface{} `json:"other"`
 	ChannelType        int                    `json:"channel_type"`
 	RelayMode          int                    `json:"relay_mode"`
 	RequestFingerprint string                 `json:"request_fingerprint"`
 	UpstreamModel      string                 `json:"upstream_model"`
 	TotalLatencyMs     int                    `json:"total_latency_ms"`
-	LogDetailLevel     string                 `json:"-"` // Governance: "none" skips logging, "full" adds prompt preview
+	// ProjectId carries the token's project attribution to the log row.
+	// Filled by governance.EnrichLogParams — the single chokepoint every
+	// RecordConsumeLog call site passes through. 0 = unassigned.
+	ProjectId   int    `json:"project_id"`
+	EmployeeRef string `json:"employee_ref"` // see Log.EmployeeRef; filled by EnrichLogParams
+	ChargedCNY4 int64  `json:"charged_cny4"` // see Log.ChargedCNY4; filled by EnrichLogParams
+	PricedCNY4  int64  `json:"priced_cny4"`  // see Log.PricedCNY4; filled by EnrichLogParams from Quota
+	// Unified retrieval metering, see the same-named Log fields (migration 053).
+	UsageUnit          string `json:"usage_unit"`
+	UsageQuantity      int64  `json:"usage_quantity"`
+	UsageSource        string `json:"usage_source"`
+	RetrievalDocuments int    `json:"retrieval_documents"`
+	LogDetailLevel     string `json:"-"` // Governance: "none" skips the log row AND vetoes body archiving; any other value leaves body archiving to the tenant policy (consent + retention=full), see repo.ShouldArchiveLogBody
 }
 
 // LogQueryParams contains parameters for log queries
@@ -71,8 +164,41 @@ type LogQueryParams struct {
 	EndTime   int64  // Filter logs before this timestamp
 	TokenName string // Filter by token name
 	Username  string // Filter by username
-	Offset    int    // Pagination offset
-	Limit     int    // Pagination limit
+	AfterID   int    // Cursor: when > 0, return only rows with id strictly greater (live-tail)
+	// ProjectID filters by cost-attribution project (migration 029). Only
+	// applied when > 0 — 0 means "no project filter", NOT "unassigned only".
+	// Filtering *for* unassigned rows is deliberately not expressible here:
+	// the spend report (GetSpendByProject) is where the unassigned bucket is a
+	// first-class row, and overloading 0 to mean both would make every caller
+	// that forgets to set the field silently return only unassigned traffic.
+	ProjectID int
+	// ProjectIDs restricts to `project_id IN (...)` (department lead scope).
+	// nil = no restriction; a NON-nil empty slice matches nothing (fail
+	// closed: a lead with no projects must not fall through to every row).
+	// Combined with ProjectID by AND.
+	ProjectIDs []int
+	// EmployeeRef filters by exact logs.employee_ref. Empty = no filter.
+	EmployeeRef string
+	// SourceProduct filters by the cross-product attribution tag (Workstream
+	// 0) carried in the row's Other JSON. Empty = no filter, matching the
+	// convention of every other string filter on this struct (ModelName,
+	// TokenName, Username) rather than ProjectID's 0-means-unfiltered int
+	// convention.
+	SourceProduct string
+	// RequestID/SessionID filter by the Other.request_id / Other.session_id
+	// JSON keys (L2-REQUEST-IDENTITY), same empty-means-unfiltered convention
+	// as SourceProduct above and the same extraction machinery
+	// (repo.OtherTextExpr).
+	RequestID string
+	SessionID string
+	// UpstreamRequestID filters by the Other.upstream_request_id JSON key —
+	// the VENDOR's own request/trace id, TierInternal in
+	// governance/classification.go (unlike RequestID/SessionID above, which
+	// are the caller's own values and TierPublic). Bound only on the
+	// tenant-admin log list/export; the self-service list ignores it.
+	UpstreamRequestID string
+	Offset            int // Pagination offset
+	Limit             int // Pagination limit
 }
 
 type Stat struct {

@@ -3,7 +3,11 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
 // ============================================================================
@@ -117,6 +121,13 @@ func TestCreateChannelV2_RequiredFields(t *testing.T) {
 func TestCreateChannelV2_Success(t *testing.T) {
 	ctx := SetupV2TestRouter(t)
 	defer ctx.Cleanup()
+
+	// A create always populates key, so it needs channel:sensitive_write
+	// (L2, cycle 9) the same as any other non-root admin write — grant it so
+	// this test keeps covering channel-creation mechanics rather than authz.
+	if _, _, err := repo.CreatePermissionGrant(ctx.AdminUser.Id, "channel", "sensitive_write", ctx.RootUser.Id); err != nil {
+		t.Fatalf("seed channel:sensitive_write grant: %v", err)
+	}
 
 	body := map[string]interface{}{
 		"name":   "New Channel",
@@ -253,6 +264,39 @@ func TestGetChannelV2_Success(t *testing.T) {
 	}
 }
 
+// TestGetChannelV2_KeyMasked: HIGH — GetChannelById(id, true) returns the
+// plaintext upstream provider key; GetChannelV2 must mask it (like
+// channelView already does for ListChannelsV2) before serialising the
+// channel, otherwise any tenant admin reading a single channel gets the raw
+// credential in the response body.
+func TestGetChannelV2_KeyMasked(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	channel := SeedV2Channel(t, ctx, "Key Masking Target")
+	originalKey := channel.Key
+
+	path := fmt.Sprintf("/api/v2/test-tenant/channels/%d", channel.Id)
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodGet, path, nil, []string{"admin"})
+
+	AssertV2Status(t, w, http.StatusOK)
+
+	if strings.Contains(w.Body.String(), originalKey) {
+		t.Fatalf("raw channel key leaked in GetChannelV2 response body: %s", w.Body.String())
+	}
+
+	resp := AssertV2Success(t, w)
+	data := resp["data"].(map[string]interface{})
+	gotKey, _ := data["key"].(string)
+	wantKey := maskKey(originalKey)
+	if gotKey != wantKey {
+		t.Errorf("key = %q, want masked %q (original %q)", gotKey, wantKey, originalKey)
+	}
+	if gotKey == originalKey {
+		t.Error("key must not equal the original raw key")
+	}
+}
+
 func TestListChannelsV2_Pagination(t *testing.T) {
 	ctx := SetupV2TestRouter(t)
 	defer ctx.Cleanup()
@@ -311,6 +355,88 @@ func TestListChannelsV2_KeywordSearch(t *testing.T) {
 	total := int(data["total"].(float64))
 	if total != 2 {
 		t.Errorf("expected 2 channels matching 'GPT', got %d", total)
+	}
+}
+
+// TestListChannelsV2_CrossTenantIsolation guards against the pre-fix bug where
+// ListChannelsV2 called repo.GetAllChannels / SearchChannels / GetChannelsByTag
+// (all bare-DB, no tenant filter) so an admin of any tenant could enumerate
+// every tenant's channels. Also asserts channelView hides per-channel secrets.
+func TestListChannelsV2_CrossTenantIsolation(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	// Channel in the caller's own tenant.
+	SeedV2Channel(t, ctx, "My Channel")
+
+	// Channel belonging to a different tenant — must never surface.
+	other := &repo.Channel{
+		Name:        "Other Tenant Channel",
+		TenantId:    "other-tenant-xyz",
+		Key:         "sk-other-" + common.GetRandomString(16),
+		Status:      common.ChannelStatusEnabled,
+		Type:        1,
+		Models:      "gpt-4",
+		Group:       "default",
+		Other:       "secret-other-payload",
+		CreatedTime: common.GetTimestamp(),
+	}
+	if err := ctx.DB.Create(other).Error; err != nil {
+		t.Fatalf("failed to seed cross-tenant channel: %v", err)
+	}
+
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodGet, "/api/v2/test-tenant/channels", nil, []string{"admin"})
+	resp := AssertV2Success(t, w)
+	data := resp["data"].(map[string]interface{})
+
+	total := int(data["total"].(float64))
+	if total != 1 {
+		t.Errorf("expected 1 channel (tenant-scoped), got %d — possible cross-tenant leak", total)
+	}
+
+	channels := data["channels"].([]interface{})
+	if len(channels) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(channels))
+	}
+	ch := channels[0].(map[string]interface{})
+	if name, _ := ch["name"].(string); name == "Other Tenant Channel" {
+		t.Error("cross-tenant channel leaked into the response")
+	}
+
+	for _, f := range []string{"other", "setting", "param_override", "header_override", "tenant_id", "other_info"} {
+		if _, exists := ch[f]; exists {
+			t.Errorf("forbidden field %q leaked through channelView", f)
+		}
+	}
+}
+
+// TestSearchChannelsV2_CrossTenantIsolation covers the keyword-search branch.
+func TestSearchChannelsV2_CrossTenantIsolation(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	SeedV2Channel(t, ctx, "Production GPT")
+
+	other := &repo.Channel{
+		Name:        "Production GPT",
+		TenantId:    "other-tenant-xyz",
+		Key:         "sk-other-" + common.GetRandomString(16),
+		Status:      common.ChannelStatusEnabled,
+		Type:        1,
+		Models:      "gpt-4",
+		Group:       "default",
+		CreatedTime: common.GetTimestamp(),
+	}
+	if err := ctx.DB.Create(other).Error; err != nil {
+		t.Fatalf("failed to seed cross-tenant channel: %v", err)
+	}
+
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodGet, "/api/v2/test-tenant/channels?keyword=GPT", nil, []string{"admin"})
+	resp := AssertV2Success(t, w)
+	data := resp["data"].(map[string]interface{})
+	total := int(data["total"].(float64))
+	if total != 1 {
+		t.Errorf("expected 1 channel matching 'GPT' in this tenant, got %d — search leaked cross-tenant", total)
 	}
 }
 

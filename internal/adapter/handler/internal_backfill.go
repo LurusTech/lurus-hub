@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,9 @@ func InternalBackfillTokenAccountIDs(c *gin.Context) {
 	}
 
 	if len(tokens) == 0 {
+		governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorSystem, c.GetInt("internal_api_key_id"),
+			governance.ActionAdminMaintenanceTriggered, governance.ResourceSystem, 0,
+			`{"op":"backfill-token-accounts","tokens_updated":0}`))
 		c.JSON(http.StatusOK, gin.H{"message": "no tokens to backfill", "updated": 0})
 		return
 	}
@@ -48,12 +52,17 @@ func InternalBackfillTokenAccountIDs(c *gin.Context) {
 		repo.DB.Where("lurus_user_id = ? AND is_active = ?", userID, true).Find(&mappings)
 
 		for _, m := range mappings {
-			if m.ZitadelUserID == "" {
+			if m.IDPSubject == "" {
 				continue
 			}
-			// Look up platform account by Zitadel sub
-			account, err := common.GetAccountByZitadelSub(c.Request.Context(), m.ZitadelUserID)
+			// Look up platform account by OIDC subject
+			account, err := common.GetAccountByZitadelSub(c.Request.Context(), m.IDPSubject)
 			if err != nil || account == nil {
+				continue
+			}
+			// 账号 ID <= 0 是无法写入 token 的退化结果（下方更新循环同样拒绝），
+			// 不能计入 users_matched，否则匹配数与实际回填数失真。
+			if account.ID <= 0 {
 				continue
 			}
 			userToAccount[userID] = account.ID
@@ -76,11 +85,15 @@ func InternalBackfillTokenAccountIDs(c *gin.Context) {
 		updated++
 	}
 
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorSystem, c.GetInt("internal_api_key_id"),
+		governance.ActionAdminMaintenanceTriggered, governance.ResourceSystem, 0,
+		fmt.Sprintf(`{"op":"backfill-token-accounts","total_tokens":%d,"tokens_updated":%d}`, len(tokens), updated)))
+
 	c.JSON(http.StatusOK, gin.H{
-		"message":       "backfill complete",
-		"total_tokens":  len(tokens),
-		"unique_users":  len(userIDs),
-		"users_matched": len(userToAccount),
+		"message":        "backfill complete",
+		"total_tokens":   len(tokens),
+		"unique_users":   len(userIDs),
+		"users_matched":  len(userToAccount),
 		"tokens_updated": updated,
 	})
 }

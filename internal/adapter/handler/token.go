@@ -153,6 +153,14 @@ func AddToken(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	if err := app.ValidateTokenExpiredTime(token.ExpiredTime); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if err := app.ValidateRateLimits(token.RateLimitRPM, token.RateLimitTPM); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
 	key, err := app.GenerateTokenKey()
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
@@ -206,6 +214,14 @@ func UpdateToken(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	if err := app.ValidateTokenExpiredTime(token.ExpiredTime); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if err := app.ValidateRateLimits(token.RateLimitRPM, token.RateLimitTPM); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
 	cleanToken, err := repo.GetTokenByIds(token.Id, userId)
 	if err != nil {
 		common.ApiError(c, err)
@@ -226,10 +242,13 @@ func UpdateToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	updateBytes, _ := json.Marshal(map[string]string{"name": cleanToken.Name})
+	action := governance.ActionTokenUpdated
+	if statusOnly != "" {
+		action = governance.ActionTokenStatusChanged
+	}
+	updateBytes, _ := json.Marshal(map[string]any{"name": cleanToken.Name, "status": cleanToken.Status})
 	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, userId,
-		governance.ActionTokenUpdated, governance.ResourceToken, cleanToken.Id,
-		string(updateBytes)))
+		action, governance.ResourceToken, cleanToken.Id, string(updateBytes)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

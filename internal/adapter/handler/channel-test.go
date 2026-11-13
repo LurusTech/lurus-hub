@@ -16,18 +16,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LurusTech/lurus-hub/internal/app/relay"
+	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
-	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
-	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/relay"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/taskreg"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
-	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
@@ -40,7 +42,44 @@ type testResult struct {
 	newAPIError *types.NewAPIError
 }
 
-func testChannel(channel *repo.Channel, testModel string, endpointType string) testResult {
+// channelProbeOptions controls the side effects that differ between
+// probeChannel's callers. RecordConsumeLog is the oldest of them: the manual
+// GET /api/channel/test/:id path (TestChannel below, via testChannelForActor)
+// still writes a real consume-log row; the automatic pass (autoProbeChannel,
+// channel_probe_policy.go) does not — every automatic probe used to write one
+// as user 1, polluting the leaderboard and quota_data (cycle-11 plan §L3).
+// Both paths go through metrics.RecordChannelProbe regardless of this flag.
+type channelProbeOptions struct {
+	RecordConsumeLog bool
+	// ActorUserID attributes the consume-log row this probe writes (read
+	// only under RecordConsumeLog) to the operator who asked for the probe.
+	// probeChannel builds its own gin.Context and loads user 1 into it for
+	// the relay identity, so without this the row was written as user 1 in
+	// whatever tenant repo.resolveLogTenantID picked for user 1: the
+	// operator saw nothing in their own log list and another tenant got a
+	// row it did not ask for. The row's tenant follows the actor through
+	// that same resolveLogTenantID fallback — see the call site. ActorUserID
+	// 0 keeps the older attribution, for callers that have no actor.
+	ActorUserID int
+}
+
+// channelProbeLogSource is the other.source value every manual-probe consume
+// log carries, so stats and usage views can filter probe rows out of customer
+// traffic. These rows spend no wallet money (probeChannel settles nothing);
+// they exist to show the operator what the probe cost on paper.
+const channelProbeLogSource = "channel_test"
+
+// testChannelForActor is testChannel with the requesting operator attached, so
+// the consume-log row belongs to them and — through repo.resolveLogTenantID's
+// fallback to the actor's user row — to their tenant.
+func testChannelForActor(channel *repo.Channel, testModel string, endpointType string, actorUserID int) testResult {
+	return probeChannel(channel, testModel, endpointType, channelProbeOptions{
+		RecordConsumeLog: true,
+		ActorUserID:      actorUserID,
+	})
+}
+
+func probeChannel(channel *repo.Channel, testModel string, endpointType string, opts channelProbeOptions) testResult {
 	tik := time.Now()
 	var unsupportedTestChannelTypes = []int{
 		constant.ChannelTypeMidjourney,
@@ -57,6 +96,7 @@ func testChannel(channel *repo.Channel, testModel string, endpointType string) t
 			localErr: fmt.Errorf("%s channel test is not supported", channelTypeName),
 		}
 	}
+	endpointType = probeEndpointType(channel.Type, endpointType)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 
@@ -70,7 +110,7 @@ func testChannel(channel *repo.Channel, testModel string, endpointType string) t
 				testModel = strings.TrimSpace(models[0])
 			}
 			if testModel == "" {
-				testModel = "gpt-4o-mini"
+				testModel = probeFallbackModel(channel.Type, "gpt-4o-mini")
 			}
 		}
 	}
@@ -111,6 +151,22 @@ func testChannel(channel *repo.Channel, testModel string, endpointType string) t
 		Header: make(http.Header),
 	}
 
+	// Deadline (cycle-11 plan §L3): the raw *http.Request built above has no
+	// context, so every c.Request.Context() call downstream (relay's
+	// provider.DoApiRequest) resolved to context.Background() — no deadline
+	// of its own. The shared relay transport already bounds two narrower
+	// cases (RelayResponseHeaderTimeout, 90s to the first response header,
+	// internal/pkg/common/init.go; and a 300s trickling-body read timeout,
+	// internal/app/http_client.go), but nothing bounded the combination
+	// end-to-end (the 2026-09-17 audit's field note records one probe
+	// against a hung upstream running about 900s).
+	// channelProbeTimeout() adds a single budget for the whole probe,
+	// including the body read, and is re-read on every call so an
+	// operator's env change takes effect without a restart.
+	probeCtx, cancelProbe := context.WithTimeout(context.Background(), channelProbeTimeout())
+	defer cancelProbe()
+	c.Request = c.Request.WithContext(probeCtx)
+
 	cache, err := repo.GetUserCache(1)
 	if err != nil {
 		return testResult{
@@ -140,24 +196,7 @@ func testChannel(channel *repo.Channel, testModel string, endpointType string) t
 	var relayFormat types.RelayFormat
 	if endpointType != "" {
 		// 根据指定的端点类型设置 relayFormat
-		switch constant.EndpointType(endpointType) {
-		case constant.EndpointTypeOpenAI:
-			relayFormat = types.RelayFormatOpenAI
-		case constant.EndpointTypeOpenAIResponse:
-			relayFormat = types.RelayFormatOpenAIResponses
-		case constant.EndpointTypeAnthropic:
-			relayFormat = types.RelayFormatClaude
-		case constant.EndpointTypeGemini:
-			relayFormat = types.RelayFormatGemini
-		case constant.EndpointTypeJinaRerank:
-			relayFormat = types.RelayFormatRerank
-		case constant.EndpointTypeImageGeneration:
-			relayFormat = types.RelayFormatOpenAIImage
-		case constant.EndpointTypeEmbeddings:
-			relayFormat = types.RelayFormatEmbedding
-		default:
-			relayFormat = types.RelayFormatOpenAI
-		}
+		relayFormat = relayFormatForEndpoint(constant.EndpointType(endpointType))
 	} else {
 		// 根据请求路径自动检测
 		relayFormat = types.RelayFormatOpenAI
@@ -270,6 +309,8 @@ func testChannel(channel *repo.Channel, testModel string, endpointType string) t
 				newAPIError: types.NewError(errors.New("invalid rerank request type"), types.ErrorCodeConvertRequestFailed),
 			}
 		}
+	case relayconstant.RelayModeSystemOne:
+		convertedRequest, err = convertSystemOneProbeRequest(adaptor, c, info, request)
 	case relayconstant.RelayModeResponses:
 		// Response 请求 - request 已经是正确的类型
 		if responseReq, ok := request.(*dto.OpenAIResponsesRequest); ok {
@@ -366,36 +407,87 @@ func testChannel(channel *repo.Channel, testModel string, endpointType string) t
 			newAPIError: types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError),
 		}
 	}
-	info.SetEstimatePromptTokens(usage.PromptTokens)
+	// RecordConsumeLog gate (cycle-11 plan §L3): every automatic probe used
+	// to reach repo.RecordConsumeLog below unconditionally, writing a real
+	// consume-log row as user 1 on every tick — polluting the leaderboard
+	// and quota_data with entries that were never a real customer request.
+	// The manual GET /api/channel/test/:id path (opts.RecordConsumeLog=true
+	// via the testChannel wrapper) is the only caller that still wants
+	// this: an operator who clicked "test" wants to see the row. Skipping
+	// the whole block for the automatic pass also skips the pricing-tier
+	// resettlement and quota math below, none of which anything after this
+	// block reads.
+	if opts.RecordConsumeLog {
+		info.SetEstimatePromptTokens(usage.PromptTokens)
 
-	quota := 0
-	if !priceData.UsePrice {
-		quota = usage.PromptTokens + int(math.Round(float64(usage.CompletionTokens)*priceData.CompletionRatio))
-		quota = int(math.Round(float64(quota) * priceData.ModelRatio))
-		if priceData.ModelRatio != 0 && quota <= 0 {
-			quota = 1
+		// Declarative context-length pricing tier (billing-pricing-14): priceData
+		// was built above (helper.ModelPriceHelper, promptTokens=0 estimate)
+		// before this channel-test call had an actual response; re-evaluate
+		// against the real usage before billing and writing the consume-log row
+		// below, matching every other settlement site (cycle-8 plan §8 L5
+		// A-F4/A-F5) — otherwise this writes a real log row from a stale tier.
+		// No-op for UsePrice models and for any model with no tiers configured.
+		helper.ResettleContextTier(&priceData, info.OriginModelName, usage.AsOpenAIWire().PromptTokens)
+
+		quota := 0
+		if !priceData.UsePrice {
+			quota = usage.PromptTokens + int(math.Round(float64(usage.CompletionTokens)*priceData.CompletionRatio))
+			quota = int(math.Round(float64(quota) * priceData.ModelRatio))
+			if priceData.ModelRatio != 0 && quota <= 0 {
+				quota = 1
+			}
+		} else {
+			quota = int(priceData.ModelPrice * common.QuotaPerUnit)
 		}
-	} else {
-		quota = int(priceData.ModelPrice * common.QuotaPerUnit)
+		tok := time.Now()
+		milliseconds := tok.Sub(tik).Milliseconds()
+		consumedTime := float64(milliseconds) / 1000.0
+		other := app.GenerateTextOtherInfo(c, info, priceData.ModelRatio, priceData.GroupRatioInfo.GroupRatio, priceData.CompletionRatio,
+			usage.PromptTokensDetails.CachedTokens, priceData.CacheRatio, priceData.ModelPrice, priceData.GroupRatioInfo.GroupSpecialRatio)
+		// other.source marks the row as a manual probe so a usage view or a
+		// stats query can tell it apart from customer traffic: it is billed
+		// quota on paper (the Quota field below) but probeChannel never
+		// debits a wallet, so it is usage nobody paid for. The marker lives on
+		// the logs row only: quota_data (repo/log.go) and the quota-consumed
+		// metric aggregate the same Quota with no source dimension, so they
+		// carry the phantom amount unfiltered.
+		if other == nil {
+			other = make(map[string]interface{})
+		}
+		other["source"] = channelProbeLogSource
+		// Attribution: c is probeChannel's own context, carrying user 1's
+		// identity for the relay leg above. Re-stamp the actor here — after
+		// the relay, before the row is written — so the row names the
+		// operator who asked for the probe.
+		//
+		// The row's tenant_id is NOT set here. repo.RecordConsumeLog stamps
+		// it via resolveLogTenantID(c.GetString("tenant_id"), userId)
+		// (repo/log.go), and this context has no tenant_id, so the tenant
+		// comes from the actor's own user row — which is the same value the
+		// v1 session put on the request context in the first place
+		// (middleware/auth.go derives it from that user row). A second source
+		// here would only add a way for the two to disagree.
+		logUserID := 1
+		if opts.ActorUserID > 0 {
+			logUserID = opts.ActorUserID
+			if actor, actorErr := repo.GetUserCache(logUserID); actorErr == nil {
+				common.SetContextKey(c, constant.ContextKeyUserName, actor.Username)
+			}
+		}
+		repo.RecordConsumeLog(c, logUserID, repo.RecordConsumeLogParams{
+			ChannelId:        channel.Id,
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			ModelName:        info.OriginModelName,
+			TokenName:        "模型测试",
+			Quota:            quota,
+			Content:          "模型测试",
+			UseTimeSeconds:   int(consumedTime),
+			IsStream:         info.IsStream,
+			Group:            info.UsingGroup,
+			Other:            other,
+		})
 	}
-	tok := time.Now()
-	milliseconds := tok.Sub(tik).Milliseconds()
-	consumedTime := float64(milliseconds) / 1000.0
-	other := app.GenerateTextOtherInfo(c, info, priceData.ModelRatio, priceData.GroupRatioInfo.GroupRatio, priceData.CompletionRatio,
-		usage.PromptTokensDetails.CachedTokens, priceData.CacheRatio, priceData.ModelPrice, priceData.GroupRatioInfo.GroupSpecialRatio)
-	repo.RecordConsumeLog(c, 1, repo.RecordConsumeLogParams{
-		ChannelId:        channel.Id,
-		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.CompletionTokens,
-		ModelName:        info.OriginModelName,
-		TokenName:        "模型测试",
-		Quota:            quota,
-		Content:          "模型测试",
-		UseTimeSeconds:   int(consumedTime),
-		IsStream:         info.IsStream,
-		Group:            info.UsingGroup,
-		Other:            other,
-	})
 	common.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, string(respBody)))
 	return testResult{
 		context:     c,
@@ -430,6 +522,8 @@ func buildTestRequest(model string, endpointType string, channel *repo.Channel) 
 				Documents: []any{"Deep Learning is a subset of machine learning.", "Machine learning is a field of artificial intelligence."},
 				TopN:      2,
 			}
+		case constant.EndpointTypeSystemOne:
+			return buildSystemOneProbeRequest(model)
 		case constant.EndpointTypeOpenAIResponse:
 			// 返回 OpenAIResponsesRequest
 			return &dto.OpenAIResponsesRequest{
@@ -517,6 +611,9 @@ func TestChannel(c *gin.Context) {
 			return
 		}
 	}
+	if enforceTenantScope(c, channel.TenantId) {
+		return
+	}
 	//defer func() {
 	//	if channel.ChannelInfo.IsMultiKey {
 	//		go func() { _ = channel.SaveChannelInfo() }()
@@ -525,7 +622,9 @@ func TestChannel(c *gin.Context) {
 	testModel := c.Query("model")
 	endpointType := c.Query("endpoint_type")
 	tik := time.Now()
-	result := testChannel(channel, testModel, endpointType)
+	result := testChannelForActor(channel, testModel, endpointType, c.GetInt("id"))
+	elapsed := time.Since(tik)
+	metrics.RecordChannelProbe(string(classifyProbeResult(result)), elapsed)
 	if result.localErr != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -534,9 +633,11 @@ func TestChannel(c *gin.Context) {
 		})
 		return
 	}
-	tok := time.Now()
-	milliseconds := tok.Sub(tik).Milliseconds()
-	go channel.UpdateResponseTime(milliseconds)
+	milliseconds := elapsed.Milliseconds()
+	// Through the package's AsyncGo seam (gopool.Go in production, synchronous
+	// under the test TestMain) so a test that drives this handler does not
+	// leave a goroutine reading repo.DB after its cleanup swapped it.
+	AsyncGo(func() { channel.UpdateResponseTime(milliseconds) })
 	consumedTime := float64(milliseconds) / 1000.0
 	if result.newAPIError != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -546,6 +647,7 @@ func TestChannel(c *gin.Context) {
 		})
 		return
 	}
+	app.ClearChannelCooldown(channel.Id)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -569,10 +671,33 @@ func testAllChannels(notify bool) error {
 	if getChannelErr != nil {
 		return getChannelErr
 	}
-	var disableThreshold = int64(common.ChannelDisableThreshold * 1000)
-	if disableThreshold == 0 {
-		disableThreshold = 10000000 // a impossible value
+	// L3 repair round (cycle-11 plan): threshold in time.Duration, not raw
+	// milliseconds — evaluateProbeOutcome (channel_probe_policy.go) takes a
+	// Duration so its tests can express thresholds like "1ms" directly. The
+	// "impossible value" sentinel — 10,000,000ms (~2.8h), a latency no real
+	// probe will ever exceed, so the elapsed>threshold branch never trips —
+	// is unchanged from before this refactor for the operator setting the
+	// threshold to exactly 0. The guard below reads `<= 0`, not `== 0` as
+	// the pre-cycle-11 code did: a negative ChannelDisableThreshold used to
+	// leave disableThreshold negative, and since every elapsed duration is
+	// >= 0 that banned every channel on its very first pass; `<= 0` routes a
+	// negative value to the same "never trips" sentinel a zero value gets,
+	// which is safer but is itself a behaviour change from before this
+	// cycle (undeclared in the original plan; see CONSUMER_VISIBLE_CHANGES
+	// in the L3 repair-round report).
+	disableThreshold := time.Duration(common.ChannelDisableThreshold * float64(time.Second))
+	if disableThreshold <= 0 {
+		disableThreshold = 10000000 * time.Millisecond
 	}
+	// NOT the package's AsyncGo seam: this launch is the point of the function
+	// (testAllChannels returns as soon as the pass is LAUNCHED), and the inline
+	// seam this package's TestMain installs would make it block for the whole
+	// pass — turning TestChannelHealthTest_StampMeansLaunchedNotCompleted
+	// (context_tasks_integration_test.go) red. L1's structural gate carries the
+	// matching exemption entry (async_seam_structural_test.go). The cycle-12
+	// plan asked for the conversion on the premise that this site was an
+	// ordinary fire-and-forget spawn; it is not, and the operator struck that
+	// line in the repair round — this stays exempted.
 	gopool.Go(func() {
 		// 使用 defer 确保无论如何都会重置运行状态，防止死锁
 		defer func() {
@@ -581,40 +706,8 @@ func testAllChannels(notify bool) error {
 			testAllChannelsLock.Unlock()
 		}()
 
-		for _, channel := range channels {
-			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
-			tik := time.Now()
-			result := testChannel(channel, "", "")
-			tok := time.Now()
-			milliseconds := tok.Sub(tik).Milliseconds()
-
-			shouldBanChannel := false
-			newAPIError := result.newAPIError
-			// request error disables the channel
-			if newAPIError != nil {
-				shouldBanChannel = app.ShouldDisableChannel(channel.Type, result.newAPIError)
-			}
-
-			// 当错误检查通过，才检查响应时间
-			if common.AutomaticDisableChannelEnabled && !shouldBanChannel {
-				if milliseconds > disableThreshold {
-					err := fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
-					newAPIError = types.NewOpenAIError(err, types.ErrorCodeChannelResponseTimeExceeded, http.StatusRequestTimeout)
-					shouldBanChannel = true
-				}
-			}
-
-			// disable channel
-			if isChannelEnabled && shouldBanChannel && channel.GetAutoBan() {
-				processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
-			}
-
-			// enable channel
-			if !isChannelEnabled && app.ShouldEnableChannel(newAPIError, channel.Status) {
-				app.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name)
-			}
-
-			channel.UpdateResponseTime(milliseconds)
+		for _, channel := range scheduledTestChannels(channels, notify) {
+			autoProbeChannel(channel, disableThreshold)
 			time.Sleep(common.RequestInterval)
 		}
 
@@ -637,39 +730,56 @@ func TestAllChannels(c *gin.Context) {
 	})
 }
 
-var autoTestChannelsOnce sync.Once
-
-func AutomaticallyTestChannels() {
-	// 只在Master节点定时测试渠道
-	if !common.IsMasterNode {
-		return
-	}
-	autoTestChannelsOnce.Do(func() {
-		for {
-			if !operation_setting.GetMonitorSetting().AutoTestChannelEnabled {
-				time.Sleep(1 * time.Minute)
-				continue
-			}
-			for {
-				frequency := operation_setting.GetMonitorSetting().AutoTestChannelMinutes
-				time.Sleep(time.Duration(int(math.Round(frequency))) * time.Minute)
-				common.SysLog(fmt.Sprintf("automatically test channels with interval %f minutes", frequency))
-				common.SysLog("automatically testing all channels")
-				_ = testAllChannels(false)
-				common.SysLog("automatically channel test finished")
-				if !operation_setting.GetMonitorSetting().AutoTestChannelEnabled {
-					break
-				}
-			}
-		}
-	})
-}
+// channelHealthTestTaskName is the "task" label this job stamps on
+// metrics.LeaderTaskLastSuccess and registers under in taskreg.
+//
+// Leader-only (L3 repair round, cycle-11 plan): before this fix every
+// master-capable replica ran its own full pass over every channel on every
+// tick (taskreg.Register's leaderOnly argument below was false) — three
+// replicas each independently latency-testing and ban/enable-deciding the
+// same channel. The tick loop below now checks common.IsLeader() before
+// doing any work, the same shape internal/lifecycle/audit_cleanup.go uses
+// for its own leader-gated ticker. This is NOT NewLeaderTask, deliberately:
+// that helper re-runs a full pass with ban authority on every lease
+// acquisition (three times per rolling deploy), which would multiply bans
+// rather than dedupe them.
+//
+// Stamp semantics (L3 repair round, B-F10): the heartbeat below fires when
+// testAllChannels returns nil — i.e. when the async pass over every channel
+// is LAUNCHED (testAllChannels hands the loop to gopool.Go and returns
+// immediately), not when that pass actually finishes testing the last
+// channel. Moving the stamp into the gopool.Go body would require
+// testAllChannels to signal completion back to a caller that today treats
+// it as fire-and-forget — a shape change to a function TestAllChannels
+// (the manual "test all channels" handler) also calls, which the L3 spec's
+// "no change to schedule/gating/error handling" line rules out doing as a
+// side effect of a heartbeat repair. TestChannelHealthTest_StampMeansLaunchedNotCompleted
+// (context_tasks_integration_test.go) proves this launch-not-completion
+// shape against the real function.
+//
+// Active semantics (L3 repair round, B-F1): registered with a non-nil
+// active func, not nil. AutoTestChannelEnabled defaults to false
+// (operation_setting/monitor_setting.go), so on a default install this
+// job never calls testAllChannels at all — GetSystemTasksV2 must report it
+// standby ("disabled"), never overdue, in that state; a nil active func
+// (meaning "always active") would make it report overdue after 2x the
+// nominal interval on every default install.
+const channelHealthTestTaskName = "channel-health-test"
 
 // AutomaticallyTestChannelsWithContext tests channels with context cancellation support.
 func AutomaticallyTestChannelsWithContext(ctx context.Context) {
 	if !common.IsMasterNode {
 		return
 	}
+
+	metrics.LeaderTaskLastSuccess.WithLabelValues(channelHealthTestTaskName).Set(0)
+	taskreg.Register(channelHealthTestTaskName, func() time.Duration {
+		frequency := operation_setting.GetMonitorSetting().AutoTestChannelMinutes
+		return time.Duration(int(math.Round(frequency))) * time.Minute
+	}, true, func() bool {
+		ms := operation_setting.GetMonitorSetting()
+		return ms.AutoTestChannelEnabled && ms.AutoTestChannelMinutes > 0
+	})
 
 	for {
 		select {
@@ -695,9 +805,24 @@ func AutomaticallyTestChannelsWithContext(ctx context.Context) {
 			common.SysLog("channel auto-test stopped")
 			return
 		case <-time.After(time.Duration(int(math.Round(frequency))) * time.Minute):
+			// HA: only the leader runs the probe pass; followers idle
+			// (audit_cleanup.go's ticker uses the same shape). Without this
+			// every master-capable replica probed every channel on every
+			// tick, each with its own ban/enable authority.
+			if !common.IsLeader() {
+				continue
+			}
 			common.SysLog(fmt.Sprintf("automatically test channels with interval %f minutes", frequency))
 			common.SysLog("automatically testing all channels")
-			_ = testAllChannels(false)
+			// testAllChannels takes no context: it launches its own detached
+			// pass and returns immediately, so there is nothing here to
+			// cancel. The heartbeat records that the pass was launched
+			// (see channelHealthTestTaskName's comment). Threading ctx into
+			// it is a separate change to the pass's own lifecycle.
+			//nolint:contextcheck // pre-existing call shape; only the stamp below is new
+			if err := testAllChannels(false); err == nil {
+				metrics.RecordLeaderTaskSuccess(channelHealthTestTaskName)
+			}
 			common.SysLog("automatically channel test finished")
 		}
 	}

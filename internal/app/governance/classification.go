@@ -56,11 +56,70 @@ var FieldClassification = map[string]DataTier{
 	"created_at":        TierPublic,
 	"type":              TierPublic,
 	"use_time":          TierPublic,
+	// Time to first token. Public for the same reason total_latency_ms is: the
+	// framework's own PROV mapping puts latency under Activity, and this is the
+	// caller's own request timing — it carries no price, no margin and no
+	// upstream identity. It sat under Internal until 2026-09-01, which meant the
+	// headline performance number of an AI gateway was the one thing the paying
+	// customer could not see, while the coarser total_latency_ms right next to
+	// it was public. (It was also a sentinel -1000 on every non-streaming
+	// request until the same day, so nobody had reason to question the tier.)
+	"frt": TierPublic,
+	// request_id/session_id are caller-controlled correlation ids (an
+	// inbound X-Request-Id/X-Session-Id, or one we minted and already
+	// echoed back on the response headers) — the caller already has them,
+	// so hiding them from the row would plug zero bits while blocking the
+	// exact use case (correlate their own log by request_id) L2 ships.
+	"request_id": TierPublic,
+	"session_id": TierPublic,
+	// conversion_dropped names the caller's OWN request fields
+	// (internal/app/convert.go ClaudeToOpenAIRequest / GeminiToOpenAIRequest)
+	// that a cross-wire conversion could not map onto the upstream request —
+	// the caller set the field, so telling them it was ignored is the point,
+	// not a secret about our pricing or routing.
+	"conversion_dropped": TierPublic,
+
+	// settlement is written by app.FlagSettlementOutcome
+	// (internal/app/settlement_outcome.go) when the consume-quota settlement
+	// call for THIS row's request returned an error, on the three sites that
+	// route through app.SettleConsume — see that file's header comment for
+	// what is and is not covered this cycle. It says whether the charge the
+	// row already shows can be trusted, which is the caller's own data about
+	// their own request, not our pricing or routing — same reasoning as
+	// error_type/error_code/status_code above.
+	"settlement": TierPublic,
+
+	// source is written by the manual channel probe
+	// (internal/adapter/handler/channel-test.go probeChannel) on the consume
+	// row it books to the operator who clicked "test": the row shows a price
+	// the probe never debited from any wallet, so a usage view has to be able
+	// to tell it from customer traffic. It says that a probe ran, which the
+	// row's own user_id already implies — nothing about pricing or routing.
+	"source": TierPublic,
+
+	// routing_eval / routing are written by the decision-model router
+	// (internal/adapter/middleware/decision_routing.go) on the separate consume
+	// row it books for the evaluator call: routing_eval=true marks that row as
+	// the router's own evaluation, routing names the decision outcome. Both are
+	// facts about the caller's OWN request under the tenant's OWN policy, so
+	// they carry no price, margin or upstream identity.
+	"routing_eval": TierPublic,
+	"routing":      TierPublic,
+	// routed is the main request's own marker: {requested, model, reason},
+	// the same facts as the X-Routed-Model / X-Routing-Reason headers.
+	"routed": TierPublic,
 
 	// Internal — admin only
-	"channel_id":          TierInternal,
-	"channel_name":        TierInternal,
-	"upstream_model":      TierInternal,
+	"channel_id":     TierInternal,
+	"channel_name":   TierInternal,
+	"upstream_model": TierInternal,
+	// The VENDOR's own request/trace id (x-request-id/request-id/
+	// openai-request-id/cf-ray on the upstream HTTP response), captured by
+	// provider.doRequest — not to be confused with request_id right above in
+	// the Public block, which is the CALLER's own correlation id. This one
+	// names the upstream we routed to, so it gets the same tier as
+	// upstream_model/channel_id: admin-only, for support-ticket correlation.
+	"upstream_request_id": TierInternal,
 	"group":               TierInternal,
 	"request_fingerprint": TierInternal,
 	"model_ratio":         TierInternal,
@@ -70,7 +129,6 @@ var FieldClassification = map[string]DataTier{
 	"data_flow_source":    TierInternal,
 	"data_flow_dest":      TierInternal,
 	"admin_info":          TierInternal,
-	"frt":                 TierInternal,
 
 	// Confidential — user opt-in, masked on export
 	"user_id":    TierConfidential,
@@ -80,6 +138,12 @@ var FieldClassification = map[string]DataTier{
 	"ip":         TierConfidential,
 	"client_ip":  TierConfidential,
 	"tenant_id":  TierConfidential,
+	// end_user is a one-way hash of the CALLER'S OWN customer identifier
+	// (OpenAI `user` / Anthropic `metadata.user_id`), not our economics —
+	// but it is still an identity of a third party the caller told us about,
+	// not the caller's own data the way request_id/session_id above are, so
+	// it stays admin-only rather than round-tripping to every relay caller.
+	"end_user": TierConfidential,
 }
 
 // IsExportSafe returns true if the field can be safely exported to

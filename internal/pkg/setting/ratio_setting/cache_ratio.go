@@ -8,37 +8,47 @@ import (
 )
 
 var defaultCacheRatio = map[string]float64{
-	"gpt-4":                               0.5,
-	"o1":                                  0.5,
-	"o1-2024-12-17":                       0.5,
-	"o1-preview-2024-09-12":               0.5,
-	"o1-preview":                          0.5,
-	"o1-mini-2024-09-12":                  0.5,
-	"o1-mini":                             0.5,
-	"o3-mini":                             0.5,
-	"o3-mini-2025-01-31":                  0.5,
-	"gpt-4o-2024-11-20":                   0.5,
-	"gpt-4o-2024-08-06":                   0.5,
-	"gpt-4o":                              0.5,
-	"gpt-4o-mini-2024-07-18":              0.5,
-	"gpt-4o-mini":                         0.5,
-	"gpt-4o-realtime-preview":             0.5,
-	"gpt-4o-mini-realtime-preview":        0.5,
-	"gpt-4.5-preview":                     0.5,
-	"gpt-4.5-preview-2025-02-27":          0.5,
-	"gpt-4.1":                             0.25,
-	"gpt-4.1-mini":                        0.25,
-	"gpt-4.1-nano":                        0.25,
-	"gpt-5":                               0.1,
-	"gpt-5-2025-08-07":                    0.1,
-	"gpt-5-chat-latest":                   0.1,
-	"gpt-5-mini":                          0.1,
-	"gpt-5-mini-2025-08-07":               0.1,
-	"gpt-5-nano":                          0.1,
-	"gpt-5-nano-2025-08-07":               0.1,
-	"deepseek-chat":                       0.25,
-	"deepseek-reasoner":                   0.25,
-	"deepseek-coder":                      0.25,
+	"gpt-4":                        0.5,
+	"o1":                           0.5,
+	"o1-2024-12-17":                0.5,
+	"o1-preview-2024-09-12":        0.5,
+	"o1-preview":                   0.5,
+	"o1-mini-2024-09-12":           0.5,
+	"o1-mini":                      0.5,
+	"o3-mini":                      0.5,
+	"o3-mini-2025-01-31":           0.5,
+	"gpt-4o-2024-11-20":            0.5,
+	"gpt-4o-2024-08-06":            0.5,
+	"gpt-4o":                       0.5,
+	"gpt-4o-mini-2024-07-18":       0.5,
+	"gpt-4o-mini":                  0.5,
+	"gpt-4o-realtime-preview":      0.5,
+	"gpt-4o-mini-realtime-preview": 0.5,
+	"gpt-4.5-preview":              0.5,
+	"gpt-4.5-preview-2025-02-27":   0.5,
+	"gpt-4.1":                      0.25,
+	"gpt-4.1-mini":                 0.25,
+	"gpt-4.1-nano":                 0.25,
+	"gpt-5":                        0.1,
+	"gpt-5-2025-08-07":             0.1,
+	"gpt-5-chat-latest":            0.1,
+	"gpt-5-mini":                   0.1,
+	"gpt-5-mini-2025-08-07":        0.1,
+	"gpt-5-nano":                   0.1,
+	"gpt-5-nano-2025-08-07":        0.1,
+	// GPT-6 Sol / Luna / 6.1 Sol: cached input reads are 10% of the input rate
+	// ($0.20 / $0.01 / $0.20 per 1M against $2 / $0.10 / $2).
+	"gpt-6-sol":   0.1,
+	"gpt-6-luna":  0.1,
+	"gpt-6.1-sol": 0.1,
+	// DeepSeek cache-hit price / input price (2026-09-23): flash 0.006/0.3,
+	// v4-pro 0.044/1.32.
+	"deepseek-chat":                       0.02,
+	"deepseek-reasoner":                   0.02,
+	"deepseek-coder":                      0.02,
+	"deepseek-flash":                      0.02,
+	"deepseek-v4-flash":                   0.02,
+	"deepseek-v4-pro":                     0.044 / 1.32,
 	"claude-3-sonnet-20240229":            0.1,
 	"claude-3-opus-20240229":              0.1,
 	"claude-3-haiku-20240307":             0.1,
@@ -58,6 +68,21 @@ var defaultCacheRatio = map[string]float64{
 	"claude-sonnet-4-5-20250929-thinking": 0.1,
 	"claude-opus-4-5-20251101":            0.1,
 	"claude-opus-4-5-20251101-thinking":   0.1,
+	// Gemini context-cache read price, borrowed from upstream New API
+	// setting/ratio_setting/cache_ratio.go (2026-09-01). Only the models upstream
+	// lists are seeded; older Gemini families keep the map default of 1 until an
+	// operator sets a ratio, which is money-neutral: cached tokens are then
+	// priced exactly as they were before cachedContentTokenCount was parsed.
+	"gemini-3-flash-preview": 0.1,
+	"gemini-3-pro-preview":   0.1,
+	"gemini-3.1-pro-preview": 0.1,
+	// Gemini 2.5 GA family, from ai.google.dev/gemini-api/docs/pricing (read
+	// 2026-09-01): context-caching read price is one tenth of text input on all
+	// three — Pro $0.125 vs $1.25 (<=200k), Flash $0.03 vs $0.30, Flash-Lite
+	// $0.01 vs $0.10. Preview/dated aliases are left to operator config.
+	"gemini-2.5-pro":        0.1,
+	"gemini-2.5-flash":      0.1,
+	"gemini-2.5-flash-lite": 0.1,
 }
 
 var defaultCreateCacheRatio = map[string]float64{
@@ -80,6 +105,20 @@ var defaultCreateCacheRatio = map[string]float64{
 	"claude-sonnet-4-5-20250929-thinking": 1.25,
 	"claude-opus-4-5-20251101":            1.25,
 	"claude-opus-4-5-20251101-thinking":   1.25,
+	// OpenAI: "For GPT-5.6 and later, cache writes cost 1.25x the standard,
+	// uncached input-token rate"; earlier GPT models carry no write charge
+	// (developers.openai.com/api/docs/guides/prompt-caching, read 2026-09-02;
+	// ids from developers.openai.com/api/docs/models the same day). Applies to
+	// prompt_tokens_details / input_tokens_details .cache_write_tokens, parsed
+	// since 2026-09-02. Unlisted models on the OpenAI wire bill writes at 1
+	// (types.PriceData.CacheCreationRatioForWire), so older GPTs are untouched.
+	"gpt-5.6":       1.25,
+	"gpt-5.6-sol":   1.25,
+	"gpt-5.6-terra": 1.25,
+	"gpt-5.6-luna":  1.25,
+	"gpt-6-sol":     1.25,
+	"gpt-6-luna":    1.25,
+	"gpt-6.1-sol":   1.25,
 }
 
 //var defaultCreateCacheRatio = map[string]float64{}
@@ -107,33 +146,51 @@ func CacheRatio2JSONString() string {
 
 // UpdateCacheRatioByJSONString updates the cache ratio map from a JSON string
 func UpdateCacheRatioByJSONString(jsonStr string) error {
-	cacheRatioMapMutex.Lock()
-	defer cacheRatioMapMutex.Unlock()
-	cacheRatioMap = make(map[string]float64)
-	err := json.Unmarshal([]byte(jsonStr), &cacheRatioMap)
-	if err == nil {
-		InvalidateExposedDataCache()
+	// 同 UpdateModelRatioByJSONString：解析失败不得破坏已生效的缓存倍率。
+	tmp := make(map[string]float64)
+	if err := json.Unmarshal([]byte(jsonStr), &tmp); err != nil {
+		return err
 	}
-	return err
+	cacheRatioMapMutex.Lock()
+	cacheRatioMap = tmp
+	cacheRatioMapMutex.Unlock()
+	InvalidateExposedDataCache()
+	return nil
 }
 
-// GetCacheRatio returns the cache ratio for a model
+// GetCacheRatio returns the cache ratio for a model. The raw name is tried
+// first so an operator entry keyed by the exact model name still wins, then
+// FormatMatchingModelName's normalised name. That normalisation collapses
+// only the thinking-budget and gizmo families into five literal keys
+// (see FormatMatchingModelName), so an entry written against one of those
+// five is found instead of being skipped; arbitrary wildcard keys such as
+// "gpt-4o-*" are not a supported form here.
 func GetCacheRatio(name string) (float64, bool) {
 	cacheRatioMapMutex.RLock()
 	defer cacheRatioMapMutex.RUnlock()
-	ratio, ok := cacheRatioMap[name]
-	if !ok {
-		return 1, false // Default to 1 if not found
+	if ratio, ok := cacheRatioMap[name]; ok {
+		return ratio, true
 	}
-	return ratio, true
+	if ratio, ok := cacheRatioMap[FormatMatchingModelName(name)]; ok {
+		return ratio, true
+	}
+	return 1, false // Default to 1 if not found
 }
 
+// GetCreateCacheRatio tries the raw name first, then FormatMatchingModelName's
+// normalised family key, matching the lookup order of the two getters above.
+// defaultCreateCacheRatio is a compile-time map with no runtime write path
+// (no admin endpoint updates it), so this ordering is a consistency fix only:
+// it changes no billing outcome today, and no operator-configured entry can
+// exist here to win or lose.
 func GetCreateCacheRatio(name string) (float64, bool) {
-	ratio, ok := defaultCreateCacheRatio[name]
-	if !ok {
-		return 1.25, false // Default to 1.25 if not found
+	if ratio, ok := defaultCreateCacheRatio[name]; ok {
+		return ratio, true
 	}
-	return ratio, true
+	if ratio, ok := defaultCreateCacheRatio[FormatMatchingModelName(name)]; ok {
+		return ratio, true
+	}
+	return 1.25, false // Default to 1.25 if not found
 }
 
 func GetCacheRatioCopy() map[string]float64 {

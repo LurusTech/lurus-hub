@@ -8,10 +8,20 @@ build
 *.db-journal
 logs
 web/dist
+# Left behind by the retired legacy console package (web/package.json) in
+# checkouts that installed it; the console's own node_modules is ignored in
+# web/next/.gitignore.
+web/node_modules
 .env
+# 挡住 .env.bak-YYYY 这类含活凭证的手工备份被 git add -A 吸走(.env.example 均已 tracked 不受影响)
+.env.*
 one-api
 lurus-api
-server
+# Anchored: unanchored `server` matched the cmd/server DIRECTORY, so git never
+# even listed new files under it — a test added there was invisible to
+# `git status` and would have been lost. This is the upstream build output name;
+# ours is lurus-api above.
+/server
 /__debug_bin*
 .DS_Store
 tiktoken_cache
@@ -22,8 +32,6 @@ tiktoken_cache
 web/bun.lock
 plans
 
-electron/node_modules
-electron/dist
 data/
 .gomodcache/
 .gocache-temp
@@ -39,6 +47,9 @@ doc/database-credentials.md
 # Coverage files
 cov_*.out
 coverage*
+# ...but never a source file. `coverage*` was swallowing coverage*_test.go, so
+# tests written into those names were staged as no-ops and silently never landed.
+!coverage*_test.go
 *.out
 
 # IDE / tools
@@ -48,5 +59,5 @@ nul
 # BMAD framework (lives at root only)
 _bmad/
 
-# Staged by deploy/single-node/build.sh; canonical copy lives at ../shared/lurus-proto-go
-/lurus-proto-go/
+# Staged by deploy/single-node/build.sh; canonical copy lives at ../shared/lurus-entkit
+/lurus-entkit/

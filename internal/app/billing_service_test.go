@@ -30,6 +30,20 @@ func setUSDExchangeRate(t *testing.T, rate float64) {
 	})
 }
 
+func TestCalculateDisplayAmount_Lute_ReturnsLucEquivalent(t *testing.T) {
+	setQuotaDisplayType(t, operation_setting.QuotaDisplayTypeLute)
+
+	setUSDExchangeRate(t, 5)
+	quota := 1_000_000
+	// LUT → LUC (= CNY) display: quota is USD-priced, so 1,000,000 quota is
+	// $2, which is CNY 10 at 5 CNY/USD (currency.LucToLut).
+	want := 10.0
+	got := CalculateDisplayAmount(quota)
+	if got != want {
+		t.Errorf("CalculateDisplayAmount(%d) with LUTE = %f, want %f", quota, got, want)
+	}
+}
+
 func TestCalculateDisplayAmount_USD_ReturnsQuotaDividedByUnit(t *testing.T) {
 	setQuotaDisplayType(t, operation_setting.QuotaDisplayTypeUSD)
 
@@ -167,7 +181,7 @@ func TestCalculateDisplayAmount_TableDriven(t *testing.T) {
 			displayType:  operation_setting.QuotaDisplayTypeCNY,
 			exchangeRate: 7.0,
 			quota:        int(common.QuotaPerUnit) * 2, // 2 USD
-			want:         14.0,                          // 2 * 7.0
+			want:         14.0,                         // 2 * 7.0
 		},
 		{
 			name:        "TOKENS preserves raw value",

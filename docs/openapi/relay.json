@@ -1,4 +1,4 @@
-﻿{
+{
   "openapi": "3.0.1",
   "info": {
     "title": "AI模型接口",
@@ -10,16 +10,13 @@
       "name": "获取模型列表"
     },
     {
+      "name": "Key/用量内省"
+    },
+    {
       "name": "OpenAI格式(Chat)"
     },
     {
       "name": "OpenAI格式(Responses)"
-    },
-    {
-      "name": "图片生成"
-    },
-    {
-      "name": "图片生成/OpenAI兼容格式"
     },
     {
       "name": "图片生成/Qwen千问"
@@ -35,6 +32,9 @@
     },
     {
       "name": "视频生成/即梦格式"
+    },
+    {
+      "name": "异步任务/通用"
     },
     {
       "name": "Claude格式(Messages)"
@@ -55,13 +55,13 @@
       "name": "重排序(Rerank)"
     },
     {
+      "name": "System One"
+    },
+    {
       "name": "Moderations"
     },
     {
       "name": "Realtime"
-    },
-    {
-      "name": "未实现"
     },
     {
       "name": "未实现/Fine-tunes"
@@ -71,11 +71,232 @@
     }
   ],
   "paths": {
+    "/pg/chat/completions": {
+      "post": {
+        "summary": "Console playground chat completion",
+        "deprecated": false,
+        "description": "The chat endpoint behind the console Playground page. Same request and response shapes as POST /v1/chat/completions, and billed exactly like it: the request passes the same pool-balance, cost-spike, entitlement, per-model and business rate limits and concurrency cap, and is charged to a token of the signed-in user. Authentication: with an Authorization: Bearer header this is the ordinary token path; without one, the console session cookie is used and the user's first active token pays (one is created if the user has none). A banned user or a disabled or suspended tenant is refused. It is not an integration endpoint for API customers — use /v1/chat/completions.",
+        "operationId": "createPlaygroundChatCompletion",
+        "tags": [
+          "OpenAI格式(Chat)"
+        ],
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "成功创建响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletionResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-Model-Provider": {
+                "$ref": "#/components/headers/XModelProvider"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              },
+              "X-RateLimit-Scope": {
+                "$ref": "#/components/headers/XRateLimitScope"
+              },
+              "X-RateLimit-Type": {
+                "$ref": "#/components/headers/XRateLimitType"
+              },
+              "X-Request-Cost": {
+                "$ref": "#/components/headers/XRequestCost"
+              },
+              "X-Quota-Remaining": {
+                "$ref": "#/components/headers/XQuotaRemaining"
+              },
+              "X-Lurus-Affinity-Key": {
+                "$ref": "#/components/headers/XLurusAffinityKey"
+              }
+            }
+          },
+          "400": {
+            "description": "请求参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "401": {
+            "description": "认证失败（如 API key 无效）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          },
+          "402": {
+            "description": "余额/租户信用池不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足（IP/分组/模型/渠道限制）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "404": {
+            "description": "模型未找到（分组下从未配置该模型）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "413": {
+            "description": "请求体过大",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "429": {
+            "description": "请求频率限制。X-RateLimit-Limit/Remaining/Scope/Type + Retry-After are written by the rate-limit and concurrency middlewares on this relay chain (BusinessRateLimit and BusinessModelRateLimit, RelayConcurrencyLimit, ModelRequestRateLimit; scopes token/tenant/model/user — the ip and key scopes come from the keyed limiters that guard /api/* and /internal/*, never a /v1 route — except GET/DELETE /v1/responses/:response_id, which mounts its own IP-keyed \"RS\" bucket (scope ip) and, unlike the /api/* and /internal/* keyed limiters, renders the reject through the gateway's OpenAI-wire error envelope so it carries Limit/Remaining/Scope/Type + Retry-After AND a body with error.code — see that path's own 429 entry) — Remaining is 0 and Reset is not sent on a reject. The account/quota (entitlement) and user/cost (cost-spike) 429s on this same path write only X-RateLimit-Scope/Type, no Retry-After or Limit/Remaining.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Scope": {
+                "$ref": "#/components/headers/XRateLimitScope"
+              },
+              "X-RateLimit-Type": {
+                "$ref": "#/components/headers/XRateLimitType"
+              }
+            }
+          },
+          "503": {
+            "description": "无可用渠道 / 全部密钥冷却中",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/v1/models": {
       "get": {
         "summary": "获取模型列表",
         "deprecated": false,
-        "description": "获取当前可用的模型列表。\n\n根据请求头自动识别返回格式：\n- 包含 `x-api-key` 和 `anthropic-version` 头时返回 Anthropic 格式\n- 包含 `x-goog-api-key` 头或 `key` 查询参数时返回 Gemini 格式\n- 其他情况返回 OpenAI 格式\n",
+        "description": "获取当前可用的模型列表。\n\n根据请求头自动识别返回格式：\n- 包含 `x-api-key` 和 `anthropic-version` 头时返回 Anthropic 格式\n- 包含 `x-goog-api-key` 头或 `key` 查询参数时返回 Gemini 格式\n- 其他情况返回 OpenAI 格式\n\n列表按调用方所属租户可路由的模型集作答；`/v1/models/{model}` 单条查询一个该租户路由不到的模型返回 404（`code=model_not_found`），而不是静态目录里的 200。\n",
         "operationId": "listModels",
         "tags": [
           "获取模型列表"
@@ -143,7 +364,177 @@
                 }
               }
             },
-            "headers": {}
+            "headers": {
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/key": {
+      "get": {
+        "summary": "查询令牌自身信息",
+        "deprecated": false,
+        "description": "只持有一把中转 key、没有控制台权限的调用方一次拿到该 key 的额度/剩余/限流/所属租户资金池状态。镜像 OpenRouter 的 GET /api/v1/key。只读，无 flag。\n",
+        "operationId": "getKeyInfo",
+        "tags": [
+          "Key/用量内省"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功获取 key 信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "label": { "type": "string" },
+                        "tenant_id": { "type": "string" },
+                        "project_id": { "type": "integer" },
+                        "group": { "type": "string" },
+                        "scopes": { "type": "array", "items": { "type": "string" } },
+                        "model_limits": { "type": "array", "items": { "type": "string" } },
+                        "limit": { "type": "integer", "nullable": true, "description": "这把 key 的总额度上限（剩余+已用；quota 整数，非 USD），null 表示不限额（token.UnlimitedQuota）" },
+                        "limit_remaining": { "type": "integer", "nullable": true, "description": "剩余可用额度（quota 整数，非 USD），null 表示不限额，与 limit 同为 null" },
+                        "usage": { "type": "integer", "description": "已用额度（quota 整数，非 USD）。quota 与 USD 的换算：USD = quota / quota_per_unit，quota_per_unit 是管理员可改的选项（默认 500000），当前值以 GET /api/status 返回的 quota_per_unit 为准" },
+                        "expires_at": { "type": "integer", "nullable": true },
+                        "rate_limit": {
+                          "type": "object",
+                          "properties": {
+                            "rpm": { "type": "integer" },
+                            "tpm": { "type": "integer" },
+                            "tenant_rpm": { "type": "integer" },
+                            "tenant_tpm": { "type": "integer" }
+                          }
+                        },
+                        "pool": {
+                          "type": "object",
+                          "nullable": true,
+                          "description": "所属租户资金池未配置时为 null（约定：无池行 = 不限额，非错误）",
+                          "properties": {
+                            "balance": { "type": "integer", "description": "租户资金池当前余额（quota 整数，非 USD）" },
+                            "max_balance": { "type": "integer", "description": "租户资金池上限（quota 整数，非 USD；-1 表示不限）" },
+                            "health": { "type": "string" }
+                          }
+                        },
+                        "default_product": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "401": {
+            "description": "令牌无效",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "message": { "type": "string" } } }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/generation": {
+      "get": {
+        "summary": "按 request id 反查一次调用的费用/供应商/用量",
+        "deprecated": false,
+        "description": "调用方凭自己发出的入站 X-Request-Id，或网关在原始响应上回显的 X-Request-Id，反查该次调用的成本/供应商/用量——无需控制台权限。镜像 OpenRouter 的 GET /api/v1/generation。只读，无 flag。id 不匹配存量格式时直接 404（不是 400），与\"无此 id\"不可区分，避免向未持有该 id 的调用方泄露格式探测信号。\n",
+        "operationId": "getGeneration",
+        "tags": [
+          "Key/用量内省"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "description": "X-Request-Id 值（8-36 位 [A-Za-z0-9._-]）",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功获取该次调用详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string" },
+                        "request_id": { "type": "string" },
+                        "model": { "type": "string" },
+                        "upstream_model": { "type": "string" },
+                        "provider_name": { "type": "string" },
+                        "quota": { "type": "integer", "description": "本次调用消耗的 quota 整数（DB 单位，非 USD）" },
+                        "total_cost": { "type": "number", "description": "quota / quota_per_unit（管理员可改的选项，默认 500000，当前值以 GET /api/status 的 quota_per_unit 为准；该值未设置时为 0）——本响应体唯一 USD 计价字段" },
+                        "charged_cny": { "type": "number", "description": "本次请求实际从平台钱包扣的人民币金额，结算时记录（精确到 0.0001，钱包自身精度）。未从钱包扣费（信用池/本地额度）或记录上线前的请求不返回此字段——缺失不代表免费" },
+                        "usage": {
+                          "type": "object",
+                          "properties": {
+                            "prompt_tokens": { "type": "integer" },
+                            "completion_tokens": { "type": "integer" },
+                            "cached_tokens": { "type": "integer", "nullable": true }
+                          }
+                        },
+                        "latency_ms": { "type": "integer" },
+                        "first_token_ms": { "type": "integer" },
+                        "streamed": { "type": "boolean" },
+                        "source_product": { "type": "string" },
+                        "project_id": { "type": "integer" },
+                        "session_id": { "type": "string" },
+                        "created_at": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "404": {
+            "description": "id 格式不匹配或不属于调用方的令牌/租户",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "properties": { "success": { "type": "boolean" }, "message": { "type": "string" } } }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
           }
         },
         "security": [
@@ -213,29 +604,123 @@
                 }
               }
             },
-            "headers": {}
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Model-Provider": { "$ref": "#/components/headers/XModelProvider" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" },
+              "X-Request-Cost": { "$ref": "#/components/headers/XRequestCost" },
+              "X-Quota-Remaining": { "$ref": "#/components/headers/XQuotaRemaining" },
+              "X-Lurus-Affinity-Key": { "$ref": "#/components/headers/XLurusAffinityKey" }
+            }
           },
           "400": {
             "description": "请求参数错误",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/GatewayError"
                 }
               }
             },
-            "headers": {}
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "401": {
+            "description": "认证失败（如 API key 无效）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          },
+          "402": {
+            "description": "余额/租户信用池不足",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" }
+            }
+          },
+          "403": {
+            "description": "权限不足（IP/分组/模型/渠道限制）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "404": {
+            "description": "模型未找到（分组下从未配置该模型）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "413": {
+            "description": "请求体过大",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
           },
           "429": {
-            "description": "请求频率限制",
+            "description": "请求频率限制。X-RateLimit-Limit/Remaining/Scope/Type + Retry-After are written by the rate-limit and concurrency middlewares on this relay chain (BusinessRateLimit and BusinessModelRateLimit, RelayConcurrencyLimit, ModelRequestRateLimit; scopes token/tenant/model/user — the ip and key scopes come from the keyed limiters that guard /api/* and /internal/*, never a /v1 route — except GET/DELETE /v1/responses/:response_id, which mounts its own IP-keyed \"RS\" bucket (scope ip) and, unlike the /api/* and /internal/* keyed limiters, renders the reject through the gateway's OpenAI-wire error envelope so it carries Limit/Remaining/Scope/Type + Retry-After AND a body with error.code — see that path's own 429 entry) — Remaining is 0 and Reset is not sent on a reject. The account/quota (entitlement) and user/cost (cost-spike) 429s on this same path write only X-RateLimit-Scope/Type, no Retry-After or Limit/Remaining.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/GatewayError"
                 }
               }
             },
-            "headers": {}
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" }
+            }
+          },
+          "503": {
+            "description": "无可用渠道 / 全部密钥冷却中",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
           }
         },
         "security": [
@@ -275,7 +760,187 @@
                 }
               }
             },
-            "headers": {}
+            "headers": {
+              "X-Lurus-Affinity-Key": { "$ref": "#/components/headers/XLurusAffinityKey" }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/responses/compact": {
+      "post": {
+        "summary": "创建响应 (OpenAI Responses API, 文档化字段子集透传)",
+        "deprecated": false,
+        "description": "/v1/responses 的文档化字段子集透传端点(cycle-8 L6, wire-formats-03)。这是一份白名单(allow-list),不是排除列表:请求体先按该子集重新编码后再转发给上游,只有下列字段真正到达渠道——model/input/instructions/previous_response_id/parallel_tool_calls/service_tier/prompt_cache_key/prompt_cache_retention。tools/reasoning/text 会被解析(供客户端兼容),但不转发给上游(与参考实现一致,上游未来可能不识别这些字段)。dto.OpenAIResponsesRequest 的其余字段——include/max_output_tokens/metadata/store/temperature/tool_choice/top_p/truncation/user/max_tool_calls/prompt/stream——一律被丢弃且不告警,pass-through 模式下同样如此。本周期未建模 prompt_cache_options(父类型也没有该字段)。渠道类型不支持时(本周期仅 OpenAI)返回 400 responses_compact_unsupported,零上游调用。usage 由渠道响应解析,缺失时按请求前估算的 prompt token 数计费、completion 记 0;渠道在 200 响应体内携带的 error 字段会被识别为上游错误并拒绝,不计费。\n",
+        "operationId": "createResponseCompact",
+        "tags": [
+          "OpenAI格式(Responses)"
+        ],
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "input"],
+                "properties": {
+                  "model": { "type": "string" },
+                  "input": {},
+                  "instructions": {},
+                  "previous_response_id": { "type": "string" },
+                  "tools": {},
+                  "parallel_tool_calls": {},
+                  "reasoning": { "type": "object" },
+                  "service_tier": { "type": "string" },
+                  "prompt_cache_key": {},
+                  "prompt_cache_retention": {},
+                  "text": {}
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "成功创建响应(渠道响应字节原样转发)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponsesResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-Lurus-Affinity-Key": { "$ref": "#/components/headers/XLurusAffinityKey" }
+            }
+          },
+          "400": {
+            "description": "请求参数错误,或渠道类型不支持该端点(responses_compact_unsupported,零上游调用)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/responses/{response_id}": {
+      "get": {
+        "summary": "获取已创建的响应 (OpenAI Responses API, 有状态端点)",
+        "deprecated": false,
+        "description": "GET/DELETE /v1/responses/:response_id(cycle-8 L7, tasks-plugins-12):OpenAI Responses API 有状态半面。POST /v1/responses(store 不为字面量 false、渠道类型在 SupportsResponsesStateful 允许列表内——本周期仅 OpenAI,与 /v1/responses/compact 的 SupportsResponsesCompact 是两张独立的表——且渠道非多密钥时)成功后把 response_id 与产生它的渠道/模型记入 response_registry,这两条路由据此把请求原样转发回**同一个渠道**(读取该行做鉴权+定位,不经过权重选择),而不是重新走渠道选择。多密钥渠道不写入该表(cycle-8 L7 修复轮 B-F3,密钥下标列是 cycle-9 跟进项)。归属判定为同租户且同一用户(O7);不存在的 id、归属于他人的 id、渠道已被禁用、渠道类型已不再受支持四种情况返回完全相同的 404 response_not_found 网关信封,从不返回 403——但一旦行存在且渠道可达,渠道自己的状态码/报文(含它自己的 404)会原样透传,不带 error.code,是与上述网关信封不同的另一种报文。本端点不解析 usage、不计费,也不写入任何配额行——费用已经在原始 POST 时结清。挂在独立的 /v1/responses 分组(StampRelayFormat+TokenAuth+自带的 ResponsesStateRateLimit——每 IP 30 次/60 秒的 RS 桶,不是 CriticalRateLimit 的共享 CT 桶,cycle-8 L7 修复轮 B-F1 订正),不经过 Distribute() 或资金池/成本尖峰/并发链。上游 Content-Type 为 text/event-stream 时增量转发并逐块 flush,否则整体转发。",
+        "operationId": "retrieveResponse",
+        "tags": [
+          "OpenAI格式(Responses)"
+        ],
+        "parameters": [
+          {
+            "name": "response_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "POST /v1/responses 成功响应中的 id 字段"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功获取响应(渠道响应字节原样转发)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponsesResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "两种不同形状:(a) 不存在 / 不属于该用户或租户 / 渠道已禁用 / 渠道类型已不再受支持——四种情况返回相同的网关信封(GatewayError,带 error.code=response_not_found);(b) 行存在且渠道可达,但渠道自己也找不到该 id——渠道自己的 404 原样透传,body 是渠道的报文,不带 error.code。两者都是 HTTP 404,调用方需按 body 是否含 error.code 区分",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            }
+          },
+          "429": {
+            "description": "本组独立的 IP 限流(ResponsesStateRateLimit,\"RS\" 桶,每 IP 30 次/60 秒,不是 CriticalRateLimit 的共享 \"CT\" 桶)。走 abortWithOpenAiMessage,带 error.code=request_rate_limit_exceeded 的网关信封,不是空 body。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "删除已创建的响应 (OpenAI Responses API, 有状态端点)",
+        "deprecated": false,
+        "description": "与同路径 GET 共用归属判定与渠道定位逻辑(见上)。仅在渠道返回 2xx 时才从 response_registry 删除本地行——渠道返回非 2xx(例如渠道自己也找不到该 id)时本地行保留,与渠道状态保持一致而不是乐观删除。",
+        "operationId": "deleteResponse",
+        "tags": [
+          "OpenAI格式(Responses)"
+        ],
+        "parameters": [
+          {
+            "name": "response_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "POST /v1/responses 成功响应中的 id 字段"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功(渠道响应字节原样转发,状态码随渠道而定)"
+          },
+          "404": {
+            "description": "两种不同形状:(a) 不存在 / 不属于该用户或租户 / 渠道已禁用 / 渠道类型已不再受支持——四种情况返回相同的网关信封(GatewayError,带 error.code=response_not_found),本地行不会被删除;(b) 行存在且渠道可达,但渠道自己的 DELETE 返回非 2xx(例如渠道自己也找不到该 id)——渠道自己的报文原样透传,不带 error.code,本地行同样保留。两者都是 HTTP 404,调用方需按 body 是否含 error.code 区分",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            }
+          },
+          "429": {
+            "description": "本组独立的 IP 限流(ResponsesStateRateLimit,\"RS\" 桶,每 IP 30 次/60 秒,不是 CriticalRateLimit 的共享 \"CT\" 桶)。走 abortWithOpenAiMessage,带 error.code=request_rate_limit_exceeded 的网关信封,不是空 body。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" }
+            }
           }
         },
         "security": [
@@ -743,7 +1408,7 @@
       "get": {
         "summary": "获取视频内容",
         "deprecated": false,
-        "description": "获取已完成视频任务的视频文件内容。\n\n此接口会代理返回视频文件流。\n",
+        "description": "获取已完成视频任务的视频文件内容。\n\n此接口会代理返回视频文件流。\n\ncycle-8 L9 在既有实现上加了前置校验（与 GET /v1/tasks/{platform}/{task_id}/artifacts/{key}/content 共用 task_media_guard.go 的 scheme 白名单/自指 host 守卫/转发上限）：非 http(s) 目标或自指本网关的目标返回 502（scheme 校验分支沿用了拒绝前既有的 502 文案，因为该分支此前必然经 client.Do 走到相同的网络层失败并产生相同的状态码/文案）；已知 Content-Length 超过 200MiB 上限时，现在在写任何响应头之前直接 502（此前会在 200 状态下把字节流截断在上限但仍转发原始 Content-Length，客户端拿到一个大小与声明不符的损坏文件）；未知长度流仍在上限处截断，但会计入 lurus_gateway_task_media_guard_rejections_total{route=\"video_proxy\",reason=\"size_cap\"}。cycle-9 L4 补上了此前唯独这条路由没有的 fetch_setting 出站检查（app.ValidateOutboundURL，与渠道 egress 及 GET .../artifacts/{key}/content 同一函数）：私网/回环目标域名或字面量 IP 返回 502，响应体与错误码复用 artifacts 路由的形状（code=artifact_request_rejected），计入同一指标 reason=\"egress_check\"。响应额外带 X-Content-Type-Options: nosniff。仅支持整体 GET，不支持 Range/条件请求头。\n",
         "operationId": "getVideoContent",
         "tags": [
           "视频生成/Sora兼容格式"
@@ -779,6 +1444,406 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "502": {
+            "description": "视频代理请求被拒绝或上游失败。scheme 白名单（非 http/https）与自指 host 校验（cycle-8 L9）沿用拒绝前既有的文案（分别为 \"Failed to fetch video content\"、\"Refused to proxy a self-referential video URL\"）且不带 code；已知 Content-Length 超出 200MiB 上限、以及上游拉取失败/返回非 200，同样是既有的历史 502 分支，同样不带 code。cycle-9 L4 新增的 fetch_setting 出站检查（egress_check：私网/回环目标域名或字面量 IP）复用了 GET /v1/tasks/{platform}/{task_id}/artifacts/{key}/content 路由的响应形状，是这条路由目前唯一携带 code=artifact_request_rejected 的 502 分支；该检查对一个配置了 per-channel 代理的渠道同样按 fail-closed 原则解析目标域名（不因渠道设了代理就跳过解析），域名解析失败时同样返回本 502。\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": { "type": "string", "example": "server_error" },
+                        "message": { "type": "string" },
+                        "code": {
+                          "type": "string",
+                          "enum": ["artifact_request_rejected"],
+                          "description": "仅 egress_check 分支携带此字段；scheme/自指 host/大小上限/上游失败这几类既有分支不带 code。"
+                        }
+                      }
+                    }
+                  }
+                },
+                "examples": {
+                  "egress_check_rejected": {
+                    "value": { "error": { "type": "server_error", "message": "Artifact URL failed the egress check", "code": "artifact_request_rejected" } }
+                  }
+                }
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/tasks/{platform}": {
+      "post": {
+        "summary": "通用异步任务提交",
+        "deprecated": false,
+        "description": "通用异步任务提交入口（cycle-8 L8）：一条路由服务全部已编译 task 适配器（ali/doubao/gemini/hailuo/jimeng/kling/music/sora/suno/vertex/vidu，由 TestGenericTaskPlatforms_CoverCompiledAdaptors 锁定为与 internal/adapter/provider/task/* 目录数相等，而非固定数字），复用与专用路由（/suno、/v1/audio/music、/kling/v1、/v1/videos）相同的 InitTask/轮询链路。请求体契约按平台分两类：ali/doubao/gemini/hailuo/jimeng/kling/sora/vertex/vidu 九个数值适配器接受统一的 TaskSubmitReq 形状（model/prompt/image 或 images/size/seconds/metadata 等）；suno 接受其自身的提交体，并额外需要顶层 action 字段（MUSIC/LYRICS，因为该适配器原本从专用路由的 :action URL 段读取）；music 接受与专用 /v1/audio/music 相同的请求体。Kling/Jimeng 专用路由用于把供应商原生请求体（如 Kling 的 model_name/image、Jimeng 的 req_key）转换成上述统一形状的中间件（KlingRequestConvert/JimengRequestConvert）不挂在本路由上——原生供应商格式仍只走专用路由，不在本接口透传。计费：本接口按请求体顶层 model 的价格计费（该 model 必须已在渠道上配置价格），与专用 /suno/submit/:action 按 action 派生的模型名（如 suno_music）计费是两条独立的定价路径，同一逻辑任务经两条路由可能定价不同，运营方需为通用路由额外维护 model 价格项。提交后会校验 Distribute 实际选中的渠道类型是否与 :platform 声明一致（不一致时 404 task_platform_unknown，零上游调用）——例如 POST /v1/tasks/kling 若请求体 model 解析到一个 Suno 渠道，会在发起上游请求前被拒绝，而不是用 kling 适配器去打 Suno 渠道。\n",
+        "operationId": "submitGenericTask",
+        "tags": [
+          "异步任务/通用"
+        ],
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "path",
+            "description": "task 适配器名（ali/doubao/gemini/hailuo/jimeng/kling/music/sora/suno/vertex/vidu 之一）",
+            "required": true,
+            "example": "suno",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "model": {
+                    "description": "渠道选择用的模型名（通用契约，与各平台原生请求格式并存）",
+                    "type": "string"
+                  },
+                  "action": {
+                    "description": "仅 suno 平台需要：MUSIC 或 LYRICS",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model"
+                ],
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "任务已提交",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "404": {
+            "description": ":platform 不是任何已编译适配器，或 Distribute 依据请求体 model 选中的渠道类型与 :platform 声明不一致（两种情况均为 task_platform_unknown，后者在任何上游调用之前拒绝）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {}
+          },
+          "400": {
+            "description": "请求参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/tasks/{platform}/{task_id}": {
+      "get": {
+        "summary": "通用异步任务状态查询",
+        "deprecated": false,
+        "description": "直接读取 tasks 表（由 UpdateTaskBulkWithContext 轮询器每 15 秒更新，本接口自身不发起上游请求）。归属校验 fail-closed：查询本身按 (user_id, task_id) 限定作用域（task_id 只是索引不是唯一约束，避免他人任务因 task_id 撞号顶替调用者自己的任务），他人任务与不存在的 task_id 返回完全相同的 404 报文，不泄露任务是否存在。platform 匹配：sora 额外接受经 OpenAI 类型渠道（/v1/videos 路径）提交、内部仍由 tasksora 适配器处理的任务，其余平台要求存储的 platform 与 :platform 精确一致，不一致同样报 404。\n",
+        "operationId": "getGenericTask",
+        "tags": [
+          "异步任务/通用"
+        ],
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "path",
+            "description": "task 适配器名，须与提交时一致",
+            "required": true,
+            "example": "suno",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "提交时返回的上游任务 ID",
+            "required": true,
+            "example": "upstream-task-123",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "任务当前状态。data 是 relay.TaskModel2Dto 的既有投影（task_id/action/status/fail_reason/submit_time/start_time/finish_time/progress/data）再加 platform/project_id/request_id 三个字段——刻意不包含 channel_id、user_id、quota、group、properties：这是一个 bearer-token 中转面，不应把内部计费/路由字段回显给调用方。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "task_id": { "type": "string" },
+                        "action": { "type": "string" },
+                        "status": { "type": "string" },
+                        "fail_reason": { "type": "string" },
+                        "submit_time": { "type": "integer" },
+                        "start_time": { "type": "integer" },
+                        "finish_time": { "type": "integer" },
+                        "progress": { "type": "string" },
+                        "data": { "type": "object" },
+                        "platform": { "type": "string", "description": "回显 :platform（不是内部存储的数值渠道类型字符串）" },
+                        "project_id": { "type": "integer" },
+                        "request_id": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {}
+          },
+          "404": {
+            "description": "任务不存在，或存在但不属于当前调用者，或存在但 platform 与 :platform 不匹配（三种情况报文完全相同）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": { "type": "string", "example": "invalid_request_error" },
+                        "message": { "type": "string", "example": "Task not found" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/tasks/{platform}/{task_id}/artifacts": {
+      "get": {
+        "summary": "通用异步任务产物列表",
+        "deprecated": false,
+        "description": "仅元数据、不返回字节（cycle-8 L9）；不按 task 状态过滤，非 SUCCESS 任务返回当前已有的 URL（可能是空列表）。投影两处来源：① Task.Data 里**顶层**、形如 URL 的字符串字段（http(s):// 或 data: 开头）——这只对 suno/music 有意义，它们的 Data 是扁平对象；② 对一个 SUCCESS 任务，若①未产出 video 这个 key，再看 task.FailReason——ali/kling/jimeng/doubao/vidu/hailuo/vertex 这 7 个数值适配器的 Data 是嵌套的供应商原始报文，真正解析出的结果 URL 由轮询器写进 FailReason（与 GET /v1/videos/{task_id}/content 默认分支读的是同一字段），看起来像 URL 就投影成 video 这个 key；sora/gemini 的 FailReason 是本网关自己的 /v1/videos/{task_id}/content 地址（不是供应商资产 URL），不投影——这两个平台仍只能通过专用视频代理获取产物。key 是该字段在 Data 中的原始字段名（对象）/数组下标（数组）/或固定值 video（FailReason 投影）。size 仅对 data: URL 有值（解码后的字节数，免费可得）；http(s) URL 的 size 恒为 0——本接口从不为了拿大小去发一次上游请求。type 取 video/image/audio/text/json/other 之一，按 MIME 类型（data: URL 自带，或 http(s) URL 按扩展名猜测）判定，猜不出时退化为按字段名（…_url 的 video/image/audio 等词根）判定。归属校验与 GET /v1/tasks/{platform}/{task_id} 完全相同（fail-closed 404）。专用的 GET /v1/videos/{task_id}/content 及其内部的视频专属渠道解析（Gemini/OpenAI/Sora）不在本接口范围内。\n",
+        "operationId": "listGenericTaskArtifacts",
+        "tags": [
+          "异步任务/通用"
+        ],
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "path",
+            "description": "task 适配器名，须与提交时一致",
+            "required": true,
+            "example": "suno",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "提交时返回的上游任务 ID",
+            "required": true,
+            "example": "upstream-task-123",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "产物列表（可能为空数组）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": { "type": "boolean" },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": { "type": "string" },
+                          "type": { "type": "string", "enum": ["video", "image", "audio", "text", "json", "other"] },
+                          "mime_type": { "type": "string" },
+                          "size": { "type": "integer" },
+                          "status": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {}
+          },
+          "404": {
+            "description": "任务不存在，或存在但不属于当前调用者（两种情况报文完全相同，与 GET /v1/tasks/{platform}/{task_id} 一致）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": { "type": "string", "example": "invalid_request_error" },
+                        "message": { "type": "string", "example": "Task not found" }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/tasks/{platform}/{task_id}/artifacts/{key}/content": {
+      "get": {
+        "summary": "通用异步任务产物内容代理",
+        "deprecated": false,
+        "description": "把 GET .../artifacts 列出的某一个产物的字节代理给调用方（cycle-8 L9）：data: URL 直接内联解码返回（零出站请求），http(s) URL 走一次受限 GET 并把上游 Content-Type 原样带回，并在响应上加 X-Content-Type-Options: nosniff / Cache-Control: private, no-store / Referrer-Policy: no-referrer（本路由鉴权也接受 ?key= query 参数，因此是可被浏览器直接导航的 URL）。仅支持整体 GET：不支持 HEAD，不转发/响应 Range 或 If-* 条件请求头。受限体现在四处，均为 502 且带 code=artifact_request_rejected：scheme 只认 http/https，其余一律拒绝；目标 host 若与本次请求自身的 Host 头相同则拒绝（防止产物 URL 反指网关自身造成回环）；fetch_setting 出站检查（私网 IP/域名黑白名单，与前一条自指校验是两道独立的检查，即便 allow_private_ip=true 也不影响自指校验）；单次转发大小上限 200MiB——已知 Content-Length 超限时在写任何响应头之前直接拒绝，未知长度流仍在上限处截断但会计入 lurus_gateway_task_media_guard_rejections_total{route=\"artifact_content\",reason=\"size_cap\"}。未知 :key（不是当前列表会给出的 key）返回 404，code=artifact_not_found。上游拉取失败或非 200 返回 502，code=artifact_upstream_error。归属校验与列表接口相同（fail-closed，此 404 不带 code，与 GET /v1/tasks/{platform}/{task_id} 的既有报文保持字节一致）。\n",
+        "operationId": "getGenericTaskArtifactContent",
+        "tags": [
+          "异步任务/通用"
+        ],
+        "parameters": [
+          {
+            "name": "platform",
+            "in": "path",
+            "description": "task 适配器名，须与提交时一致",
+            "required": true,
+            "example": "suno",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "提交时返回的上游任务 ID",
+            "required": true,
+            "example": "upstream-task-123",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "GET .../artifacts 返回的某个产物的 key",
+            "required": true,
+            "example": "url",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "产物字节，Content-Type 与产物本身的 MIME 类型一致",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
+            "headers": {}
+          },
+          "404": {
+            "description": "两种不同的 404，body 形状不同：任务不存在/不属于当前调用者时不带 code（与 GET /v1/tasks/{platform}/{task_id} 的既有报文字节一致）；:key 不是该任务已知的产物 key 时带 code=artifact_not_found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" },
+                "examples": {
+                  "task_not_found": {
+                    "value": { "error": { "type": "invalid_request_error", "message": "Task not found" } }
+                  },
+                  "artifact_not_found": {
+                    "value": { "error": { "type": "invalid_request_error", "message": "Artifact not found", "code": "artifact_not_found" } }
+                  }
+                }
+              }
+            },
+            "headers": {}
+          },
+          "502": {
+            "description": "产物 URL 未通过 scheme/自指/egress 校验（code=artifact_request_rejected）或超出转发大小上限（code=artifact_request_rejected），或上游产物拉取失败/返回非 200（code=artifact_upstream_error）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "type": { "type": "string", "example": "server_error" },
+                        "message": { "type": "string" },
+                        "code": { "type": "string", "enum": ["artifact_request_rejected", "artifact_upstream_error"] }
+                      }
+                    }
+                  }
+                },
+                "examples": {
+                  "request_rejected": {
+                    "value": { "error": { "type": "server_error", "message": "Artifact URL failed the egress check", "code": "artifact_request_rejected" } }
+                  },
+                  "upstream_error": {
+                    "value": { "error": { "type": "server_error", "message": "Upstream artifact fetch failed", "code": "artifact_upstream_error" } }
+                  }
                 }
               }
             },
@@ -1285,7 +2350,106 @@
                 }
               }
             },
-            "headers": {}
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Model-Provider": { "$ref": "#/components/headers/XModelProvider" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" },
+              "X-Lurus-Affinity-Key": { "$ref": "#/components/headers/XLurusAffinityKey" }
+            }
+          },
+          "401": {
+            "description": "认证失败（如 API key 无效）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          },
+          "402": {
+            "description": "余额/租户信用池不足",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" }
+            }
+          },
+          "403": {
+            "description": "权限不足（IP/分组/模型/渠道限制）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "404": {
+            "description": "模型未找到（分组下从未配置该模型）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "413": {
+            "description": "请求体过大",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "429": {
+            "description": "限流（网关侧或产品配额）。X-RateLimit-Limit/Remaining/Scope/Type + Retry-After are written by the rate-limit and concurrency middlewares on this relay chain (BusinessRateLimit and BusinessModelRateLimit, RelayConcurrencyLimit, ModelRequestRateLimit; scopes token/tenant/model/user — the ip and key scopes come from the keyed limiters that guard /api/* and /internal/*, never a /v1 route — except GET/DELETE /v1/responses/:response_id, which mounts its own IP-keyed \"RS\" bucket (scope ip) and, unlike the /api/* and /internal/* keyed limiters, renders the reject through the gateway's OpenAI-wire error envelope so it carries Limit/Remaining/Scope/Type + Retry-After AND a body with error.code — see that path's own 429 entry) — Remaining is 0 and Reset is not sent on a reject. The account/quota (entitlement) and user/cost (cost-spike) 429s on this same path write only X-RateLimit-Scope/Type, no Retry-After or Limit/Remaining.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" }
+            }
+          },
+          "503": {
+            "description": "无可用渠道 / 全部密钥冷却中",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
           }
         },
         "security": [
@@ -1501,7 +2665,129 @@
                 }
               }
             },
-            "headers": {}
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Model-Provider": { "$ref": "#/components/headers/XModelProvider" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" },
+              "X-Request-Cost": { "$ref": "#/components/headers/XRequestCost" },
+              "X-Quota-Remaining": { "$ref": "#/components/headers/XQuotaRemaining" }
+            }
+          },
+          "401": {
+            "description": "认证失败（如 API key 无效）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          },
+          "402": {
+            "description": "余额/租户信用池不足",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" }
+            }
+          },
+          "403": {
+            "description": "权限不足（IP/分组/模型/渠道限制）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "404": {
+            "description": "模型未找到（分组下从未配置该模型）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "413": {
+            "description": "请求体过大",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "429": {
+            "description": "请求频率限制。X-RateLimit-Limit/Remaining/Scope/Type + Retry-After are written by the rate-limit and concurrency middlewares on this relay chain (BusinessRateLimit and BusinessModelRateLimit, RelayConcurrencyLimit, ModelRequestRateLimit; scopes token/tenant/model/user — the ip and key scopes come from the keyed limiters that guard /api/* and /internal/*, never a /v1 route — except GET/DELETE /v1/responses/:response_id, which mounts its own IP-keyed \"RS\" bucket (scope ip) and, unlike the /api/* and /internal/* keyed limiters, renders the reject through the gateway's OpenAI-wire error envelope so it carries Limit/Remaining/Scope/Type + Retry-After AND a body with error.code — see that path's own 429 entry) — Remaining is 0 and Reset is not sent on a reject. The account/quota (entitlement) and user/cost (cost-spike) 429s on this same path write only X-RateLimit-Scope/Type, no Retry-After or Limit/Remaining.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" }
+            }
+          },
+          "400": {
+            "description": "请求体不合法。code=unsupported_parameter 表示请求带了所选渠道无法转发的字段(如 input_type 仅 Voyage 渠道、task 仅 Jina 渠道可转发),为避免静默丢弃字段后仍计费而直接拒绝;单次 input 条数上限 2048。不重试、不切换渠道。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "501": {
+            "description": "该模型没有任何路由支持此类操作(例如对 chat 渠道发 rerank)。code=provider_capability_not_supported;error.details = {stage:\"route_selection\", upstream_attempted:false, reasons:[{code:\"modality_mismatch\"|\"adapter_unsupported\", message, route_count}]},reasons 只含原因与计数,不含渠道 id/名称/上游地址/密钥。仅当 ROUTING_MODALITY_FILTER=enforce 时返回;observe(默认)只记日志不拦截。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "503": {
+            "description": "无可用渠道 / 全部密钥冷却中",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
           }
         },
         "security": [
@@ -1541,7 +2827,107 @@
                 }
               }
             },
-            "headers": {}
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Model-Provider": { "$ref": "#/components/headers/XModelProvider" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Reset": { "$ref": "#/components/headers/XRateLimitReset" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" },
+              "X-Request-Cost": { "$ref": "#/components/headers/XRequestCost" },
+              "X-Quota-Remaining": { "$ref": "#/components/headers/XQuotaRemaining" }
+            }
+          },
+          "401": {
+            "description": "认证失败（如 API key 无效）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          },
+          "402": {
+            "description": "余额/租户信用池不足",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" }
+            }
+          },
+          "403": {
+            "description": "权限不足（IP/分组/模型/渠道限制）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "404": {
+            "description": "模型未找到（分组下从未配置该模型）",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "413": {
+            "description": "请求体过大",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "429": {
+            "description": "请求频率限制。X-RateLimit-Limit/Remaining/Scope/Type + Retry-After are written by the rate-limit and concurrency middlewares on this relay chain (BusinessRateLimit and BusinessModelRateLimit, RelayConcurrencyLimit, ModelRequestRateLimit; scopes token/tenant/model/user — the ip and key scopes come from the keyed limiters that guard /api/* and /internal/*, never a /v1 route — except GET/DELETE /v1/responses/:response_id, which mounts its own IP-keyed \"RS\" bucket (scope ip) and, unlike the /api/* and /internal/* keyed limiters, renders the reject through the gateway's OpenAI-wire error envelope so it carries Limit/Remaining/Scope/Type + Retry-After AND a body with error.code — see that path's own 429 entry) — Remaining is 0 and Reset is not sent on a reject. The account/quota (entitlement) and user/cost (cost-spike) 429s on this same path write only X-RateLimit-Scope/Type, no Retry-After or Limit/Remaining.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-RateLimit-Limit": { "$ref": "#/components/headers/XRateLimitLimit" },
+              "X-RateLimit-Remaining": { "$ref": "#/components/headers/XRateLimitRemaining" },
+              "X-RateLimit-Scope": { "$ref": "#/components/headers/XRateLimitScope" },
+              "X-RateLimit-Type": { "$ref": "#/components/headers/XRateLimitType" }
+            }
+          },
+          "503": {
+            "description": "无可用渠道 / 全部密钥冷却中",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" },
+              "Retry-After": { "$ref": "#/components/headers/RetryAfter" },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
           }
         },
         "security": [
@@ -1782,6 +3168,294 @@
               }
             },
             "headers": {}
+          },
+          "400": {
+            "description": "请求体不合法(缺 query/documents 等)。不重试、不切换渠道。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "501": {
+            "description": "该模型没有任何路由支持此类操作(例如对 chat 渠道发 rerank)。code=provider_capability_not_supported;error.details = {stage:\"route_selection\", upstream_attempted:false, reasons:[{code:\"modality_mismatch\"|\"adapter_unsupported\", message, route_count}]},reasons 只含原因与计数,不含渠道 id/名称/上游地址/密钥。仅当 ROUTING_MODALITY_FILTER=enforce 时返回;observe(默认)只记日志不拦截。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "502": {
+            "description": "上游返回的响应体格式合法但内容自相矛盾(如 rerank 结果的排序/索引不一致),code=invalid_provider_response。若上游 usage 自相矛盾则为 code=invalid_provider_usage(同为 502)。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/systemone": {
+      "post": {
+        "summary": "System One 评估",
+        "deprecated": false,
+        "description": "对一个 state 同时评估若干类型化问题(noul 是非概率 / choice 单选 / score 评分)。与 TypeSafe 官方 `POST /v1/systemone` 线格式字节兼容:官方 SDK 设置 `TYPESAFE_BASE_URL=https://hub.lurus.cn`(不带 /v1)并以网关 key 作 Bearer 即可直接使用。\n\n公开模型名:`jev-latest` / `jev-preview` / `jev-1.13.0`(TypeSafe 托管),`laya-auto` / `laya-english` / `laya-multilingual` / `laya-typed-decisions`(自托管兼容服务)。上游真实名由渠道的 model_mapping 决定。\n\n计费仅按输入 token(usage.input_tokens),输出免费。当前不支持批量与流式。\n\n错误体沿用网关统一的 OpenAI 风格信封(error.message / error.type / error.code),官方 SDK 按 HTTP 状态码映射异常。",
+        "operationId": "createSystemOne",
+        "tags": [
+          "System One"
+        ],
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemOneRequest"
+              },
+              "example": {
+                "state": "Help! My payouts have been failing for 3 days.",
+                "model": "jev-latest",
+                "questions": {
+                  "is_urgent": {
+                    "type": "noul",
+                    "instructions": "Does this convey urgency?"
+                  },
+                  "department": {
+                    "type": "choice",
+                    "instructions": "Which team should handle this?",
+                    "criteria": {
+                      "billing": "Payments, invoicing, refunds",
+                      "technical": "Bugs, outages, integrations",
+                      "sales": "Pricing, upgrades, new accounts"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "评估成功。answers 按调用方给的问题 id 一一对应。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemOneResponse"
+                },
+                "example": {
+                  "model": "jev-1.13.0",
+                  "answers": {
+                    "is_urgent": {
+                      "type": "noul",
+                      "noul": 0.95
+                    },
+                    "department": {
+                      "type": "choice",
+                      "choice": "billing",
+                      "probabilities": {
+                        "billing": 0.88,
+                        "technical": 0.12,
+                        "sales": 0.0
+                      },
+                      "confidence": 0.81
+                    }
+                  },
+                  "usage": {
+                    "input_tokens": 296,
+                    "output_tokens": 0
+                  }
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Reset": {
+                "$ref": "#/components/headers/XRateLimitReset"
+              },
+              "X-RateLimit-Scope": {
+                "$ref": "#/components/headers/XRateLimitScope"
+              },
+              "X-RateLimit-Type": {
+                "$ref": "#/components/headers/XRateLimitType"
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不合法(JSON 解析失败、缺 state/questions、questions 不是对象、含不被接受的批量/钩子字段等),或上游以 400 判定为调用方错误。message 为净化后的文本,不含上游内部信息。不重试、不切换渠道。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "401": {
+            "description": "认证失败(网关 API key 无效)。上游渠道自身的 401/403/404/405 是渠道故障,会触发换渠道,不会以 401 透传给调用方。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
+          },
+          "402": {
+            "description": "余额/租户信用池不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              }
+            }
+          },
+          "413": {
+            "description": "请求体过大(自托管渠道另有 state 字符数、问题数、选项数上限),按上游状态码 413 原样返回,不重试。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "422": {
+            "description": "问题内容不合法(未知 type、缺 criteria、选项重复、参数越界等),取自上游 detail 字符串、detail.message 或 detail[].msg 的净化文本。调用方错误:不重试、不计入渠道熔断。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            }
+          },
+          "429": {
+            "description": "请求频率限制,或所有 System One 渠道均处于上游过载(429/503/529)状态且重试耗尽。前者的响应头与 /v1/embeddings 的 429 一致(限流/并发中间件写 X-RateLimit-Limit/Remaining/Scope/Type + Retry-After;account/quota 与 user/cost 两类 429 只写 Scope/Type);后者在上游给出 Retry-After 或 retry-after-ms 时透传为 Retry-After(秒)。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              },
+              "X-RateLimit-Limit": {
+                "$ref": "#/components/headers/XRateLimitLimit"
+              },
+              "X-RateLimit-Remaining": {
+                "$ref": "#/components/headers/XRateLimitRemaining"
+              },
+              "X-RateLimit-Scope": {
+                "$ref": "#/components/headers/XRateLimitScope"
+              },
+              "X-RateLimit-Type": {
+                "$ref": "#/components/headers/XRateLimitType"
+              }
+            }
+          },
+          "501": {
+            "description": "该模型没有任何路由支持此类操作(例如对 chat 渠道发 rerank)。code=provider_capability_not_supported;error.details = {stage:\"route_selection\", upstream_attempted:false, reasons:[{code:\"modality_mismatch\"|\"adapter_unsupported\", message, route_count}]},reasons 只含原因与计数,不含渠道 id/名称/上游地址/密钥。仅当 ROUTING_MODALITY_FILTER=enforce 时返回;observe(默认)只记日志不拦截。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "502": {
+            "description": "上游响应未通过校验,code=invalid_provider_response;不重试、不切换渠道。",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GatewayError" }
+              }
+            },
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/XRequestId" }
+            }
+          },
+          "503": {
+            "description": "无可用渠道 / 全部密钥冷却中 / 所有渠道均因上游故障(凭据失效、连接失败、5xx)而失败。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              },
+              "Retry-After": {
+                "$ref": "#/components/headers/RetryAfter"
+              },
+              "X-Lurus-Token-State": {
+                "$ref": "#/components/headers/XLurusTokenState"
+              }
+            }
           }
         },
         "security": [
@@ -1944,7 +3618,7 @@
         ]
       }
     },
-    "/v1/fine-tunes/{fine_tune_id}": {
+    "/v1/fine-tunes/{id}": {
       "get": {
         "summary": "获取微调任务详情 (未实现)",
         "deprecated": false,
@@ -1955,7 +3629,7 @@
         ],
         "parameters": [
           {
-            "name": "fine_tune_id",
+            "name": "id",
             "in": "path",
             "description": "",
             "required": true,
@@ -1985,7 +3659,7 @@
         ]
       }
     },
-    "/v1/fine-tunes/{fine_tune_id}/cancel": {
+    "/v1/fine-tunes/{id}/cancel": {
       "post": {
         "summary": "取消微调任务 (未实现)",
         "deprecated": false,
@@ -1996,7 +3670,7 @@
         ],
         "parameters": [
           {
-            "name": "fine_tune_id",
+            "name": "id",
             "in": "path",
             "description": "",
             "required": true,
@@ -2026,7 +3700,7 @@
         ]
       }
     },
-    "/v1/fine-tunes/{fine_tune_id}/events": {
+    "/v1/fine-tunes/{id}/events": {
       "get": {
         "summary": "获取微调任务事件 (未实现)",
         "deprecated": false,
@@ -2037,7 +3711,7 @@
         ],
         "parameters": [
           {
-            "name": "fine_tune_id",
+            "name": "id",
             "in": "path",
             "description": "",
             "required": true,
@@ -2145,7 +3819,7 @@
         ]
       }
     },
-    "/v1/files/{file_id}": {
+    "/v1/files/{id}": {
       "get": {
         "summary": "获取文件信息 (未实现)",
         "deprecated": false,
@@ -2156,7 +3830,7 @@
         ],
         "parameters": [
           {
-            "name": "file_id",
+            "name": "id",
             "in": "path",
             "description": "",
             "required": true,
@@ -2195,7 +3869,7 @@
         ],
         "parameters": [
           {
-            "name": "file_id",
+            "name": "id",
             "in": "path",
             "description": "",
             "required": true,
@@ -2225,7 +3899,7 @@
         ]
       }
     },
-    "/v1/files/{file_id}/content": {
+    "/v1/files/{id}/content": {
       "get": {
         "summary": "获取文件内容 (未实现)",
         "deprecated": false,
@@ -2236,7 +3910,7 @@
         ],
         "parameters": [
           {
-            "name": "file_id",
+            "name": "id",
             "in": "path",
             "description": "",
             "required": true,
@@ -2269,6 +3943,26 @@
   },
   "components": {
     "schemas": {
+      "ProviderFilter": {
+        "type": "object",
+        "description": "请求级路由约束(cycle-18 L8,对标 OpenRouter 的 provider 对象)。只在渠道选择阶段生效:region 非空时只会选中渠道 setting.region(不区分大小写)相等的渠道;data_collection 为 \"deny\" 时只会选中渠道 setting.data_collection 同为 \"deny\"(零数据保留)的渠道——未声明的渠道不被假定为零保留。两个键都省略等于没有约束。会话亲和(X-Session-Id 等)命中的渠道若不满足约束会被忽略并重新绑定。无渠道满足约束时返回 503 model_not_found,message 形如 \"failed to select an available channel for model X in group Y: no channel satisfies provider filter (region=eu, data_collection=deny)\"(与「模型从未配置」的 404 区分开)。网关只在选择渠道时读取这个对象,并不把它转发给上游(渠道开启 pass_through_body_enabled 或全局 pass-through 时除外,那时整个原始请求体原样透传);这里未列出的键在网关侧被忽略。渠道侧的 region / data_collection 通过管理端 PUT channel 的 setting JSON 设置,见 doc/product-integration-guide.md 附录 M。\n",
+        "properties": {
+          "region": {
+            "type": "string",
+            "description": "只落在 setting.region 与之相等的渠道,如 eu / us / cn(自由文本,约定小写)",
+            "example": "eu"
+          },
+          "data_collection": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "description": "\"deny\" = 只落在声明了零数据保留(setting.data_collection=deny)的渠道;\"allow\" 或省略 = 不约束",
+            "example": "deny"
+          }
+        }
+      },
       "ErrorResponse": {
         "type": "object",
         "properties": {
@@ -2292,6 +3986,140 @@
                 "type": "string",
                 "description": "错误代码",
                 "nullable": true
+              }
+            }
+          }
+        }
+      },
+      "GatewayError": {
+        "description": "网关自身（非上游供应商）拒绝请求时的信封：OpenAI 线为 {error:{message,type,code,param}}，Anthropic 线为 {type:\"error\",error:{type,message}}，Gemini 线为 {error:{code,message,status}}。type 取值随调用方使用的 wire 而不同（OpenAI 语义 vs Anthropic 语义，402/503/529 三处分叉），code 是跨 wire 稳定的机器可读值。",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "OpenAI 线：invalid_request_error / authentication_error / insufficient_quota / permission_error / not_found_error / request_too_large / rate_limit_error / api_error。Anthropic 线同名，但 402→billing_error、503/529→overloaded_error（含 channel:all_keys_cooling 503）。",
+            "enum": [
+              "invalid_request_error",
+              "authentication_error",
+              "insufficient_quota",
+              "billing_error",
+              "permission_error",
+              "not_found_error",
+              "request_too_large",
+              "rate_limit_error",
+              "overloaded_error",
+              "api_error"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "description": "机器可读的拒绝原因，跨 wire 稳定；见 internal/pkg/types/error.go 的 ErrorCode 常量表。",
+            "enum": [
+              "invalid_request",
+              "sensitive_words_detected",
+              "content_rejected",
+              "count_token_failed",
+              "model_price_error",
+              "invalid_api_type",
+              "json_marshal_failed",
+              "do_request_failed",
+              "get_channel_failed",
+              "gen_relay_info_failed",
+              "all_channels_cooling",
+              "channel:no_available_key",
+              "channel:all_keys_cooling",
+              "channel:param_override_invalid",
+              "channel:header_override_invalid",
+              "channel:model_mapped_error",
+              "channel:aws_client_error",
+              "channel:invalid_key",
+              "channel:response_time_exceeded",
+              "read_request_body_failed",
+              "convert_request_failed",
+              "access_denied",
+              "bad_request_body",
+              "read_response_body_failed",
+              "bad_response_status_code",
+              "bad_response",
+              "bad_response_body",
+              "empty_response",
+              "upstream_stream_incomplete",
+              "aws_invoke_error",
+              "model_not_found",
+              "prompt_blocked",
+              "query_data_error",
+              "update_data_error",
+              "insufficient_user_quota",
+              "pre_consume_token_quota_failed",
+              "tenant_quota_exceeded",
+              "project_budget_exceeded",
+              "token_quota_exhausted",
+              "billing_unavailable",
+              "model_blocked",
+              "token_disabled",
+              "token_expired",
+              "user_banned",
+              "tenant_suspended",
+              "ip_not_allowed",
+              "group_not_allowed",
+              "session_required",
+              "channel_specify_forbidden",
+              "scope_not_granted",
+              "request_rate_limit_exceeded",
+              "gateway_internal",
+              "pool_exhausted",
+              "pool_not_configured",
+              "quota_exceeded",
+              "cost_spike_limit_exceeded",
+              "business_rate_limit_exceeded",
+              "concurrency_limit_exceeded",
+              "api_not_implemented",
+              "provider_capability_not_supported",
+              "invalid_provider_usage",
+              "invalid_provider_response",
+              "unsupported_parameter",
+              "task_platform_unknown",
+              "responses_compact_unsupported",
+              "response_not_found",
+              "artifact_not_found",
+              "artifact_request_rejected",
+              "artifact_upstream_error"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "description": "人类可读的错误信息，末尾附 (request id: X-Request-Id 同值) 便于对账。"
+          },
+          "details": {
+            "type": "object",
+            "description": "仅 OpenAI 线、仅部分拒绝携带的结构化补充信息。当前只有 code=provider_capability_not_supported(501)使用:stage 恒为 route_selection,upstream_attempted 恒为 false。",
+            "properties": {
+              "stage": { "type": "string" },
+              "upstream_attempted": { "type": "boolean" },
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "code": { "type": "string", "enum": ["modality_mismatch", "adapter_unsupported"] },
+                    "message": { "type": "string" },
+                    "route_count": { "type": "integer", "description": "因此原因被排除的候选路由数。" }
+                  }
+                }
+              }
+            }
+          },
+          "metadata": {
+            "type": "object",
+            "description": "仅 OpenAI 线可能携带；Claude/Gemini 信封没有对应位置。",
+            "properties": {
+              "topup_url": {
+                "type": "string",
+                "description": "402 余额不足时的钱包充值链接。"
+              },
+              "upgrade_url": {
+                "type": "string",
+                "description": "429 产品配额超限时的订阅升级链接。"
               }
             }
           }
@@ -2620,6 +4448,9 @@
           "messages"
         ],
         "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ProviderFilter"
+          },
           "model": {
             "type": "string",
             "description": "模型 ID",
@@ -2987,6 +4818,9 @@
           "model"
         ],
         "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ProviderFilter"
+          },
           "model": {
             "type": "string"
           },
@@ -3156,6 +4990,9 @@
           "max_tokens"
         ],
         "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ProviderFilter"
+          },
           "model": {
             "type": "string",
             "example": "claude-3-opus-20240229"
@@ -3807,6 +5644,326 @@
           }
         }
       },
+      "SystemOneRequest": {
+        "type": "object",
+        "required": [
+          "state",
+          "model",
+          "questions"
+        ],
+        "description": "与 TypeSafe 官方 API 一致的请求体。未知顶层字段被丢弃。",
+        "properties": {
+          "state": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ],
+            "description": "被评估的内容:纯文本,或聊天记录/业务记录等结构化数据。"
+          },
+          "model": {
+            "type": "string",
+            "description": "公开模型名,见本操作说明。",
+            "example": "jev-latest"
+          },
+          "questions": {
+            "type": "object",
+            "minProperties": 1,
+            "description": "问题表,键由调用方自定,answers 以同一键返回。",
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/SystemOneNoulQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/SystemOneChoiceQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/SystemOneScoreQuestion"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "type",
+                "mapping": {
+                  "noul": "#/components/schemas/SystemOneNoulQuestion",
+                  "choice": "#/components/schemas/SystemOneChoiceQuestion",
+                  "score": "#/components/schemas/SystemOneScoreQuestion"
+                }
+              }
+            }
+          },
+          "lang": {
+            "type": "string",
+            "nullable": true,
+            "description": "仅转发给自托管兼容渠道(语言提示);TypeSafe 渠道不发送。"
+          },
+          "min_confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "仅转发给自托管兼容渠道;低于阈值的答案带 low_confidence=true,答案本身仍返回。"
+          },
+          "max_len": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "仅转发给自托管兼容渠道:state 截断窗口(token)。"
+          },
+          "head_max_len": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "仅转发给自托管兼容渠道:每个问题头部窗口(token)。"
+          }
+        }
+      },
+      "SystemOneNoulQuestion": {
+        "type": "object",
+        "description": "是非题,返回为真的概率。",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "noul"
+            ]
+          },
+          "instructions": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ],
+            "description": "要判断的问题。可为字符串,或把问题与其引用的数据拆成对象/数组(用反引号按字段名引用)。自托管渠道要求非空。"
+          },
+          "criteria": {
+            "type": "object",
+            "description": "可选:各取值的含义。",
+            "properties": {
+              "true": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object"
+                  },
+                  {
+                    "type": "array",
+                    "items": {}
+                  }
+                ]
+              },
+              "false": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object"
+                  },
+                  {
+                    "type": "array",
+                    "items": {}
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "SystemOneChoiceQuestion": {
+        "type": "object",
+        "description": "单选题,返回所选项与完整概率分布。",
+        "required": [
+          "type",
+          "criteria"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "choice"
+            ]
+          },
+          "instructions": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ],
+            "description": "要判断的问题。可为字符串,或把问题与其引用的数据拆成对象/数组(用反引号按字段名引用)。自托管渠道要求非空。"
+          },
+          "criteria": {
+            "type": "object",
+            "description": "选项 -> 说明(可为 null)。TypeSafe 上限 255 项;自托管渠道每题至多 100 项。",
+            "additionalProperties": {
+              "nullable": true
+            }
+          }
+        }
+      },
+      "SystemOneScoreQuestion": {
+        "type": "object",
+        "description": "评分题,返回按概率加权的分值(可落在两级之间)。",
+        "required": [
+          "type",
+          "criteria"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "score"
+            ]
+          },
+          "instructions": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object"
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ],
+            "description": "要判断的问题。可为字符串,或把问题与其引用的数据拆成对象/数组(用反引号按字段名引用)。自托管渠道要求非空。"
+          },
+          "criteria": {
+            "type": "array",
+            "minItems": 1,
+            "description": "按序排列的各级说明。TypeSafe 接受 2 至 10 级;自托管渠道至多 32 级。",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object"
+                },
+                {
+                  "type": "array",
+                  "items": {}
+                }
+              ]
+            }
+          }
+        }
+      },
+      "SystemOneAnswer": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "description": "一道题的答案,按上游原样透传,上游新增字段(如 answer_confidence、action、low_confidence)一并保留。noul 答案在 TypeSafe 渠道没有 confidence,自托管渠道有;两家 confidence 的算法不同,阈值不可互换。",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "noul",
+              "choice",
+              "score"
+            ]
+          },
+          "noul": {
+            "type": "number",
+            "description": "type=noul:为真的概率,0..1。"
+          },
+          "choice": {
+            "type": "string",
+            "description": "type=choice:概率最高的选项。"
+          },
+          "score": {
+            "type": "number",
+            "description": "type=score:概率加权分值。"
+          },
+          "legend": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "type=score:级别序号 -> 说明。"
+          },
+          "probabilities": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "type=choice/score:各选项或级别的概率。"
+          },
+          "confidence": {
+            "type": "number",
+            "description": "0..1。"
+          }
+        }
+      },
+      "SystemOneUsage": {
+        "type": "object",
+        "required": [
+          "input_tokens",
+          "output_tokens"
+        ],
+        "description": "计费只看 input_tokens,输出不计费。两类渠道的分词器不同,input_tokens 不可跨渠道比较。",
+        "properties": {
+          "input_tokens": {
+            "type": "integer"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "仅为 true 时出现:自托管渠道静默截断了过长的 state(TypeSafe 超限会直接报错)。"
+          }
+        }
+      },
+      "SystemOneResponse": {
+        "type": "object",
+        "required": [
+          "model",
+          "answers",
+          "usage"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "TypeSafe 渠道为上游返回的版本化 ID(如 jev-1.13.0);自托管渠道为调用方请求的公开模型名。"
+          },
+          "answers": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SystemOneAnswer"
+            }
+          },
+          "usage": {
+            "$ref": "#/components/schemas/SystemOneUsage"
+          }
+        }
+      },
       "ModerationRequest": {
         "type": "object",
         "required": [
@@ -4444,6 +6601,56 @@
       }
     },
     "responses": {},
+    "headers": {
+      "XRequestId": {
+        "description": "本次请求的关联 id。有合法的入站 X-Request-Id（8-36 位 [A-Za-z0-9._-]，上限对齐 audit_events.request_id 的 varchar(36) 列宽，超长值不回显只会被重新铸造）时原样回显，否则回退取 traceparent 的 32 位 trace id（恒 ≤36 位），都没有则由网关生成。成功/失败响应均有此头。GET /v1/generation?id=<此值> 可反查费用/供应商/用量。",
+        "schema": { "type": "string" }
+      },
+      "XModelProvider": {
+        "description": "服务本次请求的上游供应商名（如 openai、anthropic）。OpenAI 线非流式响应与任意 wire 的流式响应上必有；Claude/Gemini 原生非流式响应上不保证存在。",
+        "schema": { "type": "string" }
+      },
+      "XRateLimitLimit": {
+        "description": "命中的限流层级里最紧的那一档配置上限（放行响应与限流类 429 拒绝响应均有）。",
+        "schema": { "type": "integer" }
+      },
+      "XRateLimitRemaining": {
+        "description": "该层级当前窗口剩余可用次数，钳制到 >= 0。",
+        "schema": { "type": "integer" }
+      },
+      "XRateLimitReset": {
+        "description": "窗口重置时间（Unix 秒）。",
+        "schema": { "type": "integer" }
+      },
+      "XRateLimitScope": {
+        "description": "限流键所属主体：ip | key（网关 internal API key 桶）| user | token | tenant | model | account（entitlement 配额闸门）。ip/key 只出现在 /internal/* 与非中转路由上，唯一例外是 GET/DELETE /v1/responses/:response_id——它挂自己的 ip 键控 RS 桶，是唯一会发 ip 值的 /v1 路由（但走 abortWithOpenAiMessage,仍带 error.code,不是 rate-limit.go 的 keyed 拒绝点那种空 body）。",
+        "schema": { "type": "string" }
+      },
+      "XRateLimitType": {
+        "description": "限流维度：requests | rpm（每分钟请求数）| tpm（每分钟 token 数，同样以 429 强制执行；Remaining 按已结算用量计算，可能滞后一次尖峰）| concurrency | quota（entitlement 配额闸门）| cost（成本尖峰熔断）。",
+        "schema": { "type": "string" }
+      },
+      "XRequestCost": {
+        "description": "本次请求消耗的钱包配额（浮点数的字符串形式）。仅 OpenAI 线非流式响应携带。",
+        "schema": { "type": "string" }
+      },
+      "XQuotaRemaining": {
+        "description": "本次请求后调用方的剩余余额，单位同 X-Request-Cost。仅 OpenAI 线非流式响应携带。",
+        "schema": { "type": "string" }
+      },
+      "RetryAfter": {
+        "description": "建议等待多少秒后重试。携带已知恢复时间的 402/429/503 拒绝上出现。",
+        "schema": { "type": "integer" }
+      },
+      "XLurusTokenState": {
+        "description": "TokenAuth 拒绝时的判定。401 上取值 unknown（网关不认识这把 key）/ disabled（令牌被禁用）/ expired（令牌已过期）；503 上取值 lookup_failed（网关自身查库失败，不是对 key 的判定，读 Retry-After 后重试）。放在 hub 前面回放 401 到其它网关的桥接层只应在 unknown 时回放。",
+        "schema": { "type": "string", "enum": ["unknown", "disabled", "expired", "lookup_failed"] }
+      },
+      "XLurusAffinityKey": {
+        "description": "会话亲和性绑定的 HMAC 派生键。仅当本次请求携带可识别的会话来源（X-Session-Id 请求头 / OpenAI prompt_cache_key / Claude metadata.user_id）时才出现；一次性调用（无会话来源）不携带此头。可原样传给 DELETE /api/v2/admin/routing/affinity/{key} 清除该绑定。任何经 relay 主路径且带上述会话来源之一的路由都可能出现此头，不限于本文档逐条列出 headers 的端点（例如带 X-Session-Id 的 embeddings/images/rerank 请求）。",
+        "schema": { "type": "string" }
+      }
+    },
     "securitySchemes": {
       "BearerAuth": {
         "type": "http",
@@ -7132,7 +9339,24 @@
       }
     }
   },
-  "servers": [],
+  "x-lurus-enforcement-order": [
+    "StampRelayFormat",
+    "TokenAuth",
+    "PoolBalanceCheck",
+    "CostSpikeLimit",
+    "EntitlementCheck",
+    "ModelRequestRateLimit",
+    "BusinessRateLimit",
+    "RelayConcurrencyLimit",
+    "Distribute",
+    "BusinessModelRateLimit"
+  ],
+  "servers": [
+    {
+      "url": "https://hub.lurus.cn",
+      "description": "Production"
+    }
+  ],
   "security": [
     {
       "BearerAuth": []

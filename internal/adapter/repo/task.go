@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"time"
 
+	commonRelay "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	entity "github.com/LurusTech/lurus-hub/internal/domain/entity"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
-	commonRelay "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/taskopaque"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Subtypes aliased from the canonical definition in domain/entity/task.go
@@ -50,6 +54,12 @@ type Task struct {
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
+	// ProjectId/RequestId: see the identical-tag convention comment on
+	// entity.Task (domain/entity/task.go) — this is the struct AutoMigrate
+	// actually runs against (repo/main.go migrateDB registers &Task{}, this
+	// package's own type, not entity.Task).
+	ProjectId int    `json:"project_id" gorm:"not null;default:0"`
+	RequestId string `json:"request_id" gorm:"type:varchar(64);not null;default:'';index"`
 }
 
 func (t *Task) SetData(data any) {
@@ -62,7 +72,15 @@ func (t *Task) GetData(v any) error {
 	return err
 }
 
-func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) *Task {
+// InitTask builds the initial row for a newly-submitted async task.
+//
+// c carries the caller's live gin.Context so the task can be tagged with
+// the request id (common.RequestIdKey) it was submitted under — a
+// support/cost-attribution lookup key distinct from the upstream vendor's
+// own TaskID. It is optional (nil-safe): callers without a live request in
+// flight (currently only this repo's own unit tests) pass nil and get an
+// empty RequestId, matching the pre-migration-035 behaviour.
+func InitTask(c *gin.Context, platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) *Task {
 	properties := Properties{}
 	privateData := TaskPrivateData{}
 	if relayInfo != nil && relayInfo.ChannelMeta != nil {
@@ -87,6 +105,13 @@ func InitTask(platform constant.TaskPlatform, relayInfo *commonRelay.RelayInfo) 
 		Platform:    platform,
 		Properties:  properties,
 		PrivateData: privateData,
+		// ProjectId mirrors the log path's convention (SetupContextForToken
+		// -> RelayInfo.ProjectId -> RecordConsumeLogParams.ProjectId): the
+		// authenticated token's cost-attribution project, 0 when unassigned.
+		ProjectId: relayInfo.ProjectId,
+	}
+	if c != nil {
+		t.RequestId = c.GetString(common.RequestIdKey)
 	}
 	return t
 }
@@ -109,6 +134,12 @@ func TaskGetAllUserTask(userId int, startIdx int, num int, queryParams SyncTaskQ
 	}
 	if queryParams.Platform != "" {
 		query = query.Where("platform = ?", queryParams.Platform)
+	}
+	if queryParams.ProjectID != "" {
+		query = query.Where("project_id = ?", queryParams.ProjectID)
+	}
+	if queryParams.RequestID != "" {
+		query = query.Where("request_id = ?", queryParams.RequestID)
 	}
 	if queryParams.StartTimestamp != 0 {
 		// 假设您已将前端传来的时间戳转换为数据库所需的时间格式，并处理了时间戳的验证和解析
@@ -156,11 +187,29 @@ func TaskGetAllTasks(startIdx int, num int, queryParams SyncTaskQueryParams) []*
 	if queryParams.Status != "" {
 		query = query.Where("status = ?", queryParams.Status)
 	}
+	if queryParams.ProjectID != "" {
+		query = query.Where("project_id = ?", queryParams.ProjectID)
+	}
+	if queryParams.RequestID != "" {
+		query = query.Where("request_id = ?", queryParams.RequestID)
+	}
 	if queryParams.StartTimestamp != 0 {
 		query = query.Where("submit_time >= ?", queryParams.StartTimestamp)
 	}
 	if queryParams.EndTimestamp != 0 {
 		query = query.Where("submit_time <= ?", queryParams.EndTimestamp)
+	}
+	// TenantID: this table has no tenant_id column of its own (unlike
+	// channel/user/redemption), so the scope reaches the tenant through the
+	// owning user row, same precedent as applyQuotaData (repo/usedata.go).
+	// GetAllTask only sets TenantScoped for non-root admins. The gate is
+	// TenantScoped, not TenantID != "" — a non-root caller with no tenant on
+	// its session (TenantID == "") still gets the WHERE clause, and an empty
+	// string matches no user row, so the page comes back empty instead of
+	// falling through to every tenant's rows (fail-closed, operator
+	// decision cycle-11 L8 repair).
+	if queryParams.TenantScoped {
+		query = query.Where("user_id IN (SELECT id FROM users WHERE tenant_id = ?)", queryParams.TenantID)
 	}
 
 	// 获取数据
@@ -205,6 +254,21 @@ func GetByTaskId(userId int, taskId string) (*Task, bool, error) {
 	var err error
 	err = DB.Where("user_id = ? and task_id = ?", userId, taskId).
 		First(&task).Error
+	exist, err := RecordExist(err)
+	if err != nil {
+		return nil, false, err
+	}
+	return task, exist, err
+}
+
+// GetOwnedTaskByID loads a tasks row by primary key scoped to the requester.
+// Used by GET /v1/tasks/:opaque (TokenHub 0.10) after taskopaque.Decode.
+func GetOwnedTaskByID(userId int, id int64) (*Task, bool, error) {
+	if id <= 0 {
+		return nil, false, nil
+	}
+	var task *Task
+	err := DB.Where("user_id = ? and id = ?", userId, id).First(&task).Error
 	exist, err := RecordExist(err)
 	if err != nil {
 		return nil, false, err
@@ -325,11 +389,29 @@ func TaskCountAllTasks(queryParams SyncTaskQueryParams) int64 {
 	if queryParams.Status != "" {
 		query = query.Where("status = ?", queryParams.Status)
 	}
+	// ProjectID/RequestID must mirror the same filters TaskGetAllTasks
+	// applies above (cycle-8 L10) — otherwise the admin list's reported
+	// "total" would count unfiltered rows while the page itself only shows
+	// the filtered ones.
+	if queryParams.ProjectID != "" {
+		query = query.Where("project_id = ?", queryParams.ProjectID)
+	}
+	if queryParams.RequestID != "" {
+		query = query.Where("request_id = ?", queryParams.RequestID)
+	}
 	if queryParams.StartTimestamp != 0 {
 		query = query.Where("submit_time >= ?", queryParams.StartTimestamp)
 	}
 	if queryParams.EndTimestamp != 0 {
 		query = query.Where("submit_time <= ?", queryParams.EndTimestamp)
+	}
+	// TenantID/TenantScoped must mirror TaskGetAllTasks above, same
+	// reasoning as the ProjectID/RequestID comment a few lines up —
+	// otherwise the admin list's reported "total" would count every
+	// tenant's rows (or, for a scoped-but-tenantless caller, every row too)
+	// while the page itself only shows one tenant's or none.
+	if queryParams.TenantScoped {
+		query = query.Where("user_id IN (SELECT id FROM users WHERE tenant_id = ?)", queryParams.TenantID)
 	}
 	_ = query.Count(&total).Error
 	return total
@@ -351,6 +433,16 @@ func TaskCountAllUserTask(userId int, queryParams SyncTaskQueryParams) int64 {
 	if queryParams.Platform != "" {
 		query = query.Where("platform = ?", queryParams.Platform)
 	}
+	// ProjectID/RequestID mirror TaskGetAllUserTask above; combined with the
+	// user_id scope this query already carries, a project the caller does
+	// not own yields a 0 total (fail-closed) rather than needing a separate
+	// ownership check.
+	if queryParams.ProjectID != "" {
+		query = query.Where("project_id = ?", queryParams.ProjectID)
+	}
+	if queryParams.RequestID != "" {
+		query = query.Where("request_id = ?", queryParams.RequestID)
+	}
 	if queryParams.StartTimestamp != 0 {
 		query = query.Where("submit_time >= ?", queryParams.StartTimestamp)
 	}
@@ -365,6 +457,9 @@ func (t *Task) ToOpenAIVideo() *dto.OpenAIVideo {
 	openAIVideo.ID = t.TaskID
 	openAIVideo.Status = t.Status.ToVideoStatus()
 	openAIVideo.Model = t.Properties.OriginModelName
+	if t.ID > 0 {
+		openAIVideo.SetMetadata("opaque_id", taskopaque.Encode(t.ID))
+	}
 	openAIVideo.SetProgressStr(t.Progress)
 	openAIVideo.CreatedAt = t.CreatedAt
 	openAIVideo.CompletedAt = t.UpdatedAt

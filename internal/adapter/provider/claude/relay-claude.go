@@ -2,18 +2,19 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider/openrouter"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
-	"github.com/LurusTech/lurus-hub/internal/adapter/provider/openrouter"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
-	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/model_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
@@ -249,7 +250,9 @@ func RequestOpenAI2ClaudeMessage(c *gin.Context, textRequest dto.GeneralOpenAIRe
 	}
 	for i, message := range textRequest.Messages {
 		if message.Role == "" {
-			textRequest.Messages[i].Role = "user"
+			// message 是 range 拷贝，两侧都要写，否则下游拿到的仍是空 role
+			message.Role = "user"
+			textRequest.Messages[i].Role = message.Role
 		}
 		fmtMessage := dto.Message{
 			Role:    message.Role,
@@ -410,6 +413,11 @@ func RequestOpenAI2ClaudeMessage(c *gin.Context, textRequest dto.GeneralOpenAIRe
 		claudeRequest.System = systemMessages
 	}
 
+	// response_format after the system blocks: json_object appends to them.
+	if err := applyResponseFormat(textRequest.ResponseFormat, &claudeRequest); err != nil {
+		return nil, err
+	}
+
 	claudeRequest.Prompt = ""
 	claudeRequest.Messages = claudeMessages
 	return &claudeRequest, nil
@@ -437,6 +445,9 @@ func StreamResponseClaude2OpenAI(reqMode int, claudeResponse *dto.ClaudeResponse
 		}
 	} else {
 		if claudeResponse.Type == "message_start" {
+			if claudeResponse.Message == nil {
+				return nil
+			}
 			response.Id = claudeResponse.Message.Id
 			response.Model = claudeResponse.Message.Model
 			//claudeUsage = &claudeResponse.Message.Usage
@@ -586,6 +597,17 @@ type ClaudeResponseInfo struct {
 	ResponseText strings.Builder
 	Usage        *dto.Usage
 	Done         bool
+	// WebSearchRequests is the G2 streaming counterpart of the non-streaming
+	// claude_web_search_requests context key set in HandleClaudeResponseData
+	// (below). Populated by FormatClaudeResponseInfo from
+	// ClaudeUsage.ServerToolUse.WebSearchRequests, which Anthropic may report
+	// on either the message_start or the message_delta event (grepped: no
+	// documented guarantee of which, so both arms below feed this field) —
+	// kept as a running max rather than last-write-wins so a later event that
+	// omits server_tool_use (a zero value, since the field is a pointer that
+	// may simply be nil on that event) cannot erase a count a prior event
+	// already reported.
+	WebSearchRequests int
 }
 
 func FormatClaudeResponseInfo(requestMode int, claudeResponse *dto.ClaudeResponse, oaiResponse *dto.ChatCompletionsStreamResponse, claudeInfo *ClaudeResponseInfo) bool {
@@ -593,6 +615,10 @@ func FormatClaudeResponseInfo(requestMode int, claudeResponse *dto.ClaudeRespons
 		claudeInfo.ResponseText.WriteString(claudeResponse.Completion)
 	} else {
 		if claudeResponse.Type == "message_start" {
+			// message / usage 都是 omitempty 可选字段，缺失时按未知事件处理
+			if claudeResponse.Message == nil || claudeResponse.Message.Usage == nil {
+				return false
+			}
 			claudeInfo.ResponseId = claudeResponse.Message.Id
 			claudeInfo.Model = claudeResponse.Message.Model
 
@@ -603,7 +629,13 @@ func FormatClaudeResponseInfo(requestMode int, claudeResponse *dto.ClaudeRespons
 			claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Message.Usage.GetCacheCreation5mTokens()
 			claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Message.Usage.GetCacheCreation1hTokens()
 			claudeInfo.Usage.CompletionTokens = claudeResponse.Message.Usage.OutputTokens
+			if stu := claudeResponse.Message.Usage.ServerToolUse; stu != nil && stu.WebSearchRequests > claudeInfo.WebSearchRequests {
+				claudeInfo.WebSearchRequests = stu.WebSearchRequests
+			}
 		} else if claudeResponse.Type == "content_block_delta" {
+			if claudeResponse.Delta == nil {
+				return false
+			}
 			if claudeResponse.Delta.Text != nil {
 				claudeInfo.ResponseText.WriteString(*claudeResponse.Delta.Text)
 			}
@@ -612,12 +644,32 @@ func FormatClaudeResponseInfo(requestMode int, claudeResponse *dto.ClaudeRespons
 			}
 		} else if claudeResponse.Type == "message_delta" {
 			// 最终的usage获取
-			if claudeResponse.Usage.InputTokens > 0 {
-				// 不叠加，只取最新的
-				claudeInfo.Usage.PromptTokens = claudeResponse.Usage.InputTokens
+			if usage := claudeResponse.Usage; usage != nil {
+				// message_delta usage counts are CUMULATIVE whole-message totals
+				// (Anthropic streaming guide); the official SDKs' accumulators
+				// (Python accumulate_event, TypeScript MessageStream) take
+				// message_start as the base and OVERWRITE a counter when the delta
+				// carries it, never add. input_tokens and the two cache counters
+				// are omitted when they do not apply — e.g. the server-tool case
+				// re-reports all three after message_start — so a present (>0)
+				// value replaces the message_start figure and an absent one keeps
+				// it. Our fields are int, so 0 and absent are indistinguishable;
+				// a genuine cumulative 0 cannot lower a non-zero start value.
+				if usage.InputTokens > 0 {
+					claudeInfo.Usage.PromptTokens = usage.InputTokens
+				}
+				if usage.CacheReadInputTokens > 0 {
+					claudeInfo.Usage.PromptTokensDetails.CachedTokens = usage.CacheReadInputTokens
+				}
+				if usage.CacheCreationInputTokens > 0 {
+					claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = usage.CacheCreationInputTokens
+				}
+				claudeInfo.Usage.CompletionTokens = usage.OutputTokens
+				claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
+				if stu := usage.ServerToolUse; stu != nil && stu.WebSearchRequests > claudeInfo.WebSearchRequests {
+					claudeInfo.WebSearchRequests = stu.WebSearchRequests
+				}
 			}
-			claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
-			claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
 
 			// 判断是否完整
 			claudeInfo.Done = true
@@ -651,7 +703,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		} else {
 			if claudeResponse.Type == "message_start" {
 				// message_start, 获取usage
-				info.UpstreamModelName = claudeResponse.Message.Model
+				if claudeResponse.Message != nil {
+					info.UpstreamModelName = claudeResponse.Message.Model
+				}
 			} else if claudeResponse.Type == "content_block_delta" {
 			} else if claudeResponse.Type == "message_delta" {
 			}
@@ -670,36 +724,6 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		}
 	}
 	return nil
-}
-
-func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, requestMode int) {
-
-	if requestMode == RequestModeCompletion {
-		claudeInfo.Usage = app.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-	} else {
-		if claudeInfo.Usage.PromptTokens == 0 {
-			//上游出错
-		}
-		if claudeInfo.Usage.CompletionTokens == 0 || !claudeInfo.Done {
-			if common.DebugEnabled {
-				common.SysLog("claude response usage is not complete, maybe upstream error")
-			}
-			claudeInfo.Usage = app.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, claudeInfo.Usage.PromptTokens)
-		}
-	}
-
-	if info.RelayFormat == types.RelayFormatClaude {
-		//
-	} else if info.RelayFormat == types.RelayFormatOpenAI {
-		if info.ShouldIncludeUsage {
-			response := helper.GenerateFinalUsageResponse(claudeInfo.ResponseId, claudeInfo.Created, info.UpstreamModelName, *claudeInfo.Usage)
-			err := helper.ObjectData(c, response)
-			if err != nil {
-				common.SysLog("send final response failed: " + err.Error())
-			}
-		}
-		helper.Done(c)
-	}
 }
 
 func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, requestMode int) (*dto.Usage, *types.NewAPIError) {
@@ -722,7 +746,23 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		return nil, err
 	}
 
-	HandleStreamFinalResponse(c, info, claudeInfo, requestMode)
+	// No message_delta and nothing delivered to the caller yet: fail over
+	// instead of answering in-band (nil would be recorded as breaker success).
+	// Runs before HandleStreamFinalResponse so nothing is written or billed;
+	// once frames have gone out that function keeps the in-band error.
+	if requestMode != RequestModeCompletion && !claudeInfo.Done {
+		if apiErr := helper.FailoverIncompleteStream(c, info); apiErr != nil {
+			return &dto.Usage{}, apiErr
+		}
+	}
+
+	if apiErr := handleStreamFinalResponse(c, info, claudeInfo, requestMode); apiErr != nil {
+		// The in-band frame is out and the caller was told the stream failed:
+		// nothing is billed (the error return skips settlement and the relay
+		// loop releases the pre-consumed quota) and the attempt counts as a
+		// breaker failure.
+		return &dto.Usage{}, apiErr
+	}
 	return claudeInfo.Usage, nil
 }
 
@@ -738,19 +778,30 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if requestMode == RequestModeCompletion {
 		claudeInfo.Usage = app.ResponseText2Usage(c, claudeResponse.Completion, info.UpstreamModelName, info.GetEstimatePromptTokens())
 	} else {
-		claudeInfo.Usage.PromptTokens = claudeResponse.Usage.InputTokens
-		claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
-		claudeInfo.Usage.TotalTokens = claudeResponse.Usage.InputTokens + claudeResponse.Usage.OutputTokens
-		claudeInfo.Usage.PromptTokensDetails.CachedTokens = claudeResponse.Usage.CacheReadInputTokens
-		claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = claudeResponse.Usage.CacheCreationInputTokens
-		claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Usage.GetCacheCreation5mTokens()
-		claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Usage.GetCacheCreation1hTokens()
+		// usage 是 omitempty 可选字段，上游返回成功结构但缺 usage 时不能直接解引用
+		usage := claudeResponse.Usage
+		if usage == nil {
+			return types.NewError(errors.New("upstream response missing usage"), types.ErrorCodeBadResponseBody)
+		}
+		claudeInfo.Usage.PromptTokens = usage.InputTokens
+		claudeInfo.Usage.CompletionTokens = usage.OutputTokens
+		claudeInfo.Usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+		claudeInfo.Usage.PromptTokensDetails.CachedTokens = usage.CacheReadInputTokens
+		claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = usage.CacheCreationInputTokens
+		claudeInfo.Usage.ClaudeCacheCreation5mTokens = usage.GetCacheCreation5mTokens()
+		claudeInfo.Usage.ClaudeCacheCreation1hTokens = usage.GetCacheCreation1hTokens()
 	}
 	var responseData []byte
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		openaiResponse := ResponseClaude2OpenAI(requestMode, &claudeResponse)
-		openaiResponse.Usage = *claudeInfo.Usage
+		// Display copy in OpenAI-wire semantics (prompt_tokens includes the
+		// cached slice; Anthropic input_tokens excludes it). Until 2026-09-02 the
+		// settlement record was copied verbatim, so an OpenAI-wire caller doing
+		// (prompt_tokens - cached_tokens) under-counted its uncached input by
+		// the whole cache read. claudeInfo.Usage (returned to settlement) keeps
+		// Anthropic semantics.
+		openaiResponse.Usage = claudeInfo.Usage.AsOpenAIWire()
 		responseData, err = json.Marshal(openaiResponse)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
@@ -759,8 +810,9 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		responseData = data
 	}
 
-	if claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
-		c.Set("claude_web_search_requests", claudeResponse.Usage.ServerToolUse.WebSearchRequests)
+	// completion 模式下上游不返回顶层 usage，此处必须判空
+	if usage := claudeResponse.Usage; usage != nil && usage.ServerToolUse != nil && usage.ServerToolUse.WebSearchRequests > 0 {
+		c.Set("claude_web_search_requests", usage.ServerToolUse.WebSearchRequests)
 	}
 
 	app.IOCopyBytesGracefully(c, httpResp, responseData)
@@ -789,52 +841,4 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 		return nil, handleErr
 	}
 	return claudeInfo.Usage, nil
-}
-
-func mapToolChoice(toolChoice any, parallelToolCalls *bool) *dto.ClaudeToolChoice {
-	var claudeToolChoice *dto.ClaudeToolChoice
-
-	// 处理 tool_choice 字符串值
-	if toolChoiceStr, ok := toolChoice.(string); ok {
-		switch toolChoiceStr {
-		case "auto":
-			claudeToolChoice = &dto.ClaudeToolChoice{
-				Type: "auto",
-			}
-		case "required":
-			claudeToolChoice = &dto.ClaudeToolChoice{
-				Type: "any",
-			}
-		case "none":
-			claudeToolChoice = &dto.ClaudeToolChoice{
-				Type: "none",
-			}
-		}
-	} else if toolChoiceMap, ok := toolChoice.(map[string]interface{}); ok {
-		// 处理 tool_choice 对象值
-		if function, ok := toolChoiceMap["function"].(map[string]interface{}); ok {
-			if toolName, ok := function["name"].(string); ok {
-				claudeToolChoice = &dto.ClaudeToolChoice{
-					Type: "tool",
-					Name: toolName,
-				}
-			}
-		}
-	}
-
-	// 处理 parallel_tool_calls
-	if parallelToolCalls != nil {
-		if claudeToolChoice == nil {
-			// 如果没有 tool_choice，但有 parallel_tool_calls，创建默认的 auto 类型
-			claudeToolChoice = &dto.ClaudeToolChoice{
-				Type: "auto",
-			}
-		}
-
-		// 设置 disable_parallel_tool_use
-		// 如果 parallel_tool_calls 为 true，则 disable_parallel_tool_use 为 false
-		claudeToolChoice.DisableParallelToolUse = !*parallelToolCalls
-	}
-
-	return claudeToolChoice
 }

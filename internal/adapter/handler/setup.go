@@ -2,11 +2,11 @@ package handler
 
 import (
 	"time"
+	"unicode/utf8"
 
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
-	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -34,12 +34,9 @@ func GetSetup(c *gin.Context) {
 		return
 	}
 	setup.RootInit = repo.RootUserExists()
-	if common.UsingMySQL {
-		setup.DatabaseType = "mysql"
-	}
-	if common.UsingPostgreSQL {
-		setup.DatabaseType = "postgres"
-	}
+	// Runtime is PG-only (2026-06); the SQLite arm exists only for the
+	// hermetic glebarez unit-test tier.
+	setup.DatabaseType = "postgres"
 	if common.UsingSQLite {
 		setup.DatabaseType = "sqlite"
 	}
@@ -84,7 +81,9 @@ func PostSetup(c *gin.Context) {
 
 	// If root doesn't exist, create the initial admin account
 	if !rootExists {
-		if len(req.Username) == 0 || len(req.Username) > 12 {
+		// 按字符（rune）计数，与提示语的“1-12 个字符”一致；len() 数的是
+		// UTF-8 字节，5 个汉字（15 字节）会被误判超长。
+		if n := utf8.RuneCountInString(req.Username); n == 0 || n > 12 {
 			c.JSON(200, gin.H{
 				"success": false,
 				"message": "用户名长度必须在1-12个字符之间",
@@ -114,11 +113,13 @@ func PostSetup(c *gin.Context) {
 		}
 	}
 
-	// Set operation modes
-	operation_setting.SelfUseModeEnabled = req.SelfUseModeEnabled
-	operation_setting.DemoSiteEnabled = req.DemoSiteEnabled
-
-	// Save operation modes to database for persistence
+	// Save operation modes to database for persistence.
+	//
+	// repo.UpdateOption persists the row AND applies it to the in-memory
+	// setting through updateOptionMap, so assigning
+	// operation_setting.SelfUseModeEnabled / .DemoSiteEnabled directly here
+	// (as this used to, on the two statements above these) was duplicate state
+	// with a second writer — see repo's TestOptionOwnedGlobalsHaveOneWriter.
 	err = repo.UpdateOption("SelfUseModeEnabled", boolToString(req.SelfUseModeEnabled))
 	if err != nil {
 		c.JSON(200, gin.H{

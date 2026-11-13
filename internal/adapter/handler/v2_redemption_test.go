@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 )
 
@@ -18,9 +19,9 @@ func TestRedeemCodeV2_InvalidFormat(t *testing.T) {
 	defer ctx.Cleanup()
 
 	invalidCodes := []string{
-		"short",                     // Too short
+		"short", // Too short
 		"this-is-way-too-long-for-a-redemption-code-32chars", // Too long
-		"",                          // Empty
+		"",                                    // Empty
 		"12345678901234567890123456789012345", // 35 chars (not 32)
 	}
 
@@ -92,7 +93,55 @@ func TestRedeemCodeV2_AlreadyRedeemed(t *testing.T) {
 
 	// Second redemption should fail
 	w = V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPost, "/api/v2/test-tenant/redeem", body, nil)
-	AssertV2Status(t, w, http.StatusBadRequest)
+	resp := AssertV2Error(t, w, http.StatusBadRequest)
+	// cycle13 L3: the response now carries a machine-readable error_code
+	// alongside the (Chinese, switch-contract-pinned) message text, so a v2
+	// console/API caller doesn't have to string-match the message to tell an
+	// already-used code apart from an expired or cross-tenant one.
+	if code, _ := resp["error_code"].(string); code != repo.RedemptionErrorCodeUsed {
+		t.Errorf("error_code = %q, want %q; body: %s", code, repo.RedemptionErrorCodeUsed, w.Body.String())
+	}
+	if msg, _ := resp["message"].(string); !strings.Contains(msg, "已使用") {
+		t.Errorf("message = %q, want it to contain the switch-classifier substring '已使用'", msg)
+	}
+}
+
+// TestRedeemCodeV2_RawDBErrorReturnsGenericMessage is the v2 sibling of
+// switch_redeem_test.go's TestSwitchRedeemAnonymous_RawDBErrorSanitized:
+// before cycle13 L3, RedeemCodeV2 echoed repo.Redeem's error verbatim
+// (err.Error()) into the response body — for a genuine transaction/driver
+// failure that included raw SQL error text (column/constraint names). It now
+// goes through repo.RedemptionErrorMessage like the other two redeem
+// handlers, so the caller only ever sees the fixed, safe fallback text.
+func TestRedeemCodeV2_RawDBErrorReturnsGenericMessage(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	redemption := SeedV2Redemption(t, ctx, ctx.AdminUser.Id)
+
+	// Break users.quota so repo.Redeem's `UPDATE users SET quota = quota + ?`
+	// fails with a raw driver error instead of one of its sentinels.
+	if err := ctx.DB.Exec(`ALTER TABLE users DROP COLUMN quota`).Error; err != nil {
+		t.Fatalf("drop quota column: %v", err)
+	}
+
+	body := map[string]string{"code": redemption.Key}
+	w := V2RequestAsUser(ctx, ctx.NormalUser, http.MethodPost, "/api/v2/test-tenant/redeem", body, nil)
+	// A hub-side fault is a 500 (redemptionFailureStatus), not the 400 a
+	// mistyped code gets.
+	resp := AssertV2Error(t, w, http.StatusInternalServerError)
+
+	msg, _ := resp["message"].(string)
+	if msg != repo.ErrRedemptionFailed.Error() {
+		t.Errorf("message = %q, want the generic fallback %q", msg, repo.ErrRedemptionFailed.Error())
+	}
+	lower := strings.ToLower(msg)
+	if strings.Contains(msg, "quota") || strings.Contains(lower, "column") || strings.Contains(lower, "sql") {
+		t.Errorf("message leaks raw DB error text: %q", msg)
+	}
+	if code, _ := resp["error_code"].(string); code != repo.RedemptionErrorCodeFailed {
+		t.Errorf("error_code = %q, want %q", code, repo.RedemptionErrorCodeFailed)
+	}
 }
 
 func TestRedeemCodeV2_NonexistentCode(t *testing.T) {
@@ -398,6 +447,55 @@ func TestDeleteRedemptionV2_NotFound(t *testing.T) {
 	if msg, ok := resp["message"].(string); ok {
 		if msg != "Redemption code not found" {
 			t.Errorf("unexpected error message: %s", msg)
+		}
+	}
+}
+
+// TestListRedemptionsV2_CrossTenantIsolation guards against the pre-fix bug
+// where ListRedemptionsV2 called repo.GetAllRedemptions (no tenant filter)
+// and admins of any tenant could enumerate codes belonging to other tenants.
+// Also asserts the response excludes view-struct forbidden fields.
+func TestListRedemptionsV2_CrossTenantIsolation(t *testing.T) {
+	ctx := SetupV2TestRouter(t)
+	defer ctx.Cleanup()
+
+	SeedV2Redemption(t, ctx, ctx.AdminUser.Id)
+
+	other := &repo.Redemption{
+		UserId:      ctx.AdminUser.Id,
+		TenantId:    "other-tenant-xyz",
+		Key:         common.GetRandomString(32),
+		Name:        "Cross-tenant code",
+		Quota:       100000,
+		Status:      common.RedemptionCodeStatusEnabled,
+		CreatedTime: common.GetTimestamp(),
+	}
+	if err := repo.RedemptionInsert(other); err != nil {
+		t.Fatalf("failed to seed cross-tenant redemption: %v", err)
+	}
+
+	w := V2RequestAsUser(ctx, ctx.AdminUser, http.MethodGet, "/api/v2/test-tenant/redemptions", nil, []string{"admin"})
+	resp := AssertV2Success(t, w)
+	data := resp["data"].(map[string]interface{})
+
+	total := int(data["total"].(float64))
+	if total != 1 {
+		t.Errorf("expected 1 redemption (tenant-scoped), got %d — possible cross-tenant leak", total)
+	}
+
+	redemptions := data["redemptions"].([]interface{})
+	if len(redemptions) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(redemptions))
+	}
+
+	r := redemptions[0].(map[string]interface{})
+	if name, _ := r["name"].(string); name == "Cross-tenant code" {
+		t.Error("cross-tenant redemption leaked into the response")
+	}
+
+	for _, f := range []string{"user_id", "tenant_id", "deleted_at", "DeletedAt"} {
+		if _, exists := r[f]; exists {
+			t.Errorf("forbidden field %q leaked through view struct", f)
 		}
 	}
 }

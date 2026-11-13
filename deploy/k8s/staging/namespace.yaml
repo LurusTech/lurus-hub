@@ -1,8 +1,0 @@
-# Staging namespace for pre-production testing
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: lurus-staging
-  labels:
-    app.kubernetes.io/part-of: lurus
-    environment: staging

@@ -39,7 +39,18 @@ const (
 	ScopeAuthLogin         = "auth:login"
 	ScopeLogRead           = "log:read"
 	ScopeModelRead         = "model:read"
-	ScopeAll               = "*"
+	// ScopeProvisioning gates the Provisioning API (POST/DELETE under
+	// /internal/v1/provisioning/tenants/:slug/keys) that Resellers use to
+	// programmatically issue or revoke sub-tenant token keys. See
+	// ADR 2026-05-18 (tenant-credit-pool) §4.2 and §7 risk #5.
+	ScopeProvisioning = "provisioning"
+	// ScopeAdmin gates platform admin operations under /internal/admin/* that
+	// are not covered by a narrower data scope (e.g. backfill jobs). It is
+	// strictly narrower than ScopeAll: an admin key cannot read/write user,
+	// quota, balance, etc. unless those scopes are also granted. Existing
+	// ScopeAll keys still satisfy this requirement via HasScope's wildcard.
+	ScopeAdmin = "admin"
+	ScopeAll   = "*"
 )
 
 // GetScopes returns the list of scopes for this key (JSON array format)

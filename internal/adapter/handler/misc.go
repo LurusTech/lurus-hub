@@ -3,10 +3,11 @@ package handler
 import (
 	"net/http"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
-	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/lifecycle"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/console_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
@@ -35,19 +36,47 @@ func TestStatus(c *gin.Context) {
 }
 
 func GetStatus(c *gin.Context) {
+	// Draining gate (cycle 13 L11). /api/status is what both the startupProbe
+	// and the livenessProbe hit (deploy/k8s/r6-stage/deployment.yaml,
+	// deploy/k8s/r6-uat/deployment.yaml), so once main.go's shutdown goroutine
+	// has marked the process draining this has to answer 503 the same way the
+	// readiness endpoint GetHealthDetailed does. It sits ahead of the settings
+	// reads below for the same reason it does there: a draining pod should not
+	// take the OptionMap RLock or touch the DB before saying it is on the way
+	// out. A liveness 503 inside the drain window does not add a restart —
+	// SIGTERM has already been delivered; see doc/runbook/graceful-drain.md.
+	if lifecycle.IsDraining() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"status":  "draining",
+		})
+		return
+	}
 
 	cs := console_setting.GetConsoleSetting()
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
 
-	passkeySetting := system_setting.GetPasskeySettings()
 	legalSetting := system_setting.GetLegalSettings()
 
 	// Build login methods configuration for frontend
+	//
+	// password.enabled / registration_enabled are hardcoded to false here,
+	// independent of common.PasswordLoginEnabled / common.PasswordRegisterEnabled
+	// (which stay untouched — they still round-trip through repo/option.go's
+	// OptionMap into the admin Settings UI, so flipping their defaults would
+	// change stored-config semantics beyond this status projection). This
+	// repo has no password login/registration routes: grepping
+	// internal/adapter/handler/router/*.go (excluding _test.go) for
+	// "register"/"login" finds exactly two registered routes — GET
+	// /:tenant_slug/auth/login (OIDC redirect, api-v2-router.go:35) and GET
+	// /auth/zita-login (Zita SDK login, api-v2-router.go:47) — and no POST
+	// /api/user/register or POST /api/user/login handler anywhere. Re-run
+	// that grep before ever flipping this back to true.
 	loginMethods := gin.H{
 		"password": gin.H{
-			"enabled":              common.PasswordLoginEnabled,
-			"registration_enabled": common.PasswordRegisterEnabled,
+			"enabled":              false,
+			"registration_enabled": false,
 		},
 		"sms": gin.H{
 			"enabled":       common.SMSEnabled,
@@ -80,18 +109,34 @@ func GetStatus(c *gin.Context) {
 			"client_id":              system_setting.GetOIDCSettings().ClientId,
 			"authorization_endpoint": system_setting.GetOIDCSettings().AuthorizationEndpoint,
 		},
-		"passkey": gin.H{
-			"enabled":           passkeySetting.Enabled,
-			"display_name":      passkeySetting.RPDisplayName,
-			"rp_id":             passkeySetting.RPID,
-			"user_verification": passkeySetting.UserVerification,
+		// The v2 console signs in through the platform identity SDK
+		// (GET /api/v2/auth/zita-login), which is wired only where the
+		// deployment supplies the identity endpoint and session secret. The
+		// oidc entry above reports the legacy OAuth settings block, which
+		// reads false even on the deployment whose SSO works, so it cannot
+		// answer "can this instance sign anyone in?". This can: it is the
+		// same nil check the login handler itself makes.
+		"sso": gin.H{
+			"enabled": common.ZitaClient != nil,
+		},
+		// The e2e bridge is the only other way in. It exists only where
+		// E2E_BRIDGE_TOKEN is set — the route is not registered otherwise —
+		// so the console can use this to decide whether offering its
+		// token sign-in form would lead anywhere.
+		"bridge": gin.H{
+			"enabled": BridgeEnabled(),
 		},
 	}
 
 	// Build registration configuration
+	//
+	// mode/enabled are hardcoded closed for the same reason as password
+	// login above — see the comment on loginMethods.password. common.RegisterEnabled
+	// / common.RegistrationMode are left untouched (same OptionMap round-trip
+	// concern).
 	registration := gin.H{
-		"mode":                        common.RegistrationMode,
-		"enabled":                     common.RegisterEnabled,
+		"mode":                        common.RegistrationModeClosed,
+		"enabled":                     false,
 		"email_verification_required": common.EmailVerificationEnabled,
 		"phone_verification_required": common.RegistrationMode == common.RegistrationModePhoneVerified,
 		"invite_code_required":        common.InviteCodeRequired || common.RegistrationMode == common.RegistrationModeInviteOnly,
@@ -100,8 +145,7 @@ func GetStatus(c *gin.Context) {
 
 	// Build security configuration
 	security := gin.H{
-		"2fa_available":     true,
-		"passkey_available": passkeySetting.Enabled,
+		"2fa_available": true,
 	}
 
 	data := gin.H{
@@ -160,13 +204,6 @@ func GetStatus(c *gin.Context) {
 		"oidc_enabled":                system_setting.GetOIDCSettings().Enabled,
 		"oidc_client_id":              system_setting.GetOIDCSettings().ClientId,
 		"oidc_authorization_endpoint": system_setting.GetOIDCSettings().AuthorizationEndpoint,
-		"passkey_login":               passkeySetting.Enabled,
-		"passkey_display_name":        passkeySetting.RPDisplayName,
-		"passkey_rp_id":               passkeySetting.RPID,
-		"passkey_origins":             passkeySetting.Origins,
-		"passkey_allow_insecure":      passkeySetting.AllowInsecureOrigin,
-		"passkey_user_verification":   passkeySetting.UserVerification,
-		"passkey_attachment":          passkeySetting.AttachmentPreference,
 		"setup":                       constant.IsSetup(),
 		"user_agreement_enabled":      legalSetting.UserAgreement != "",
 		"privacy_policy_enabled":      legalSetting.PrivacyPolicy != "",
@@ -175,8 +212,8 @@ func GetStatus(c *gin.Context) {
 		// New: Frontend login configuration
 		"login_methods": loginMethods,
 		"registration":  registration,
-		"security":           security,
-		"sms_enabled":        common.SMSEnabled,
+		"security":      security,
+		"sms_enabled":   common.SMSEnabled,
 	}
 
 	// 根据启用状态注入可选内容
@@ -259,4 +296,3 @@ func GetHomePageContent(c *gin.Context) {
 	})
 	return
 }
-

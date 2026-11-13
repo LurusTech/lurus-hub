@@ -6,12 +6,12 @@ import (
 	"net/http"
 	"strings"
 
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
-	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-gonic/gin"
@@ -40,17 +40,29 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		c.Set("image_generation_call_size", responsesResponse.GetSize())
 	}
 
+	// Stash the vendor-minted response id (cycle-8 L7, tasks-plugins-12) so
+	// relay.ResponsesHelper's post-consume hook can pin it to the channel
+	// that produced it in response_registry — read only if non-empty; an
+	// empty id (a vendor that omitted it, or a parse that left the zero
+	// value) must not become a registry row nobody can address later.
+	if responsesResponse.ID != "" {
+		c.Set("responses_id", responsesResponse.ID)
+	}
+
 	// 写入新的 response body
 	app.IOCopyBytesGracefully(c, resp, responseBody)
 
 	// compute usage
-	usage := dto.Usage{}
+	// OpenAI-wire semantics: the responses API's input_tokens INCLUDES
+	// input_tokens_details.cached_tokens (see dto.Usage.PromptTokensIncludeCached).
+	usage := dto.Usage{PromptTokensIncludeCached: true}
 	if responsesResponse.Usage != nil {
 		usage.PromptTokens = responsesResponse.Usage.InputTokens
 		usage.CompletionTokens = responsesResponse.Usage.OutputTokens
 		usage.TotalTokens = responsesResponse.Usage.TotalTokens
 		if responsesResponse.Usage.InputTokensDetails != nil {
 			usage.PromptTokensDetails.CachedTokens = responsesResponse.Usage.InputTokensDetails.CachedTokens
+			usage.PromptTokensDetails.CachedCreationTokens = responsesResponse.Usage.InputTokensDetails.CachedCreationTokens
 		}
 	}
 	if info == nil || info.ResponsesUsageInfo == nil || info.ResponsesUsageInfo.BuiltInTools == nil {
@@ -68,6 +80,62 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	return &usage, nil
 }
 
+// OaiResponsesCompactHandler handles the upstream response for POST
+// /v1/responses/compact (cycle-8 L6, wire-formats-03). Unlike
+// OaiResponsesHandler — which fully unmarshals the vendor's response into
+// dto.OpenAIResponsesResponse, inspects it for built-in tool calls/image
+// generation, and re-serves it from that struct — this endpoint's contract
+// is pass-through: the caller gets the vendor's response bytes back
+// unmodified, UNLESS the vendor carried a typed error in-band inside an
+// HTTP 200 body (some OpenAI-compatible vendors do this), in which case the
+// call is refused as an upstream error and never billed — the same guard
+// OaiResponsesHandler applies via OpenAIResponsesResponse.GetOpenAIError.
+// Usage is the only other field read, to bill the request. When the
+// vendor's response carries no usage object (or the body fails to parse —
+// forwarded regardless; a billing-estimate fallback must never block the
+// caller from seeing the vendor's own bytes), PromptTokens falls back to the
+// pre-request estimate and CompletionTokens to 0 — there is no way to
+// reconstruct output tokens from an opaque body.
+func OaiResponsesCompactHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	defer app.CloseResponseBodyGracefully(resp)
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+
+	var compactResp dto.OpenAIResponsesCompactionResponse
+	_ = common.Unmarshal(responseBody, &compactResp) // best-effort: only Usage/Error are read; the body is forwarded regardless of parse outcome
+
+	if oaiError := compactResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+		// A vendor error carried in-band inside a 200 must never be billed —
+		// return before the bytes are copied to the caller, matching the
+		// non-compact handler's guard above.
+		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	}
+
+	// write the vendor's bytes back to the caller verbatim — no re-marshal.
+	app.IOCopyBytesGracefully(c, resp, responseBody)
+
+	// OpenAI-wire semantics, same as OaiResponsesHandler: input_tokens
+	// INCLUDES input_tokens_details.cached_tokens.
+	usage := dto.Usage{PromptTokensIncludeCached: true}
+	if compactResp.Usage != nil {
+		usage.PromptTokens = compactResp.Usage.InputTokens
+		usage.CompletionTokens = compactResp.Usage.OutputTokens
+		usage.TotalTokens = compactResp.Usage.TotalTokens
+		if compactResp.Usage.InputTokensDetails != nil {
+			usage.PromptTokensDetails.CachedTokens = compactResp.Usage.InputTokensDetails.CachedTokens
+			usage.PromptTokensDetails.CachedCreationTokens = compactResp.Usage.InputTokensDetails.CachedCreationTokens
+		}
+	} else {
+		usage.PromptTokens = info.GetEstimatePromptTokens()
+		usage.CompletionTokens = 0
+		usage.TotalTokens = usage.PromptTokens
+	}
+	return &usage, nil
+}
+
 func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	if resp == nil || resp.Body == nil {
 		logger.LogError(c, "invalid response or response body")
@@ -76,8 +144,18 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	defer app.CloseResponseBodyGracefully(resp)
 
-	var usage = &dto.Usage{}
+	// OpenAI-wire semantics, same as the non-stream handler above.
+	var usage = &dto.Usage{PromptTokensIncludeCached: true}
 	var responseTextBuilder strings.Builder
+
+	// sawTerminal: the upstream ended the stream itself. The Responses wire has
+	// no [DONE]; its terminator is one of the typed events below (a bare
+	// [DONE], which some compatible vendors append, counts too — sawDone). A
+	// stream that stops without any of them was abandoned (idle timeout, reset,
+	// EOF) and, like the chat-completions handler, is neither billed nor
+	// presented as a normal end.
+	var sawTerminal bool
+	var sawDone bool
 
 	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
 
@@ -85,8 +163,33 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		var streamResponse dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err == nil {
 			sendResponsesStreamData(c, streamResponse, data)
+			// Stash the vendor-minted response id (cycle-8 L7,
+			// tasks-plugins-12) on the FIRST event that carries one — NOT
+			// only on "response.completed" (cycle-8 L7 repair round,
+			// findings B-F4/A-F2): a background+stream client
+			// (POST background:true + stream:true, exactly the flow GET
+			// exists to serve) that reads an early event
+			// (response.created/queued/in_progress, all of which already
+			// carry the same id) and then loses the connection before
+			// "response.completed" would otherwise leave no registry row —
+			// a 404 for a response the vendor did create and did bill.
+			// Every event carries the SAME id for one response, so
+			// re-stashing on a later event is a harmless no-op, not a
+			// correctness risk. Stream twin of OaiResponsesHandler's stash
+			// above — same "non-empty only" guard.
+			if streamResponse.Response != nil && streamResponse.Response.ID != "" {
+				c.Set("responses_id", streamResponse.Response.ID)
+			}
 			switch streamResponse.Type {
-			case "response.completed":
+			case "error":
+				// Upstream's own in-band error was already forwarded above;
+				// the stream is over from the wire's point of view.
+				sawTerminal = true
+			case "response.completed", "response.incomplete", "response.failed":
+				// All three end the response and may carry the final usage
+				// (incomplete = max_output_tokens / content filter hit, which
+				// the upstream bills); the caller already holds the event.
+				sawTerminal = true
 				if streamResponse.Response != nil {
 					if streamResponse.Response.Usage != nil {
 						if streamResponse.Response.Usage.InputTokens != 0 {
@@ -100,6 +203,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 						}
 						if streamResponse.Response.Usage.InputTokensDetails != nil {
 							usage.PromptTokensDetails.CachedTokens = streamResponse.Response.Usage.InputTokensDetails.CachedTokens
+							usage.PromptTokensDetails.CachedCreationTokens = streamResponse.Response.Usage.InputTokensDetails.CachedCreationTokens
 						}
 					}
 					if streamResponse.Response.HasImageGenerationCall() {
@@ -128,7 +232,23 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			logger.LogError(c, "failed to unmarshal stream response: "+err.Error())
 		}
 		return true
-	})
+	}, &sawDone)
+
+	// No terminal event: the upstream stopped mid-answer. Nothing is billed
+	// (the partial text used to be estimated into a charge and the stream ended
+	// as if it had completed). With nothing delivered yet the attempt fails
+	// over; once frames have gone out the caller gets the in-band error frame
+	// (the same OpenAI-wire shape the chat handler uses: the SDK raises on a
+	// frame carrying an "error" key). A caller that hung up gets nothing.
+	if !sawTerminal && !sawDone {
+		if apiErr := helper.FailoverIncompleteStream(c, info); apiErr != nil {
+			return &dto.Usage{}, apiErr
+		}
+		if helper.ClientListening(c, info) {
+			return &dto.Usage{PromptTokensIncludeCached: true}, helper.SurfaceIncompleteStream(c, info.RelayFormat, info)
+		}
+		return &dto.Usage{PromptTokensIncludeCached: true}, nil
+	}
 
 	if usage.CompletionTokens == 0 {
 		// 计算输出文本的 token 数量

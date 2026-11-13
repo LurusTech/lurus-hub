@@ -2,16 +2,16 @@
 
 Docker Compose stack for a single host. Brings up `lurus-api` + `postgres:15`
 (tuned) + `redis:7-alpine`, with resource caps that fit a 32-core / 32GB box.
-Auth is delegated to an existing Zitadel instance (e.g. `auth.lurus.cn`); no
+Auth is delegated to an existing OIDC provider (e.g. `identity.lurus.cn`); no
 HTTPS terminator — service listens on `IP:3000`.
 
 ## What you need
 
 - A 32c / 32g Linux box with Docker ≥ 24 and Docker Compose v2
 - The `lurus-hub` repo checked out
-- The sibling `lurus-proto-go` repo at `../shared/lurus-proto-go` (matches the
+- The sibling `lurus-entkit` repo at `../shared/lurus-entkit` (matches the
   `go.mod` replace directive)
-- Network reachability to your Zitadel issuer
+- Network reachability to your OIDC issuer
 
 ## 1. Configure
 
@@ -27,13 +27,13 @@ openssl rand -base64 32
 # → fill POSTGRES_PASSWORD
 ```
 
-Then fill in the Zitadel block. Two values come from the Zitadel console:
-`ZITADEL_CLIENT_ID`, `ZITADEL_CLIENT_SECRET`, `ZITADEL_DEFAULT_ORG_ID`.
+Then fill in the OIDC block. These values come from your OIDC provider console:
+`OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_DEFAULT_ORG_ID`.
 
 **Important**: register `http://<server-ip>:3000/api/v2/oauth/callback` as a
-Redirect URI on that Zitadel client, otherwise login will fail with
-`redirect_uri_mismatch`. Update `ZITADEL_REDIRECT_URI` and
-`ZITADEL_POST_LOGOUT_REDIRECT_URI` to use your real server IP.
+Redirect URI on that OIDC client, otherwise login will fail with
+`redirect_uri_mismatch`. Update `OIDC_REDIRECT_URI` and
+`OIDC_POST_LOGOUT_REDIRECT_URI` to use your real server IP.
 
 ## 2. Build the image
 
@@ -41,7 +41,7 @@ Redirect URI on that Zitadel client, otherwise login will fail with
 ./build.sh
 ```
 
-This stages `../shared/lurus-proto-go` into the build context, runs
+This stages `../shared/lurus-entkit` into the build context, runs
 `docker build`, and tags the result as `lurus-hub:local`. First run takes
 5–10 minutes (bun install + go build + Vite bundle).
 
@@ -69,7 +69,7 @@ curl -s http://localhost:3000/api/status | jq .
 xdg-open http://<server-ip>:3000 || echo "Open http://<server-ip>:3000 in a browser"
 ```
 
-The first time you hit `/`, you'll be redirected to Zitadel for login. After
+The first time you hit `/`, you'll be redirected to your OIDC provider for login. After
 the OAuth round-trip you land back on `/console`.
 
 ## 5. Operate
@@ -112,9 +112,9 @@ need different sizing.
 
 ## Troubleshooting
 
-**`COPY failed: lurus-proto-go: not found`**
+**`COPY failed: lurus-entkit: not found`**
 You ran `docker build` directly instead of `./build.sh`. Use the script — it
-stages the proto repo into the build context.
+stages the entitlement kit into the build context.
 
 **`go: ... proxy.golang.org ... i/o timeout`** (typical on servers in China)
 The default Go module proxy is unreachable. Edit `Dockerfile` and add right
@@ -144,8 +144,8 @@ already has the user with the old password. Either:
 - Fix in place: `docker compose exec postgres psql -U lurus -c "ALTER USER lurus WITH PASSWORD 'NEW';"`
 
 **Login bounces back to login page (no error)**
-The `ZITADEL_REDIRECT_URI` in `.env` doesn't match what's registered in the
-Zitadel client. Add the exact URL on the Zitadel side. The browser console
+The `OIDC_REDIRECT_URI` in `.env` doesn't match what's registered in the
+OIDC client. Add the exact URL on the OIDC provider side. The browser console
 usually shows `redirect_uri_mismatch`.
 
 **`/api/status` returns 500 with `dial tcp: redis`**
@@ -163,7 +163,7 @@ broken.
 ## Going further
 
 - **HTTPS / domain**: drop a Caddy or Nginx in front (a Caddy example lives
-  in `../Caddyfile`). Update `ZITADEL_REDIRECT_URI` to the public URL.
+  in `../Caddyfile`). Update `OIDC_REDIRECT_URI` to the public URL.
 - **External Postgres**: comment out the `postgres` service and point
   `SQL_DSN` at your existing instance.
 - **Backups**: `docker run --rm -v lurus-hub_pg_data:/data alpine tar czf -

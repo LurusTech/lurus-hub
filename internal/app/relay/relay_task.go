@@ -10,16 +10,17 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
-	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
-	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/adapter/provider"
 	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 	"github.com/LurusTech/lurus-hub/internal/app"
 	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/taskopaque"
 
 	"github.com/gin-gonic/gin"
 )
@@ -265,7 +266,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 	}
 	info.ConsumeQuota = true
 	// insert task
-	task := repo.InitTask(platform, info)
+	task := repo.InitTask(c, platform, info)
 	task.TaskID = taskID
 	task.Quota = quota
 	task.Data = taskData
@@ -336,6 +337,21 @@ func sunoFetchRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *dto.Ta
 		Code: "success",
 		Data: tasks,
 	})
+	// Dropping this error returned (nil, nil), which RelayTaskFetch then serves
+	// as a 200 with a literal `{"code":"success","data":null}` — a query failure
+	// disguised as an empty result. Reported the same way as the video and music
+	// builders below.
+	//
+	// Known consequence: 500 puts this on the retry path
+	// (handler.shouldRetryTaskRelay treats any 5xx as retryable, and it tests
+	// StatusCode before LocalError), so a row whose Data is unmarshalable will
+	// retry up to RetryTimes on a failure that is local and deterministic. That
+	// is wasted work, not a correctness bug, and it is the behaviour the video
+	// and music builders already had — narrowing it means reordering the retry
+	// policy, which is a separate change.
+	if err != nil {
+		taskResp = app.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
 	return
 }
 
@@ -357,6 +373,9 @@ func sunoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *dt
 		Code: "success",
 		Data: TaskModel2Dto(originTask),
 	})
+	if err != nil {
+		taskResp = app.TaskErrorWrapper(err, "marshal_response_failed", http.StatusInternalServerError)
+	}
 	return
 }
 
@@ -390,6 +409,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 			baseURL = channelModel.GetBaseURL()
 		}
 		proxy := channelModel.GetSetting().Proxy
+		forceHTTP1 := dto.ParamOverrideForceHTTP1(channelModel.GetParamOverride())
 		adaptor := GetTaskAdaptor(constant.TaskPlatform(strconv.Itoa(channelModel.Type)))
 		if adaptor == nil {
 			return
@@ -397,7 +417,7 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		resp, err2 := adaptor.FetchTask(baseURL, channelModel.Key, map[string]any{
 			"task_id": originTask.TaskID,
 			"action":  originTask.Action,
-		}, proxy)
+		}, proxy, forceHTTP1)
 		if err2 != nil || resp == nil {
 			return
 		}
@@ -609,7 +629,7 @@ func extractMusicDataFromSunoResponse(resp *dto.MusicFetchResponse, data map[str
 }
 
 func TaskModel2Dto(task *repo.Task) *dto.TaskDto {
-	return &dto.TaskDto{
+	out := &dto.TaskDto{
 		TaskID:     task.TaskID,
 		Action:     task.Action,
 		Status:     string(task.Status),
@@ -620,4 +640,8 @@ func TaskModel2Dto(task *repo.Task) *dto.TaskDto {
 		Progress:   task.Progress,
 		Data:       task.Data,
 	}
+	if task.ID > 0 {
+		out.OpaqueID = taskopaque.Encode(task.ID)
+	}
+	return out
 }

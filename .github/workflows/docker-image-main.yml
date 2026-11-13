@@ -1,33 +1,96 @@
 name: Publish Docker image (main branch)
 
+# 2026-08-11: absorbed the former separate "Build and Push Docker Image"
+# workflow (build.yaml, now deleted). That workflow triggered on the same
+# `push: branches:[main]` event and built the identical Dockerfile/context,
+# and its `docker/metadata-action` config (`type=ref,event=branch`) produced
+# the SAME `:main` tag this workflow already pushes — i.e. on every merge to
+# main, two independent builds raced to push ghcr.io/…/lurus-newhub:main,
+# and whichever finished last silently won (registry last-write-wins on a
+# tag), so the digest the deploy runbook tells you to pin was
+# non-deterministic based on build-runner scheduling. Its only non-duplicate
+# value was the Trivy HIGH/CRITICAL vulnerability gate (on push AND on PR,
+# pre-merge) — that gate is folded in below, now scanning the actual
+# `:main`/`:main-<date>-<sha>` artifact instead of a throwaway look-alike
+# build that was never the one actually deployed.
+# `paths-ignore` (2026-09-03): this workflow had no path filter at all, so a
+# pure-documentation commit produced a full `:main` image and an auto-pin
+# manifest commit. That is not free right now — R6's link to the GitHub image
+# CDN measures 10–17 KB/s, so every new digest costs a ~20-minute manual
+# side-channel transfer before the cluster can converge on it.
+#
+# The listed paths provably cannot change the artifact: the binary embeds only
+# `web/dist` (`web/embed.go`) and compiles Go sources, `deploy/**` is applied by
+# ArgoCD rather than baked in, and `.dockerignore` already drops `docs`/`*.md`
+# from the build context. A push touching any non-listed path still builds —
+# GitHub skips only when *every* changed file matches.
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'doc/**'
+      - 'docs/**'
+      - '_bmad-output/**'
+      - '**/*.md'
+      - 'deploy/**'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'doc/**'
+      - 'docs/**'
+      - '_bmad-output/**'
+      - '**/*.md'
+      - 'deploy/**'
   workflow_dispatch:
     inputs:
       name:
         description: "reason"
         required: false
 
+# Serialize runs per ref. Without this, two quick merges to main race their
+# `:main` tag pushes (registry last-write-wins — the exact non-determinism
+# documented above for the deleted build.yaml, just intra-workflow) AND their
+# bump_r6_manifest commits could pin digests out of build order. Queued runs
+# collapse to the newest pending one, which is the convergent end state anyway.
+concurrency:
+  group: docker-main-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build_and_push:
     name: Build & push (amd64)
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
     permissions:
       packages: write
       contents: read
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Check out
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Check out lurus-proto-go
+      - name: Check out zita-sdk-go (pinned, pre-alpha)
         uses: actions/checkout@v4
         with:
-          repository: LurusTech/lurus-proto-go
-          path: lurus-proto-go
+          repository: hanmahong5-arch/zita-sdk-go
+          # Pre-alpha pin per release_cadence rule. Full sha required;
+          # actions/checkout treats short shas as branch/tag names.
+          ref: e2611da1e01ef77b8227571204d6780a6364fea3
+          path: zita-sdk-go
+          fetch-depth: 1
+
+      - name: Check out lurus-entkit (entitlement kit)
+        uses: actions/checkout@v4
+        with:
+          repository: LurusTech/lurus-entkit
+          # pinned: bump deliberately after a kit release (2l-svc-platform pkg/entkit)
+          ref: 90c81f1a9193a205a6b7c904686ae9dd238daefe
+          path: lurus-entkit
           fetch-depth: 1
 
       - name: Determine version
@@ -46,6 +109,10 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        # Skip on PR: PRs don't push, so no registry credentials are needed
+        # (and PRs from forks wouldn't have a usable GITHUB_TOKEN for pushing
+        # anyway). Mirrors the guard the old build.yaml PR job used.
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -60,16 +127,268 @@ jobs:
             ghcr.io/${{ env.GHCR_REPOSITORY }}
 
       - name: Build & push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          # On PRs: build only, load into the local daemon so Trivy can scan
+          # it, don't push (no `:main`/version tag should ever be published
+          # from unmerged code). push/load are mutually exclusive.
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
           tags: |
             ghcr.io/${{ env.GHCR_REPOSITORY }}:main
             ghcr.io/${{ env.GHCR_REPOSITORY }}:${{ steps.version.outputs.value }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Not from the local runner pool (vars.CI_RUNS_ON set): its uplink to
+          # GitHub's cache is ~1MB/s, and a mode=max export there took longer
+          # than the build it would save.
+          cache-to: ${{ !vars.CI_RUNS_ON && 'type=gha,mode=max' || '' }}
           provenance: false
           sbom: false
+          # go mod download used the Dockerfile default (proxy.golang.org),
+          # which the local pool reaches over a cross-border link that went to
+          # a few KB/s for a whole day on 2026-10-01. "|" falls through to the
+          # next proxy on ANY error, not just 404/410; vars.CI_GOPROXY wins.
+          # The same link made the final stage's apt run stall for 20+ minutes
+          # on 2026-10-14/15; DEBIAN_MIRROR points it at a domestic mirror
+          # (Dockerfile explains why http); vars.CI_DEBIAN_MIRROR wins.
+          build-args: |
+            GOPROXY=${{ vars.CI_GOPROXY || 'https://goproxy.cn|https://proxy.golang.org|direct' }}
+            DEBIAN_MIRROR=${{ vars.CI_DEBIAN_MIRROR || 'http://mirrors.aliyun.com' }}
+
+      - name: Scan image for HIGH/CRITICAL vulnerabilities (Trivy)
+        # BLOCKING gate, absorbed from the deleted build.yaml. ignore-unfixed
+        # drops CVEs with no upstream fix yet so the gate stays actionable.
+        # Scans the exact tag just built above (pushed on push/dispatch,
+        # locally loaded on PR) — i.e. the real artifact, not a parallel
+        # throwaway build, so a red run here means the image that would
+        # actually reach `:main` has a fixable HIGH/CRITICAL CVE.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ env.GHCR_REPOSITORY }}:${{ steps.version.outputs.value }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+          # The gate is HIGH/CRITICAL CVEs. Trivy also runs its secret scanner
+          # by default, over every file in the image; since the new console
+          # (#254) ships ~1,600 lazily loaded JS chunks that pushed analysis past
+          # the 5m default and the scan died with "Provide a higher timeout
+          # value" — no finding, no verdict. Secrets are gitleaks' job (Secret
+          # Scan / Web CI); this step scans for vulnerabilities only, with room.
+          scanners: vuln
+          timeout: 15m0s
+          exit-code: '1'
+
+  # Close the "cluster rolled without bumping the manifest" process gap the
+  # other way around: after every successful :main build (which also passed
+  # the Trivy gate above — this job is skipped when the scan fails), rewrite
+  # deploy/k8s/r6-stage/deployment.yaml's digest pin to the image just pushed.
+  # Git thereby always names the newest gate-passing image (desired state);
+  # the ArgoCD Application (deploy/k8s/argocd/, automated sync + selfHeal)
+  # converges the cluster to it within its sync interval — this pin IS the
+  # deploy. The bump commit carries [skip ci] so it triggers no
+  # workflows (no rebuild loop; a rebuild of identical source would produce a
+  # new digest and ping-pong forever without it).
+  bump_r6_manifest:
+    name: Auto-pin r6-stage + r6-uat manifests
+    needs: build_and_push
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    permissions:
+      contents: write
+    outputs:
+      # false when this build's digest matches what was already pinned (e.g.
+      # a doc-adjacent no-op rebuild) — verify_rollout below only makes sense
+      # when a new digest actually went out.
+      bumped: ${{ steps.commit.outputs.bumped }}
+    env:
+      VERSION: ${{ needs.build_and_push.outputs.version }}
+      DIGEST: ${{ needs.build_and_push.outputs.digest }}
+      # Both instances track the same digest: r6-stage (de facto prod, ns
+      # lurus-newhub) and r6-uat (isolated UAT, ns lurus-newhub-uat). One
+      # build → both pins, so UAT always runs exactly what prod runs.
+      FILES: "deploy/k8s/r6-stage/deployment.yaml deploy/k8s/r6-uat/deployment.yaml"
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Rewrite digest pin
+        run: |
+          # Content predicates first — refuse to write garbage into the manifest.
+          case "$DIGEST" in
+            sha256:*) : ;;
+            *) echo "::error::build job emitted no usable digest ('$DIGEST') — aborting bump"; exit 1 ;;
+          esac
+          test -n "$VERSION" || { echo "::error::empty version output"; exit 1; }
+          for FILE in $FILES; do
+            test -f "$FILE" || { echo "::error::pin target $FILE missing"; exit 1; }
+            sed -i -E "s|^(\s*)# pin: .*$|\1# pin: ${VERSION} run=${{ github.run_id }}|" "$FILE"
+            sed -i -E "/image: ghcr\.io\/hanmahong5-arch\/lurus-newhub@/ s|@sha256:[0-9a-f]+|@${DIGEST}|" "$FILE"
+            # Post-write predicate: the new digest must actually be in the file.
+            grep -F "image: ghcr.io/hanmahong5-arch/lurus-newhub@${DIGEST}" "$FILE"
+          done
+
+      - name: Commit & push ([skip ci])
+        id: commit
+        run: |
+          if git diff --quiet; then
+            echo "digest unchanged — nothing to bump"
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add $FILES
+          git commit -m "chore(deploy): r6-stage auto-pin ${VERSION} [skip ci]"
+          # Rebase-retry: another merge (or another build's bump) may land
+          # between our checkout and push.
+          for i in 1 2 3; do
+            git push origin HEAD:main && exit 0
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::bump commit no longer applies after rebase"; exit 1; }
+            sleep $((i * 5))
+          done
+          echo "::error::could not push bump commit after 3 attempts"
+          exit 1
+
+  # Close the OTHER half of the process gap: bump_r6_manifest only proves a
+  # digest was pinned in *git* — ArgoCD still has to notice, pull the image
+  # (the R6<->GHCR link has been the slow/flaky part historically, see
+  # doc/runbook/staging-deploy.md's CDN-outage section) and roll the pods
+  # before a merge is actually live. This job polls both instances' public
+  # /api/status until each reports this build's VERSION (40 min budget —
+  # ArgoCD sync + R6←GHCR pull has measured 20+ min alone on a slow day; 25
+  # min falsely red'd a pin that later landed as main-20261027-3ad2f6f). A
+  # stuck rollout still pages the merger by email instead of waiting for
+  # someone to poll by hand. Once both are confirmed, it fires the UAT e2e
+  # suite (web-ci.yml's `e2e` job, same suite the nightly schedule runs)
+  # without blocking this runner on it, and leaves one PR comment naming the
+  # outcome + a link to the dispatched run; the e2e job itself posts a short
+  # pass/fail follow-up when it finishes. Every comment carries a hidden
+  # `<!-- deploy-verify:VERSION -->` / `<!-- deploy-verify-e2e:VERSION -->`
+  # marker so a workflow re-run updates the existing comment instead of
+  # spamming a new one.
+  verify_rollout:
+    name: Verify rollout reached prod + UAT
+    needs: [build_and_push, bump_r6_manifest]
+    if: needs.bump_r6_manifest.outputs.bumped == 'true'
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '"ubuntu-latest"') }}
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.build_and_push.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Poll prod + UAT until both serve this VERSION (40 min timeout)
+        run: |
+          set -u
+          PROD_URL="https://hub.lurus.cn/api/status"
+          UAT_URL="https://test-newhub.lurus.cn/api/status"
+          prod_ok=""; uat_ok=""
+          prod_seen="<unreachable>"; uat_seen="<unreachable>"
+          deadline=$((SECONDS + 40 * 60))
+          while [ "$SECONDS" -lt "$deadline" ] && { [ -z "$prod_ok" ] || [ -z "$uat_ok" ]; }; do
+            if [ -z "$prod_ok" ]; then
+              body=$(curl -fsS --max-time 10 "$PROD_URL" 2>/dev/null || true)
+              v=$(printf '%s' "$body" | jq -r '.data.version // empty' 2>/dev/null || true)
+              [ -n "$v" ] && prod_seen="$v"
+              [ "$v" = "$VERSION" ] && prod_ok=1
+              echo "poll: prod -> ${v:-<no response>}"
+            fi
+            if [ -z "$uat_ok" ]; then
+              body=$(curl -fsS --max-time 10 "$UAT_URL" 2>/dev/null || true)
+              v=$(printf '%s' "$body" | jq -r '.data.version // empty' 2>/dev/null || true)
+              [ -n "$v" ] && uat_seen="$v"
+              [ "$v" = "$VERSION" ] && uat_ok=1
+              echo "poll: uat  -> ${v:-<no response>}"
+            fi
+            { [ -z "$prod_ok" ] || [ -z "$uat_ok" ]; } && sleep 20
+          done
+          fail=0
+          if [ -z "$prod_ok" ]; then
+            echo "::error::prod (hub.lurus.cn) never reached ${VERSION} within 40 min — last seen '${prod_seen}'"
+            fail=1
+          fi
+          if [ -z "$uat_ok" ]; then
+            echo "::error::UAT (test-newhub.lurus.cn) never reached ${VERSION} within 40 min — last seen '${uat_seen}'"
+            fail=1
+          fi
+          exit $fail
+
+      - name: Dispatch UAT e2e (web-ci.yml), don't wait for it
+        id: dispatch
+        run: |
+          set -u
+          # PR number is looked up here too (not just in the comment step
+          # below) so it can ride along as a dispatch input — the e2e job
+          # has no other way to know which PR to report back to.
+          # Same transient API drops as the comment step below; these two calls
+          # are load-bearing (no dispatch = no e2e), so retry, then fail.
+          retry() { local n; for n in 1 2 3 4; do "$@" && return 0; sleep $((n * 10)); done; return 1; }
+          PR_NUMBER=$(retry gh api "/repos/${REPO}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+          payload=$(jq -n --arg pr "$PR_NUMBER" --arg version "$VERSION" \
+            '{ref:"main", inputs:{run_e2e:"true", pr_number:$pr, version:$version}}')
+          echo "$payload" > "$RUNNER_TEMP/dispatch.json"
+          retry gh api --method POST "/repos/${REPO}/actions/workflows/web-ci.yml/dispatches" \
+            --input "$RUNNER_TEMP/dispatch.json"
+
+          # Best-effort: find the run we just created so the PR comment can
+          # link straight to it instead of the workflow's run list. Not
+          # load-bearing — a miss just falls back to the workflow page below.
+          run_url=""
+          for _ in 1 2 3 4 5 6; do
+            sleep 5
+            # /runs is newest-first; the concurrency group on this workflow
+            # (docker-main-*) doesn't cover web-ci.yml, so in the rare case of
+            # a second concurrent manual dispatch this can point at the wrong
+            # one — acceptable since it's a convenience link, not the gate.
+            run_url=$(gh api "/repos/${REPO}/actions/workflows/web-ci.yml/runs?event=workflow_dispatch&per_page=5" \
+              --jq '.workflow_runs[0].html_url // empty' 2>/dev/null || true)
+            [ -n "$run_url" ] && break
+          done
+          [ -z "$run_url" ] && run_url="https://github.com/${REPO}/actions/workflows/web-ci.yml"
+          echo "run_url=${run_url}" >> "$GITHUB_OUTPUT"
+
+      - name: Post deploy-verify PR comment (idempotent)
+        if: steps.dispatch.outputs.pr_number != ''
+        run: |
+          set -u
+          PR_NUMBER="${{ steps.dispatch.outputs.pr_number }}"
+          RUN_URL="${{ steps.dispatch.outputs.run_url }}"
+          NOW=$(date -u +'%Y-%m-%d %H:%M UTC')
+          MARKER="<!-- deploy-verify:${VERSION} -->"
+          BODY=$(printf 'Deployed %s — prod \xe2\x9c\x93 UAT \xe2\x9c\x93 at %s; e2e: %s\n\n%s' \
+            "$VERSION" "$NOW" "$RUN_URL" "$MARKER")
+          # The comment only REPORTS; the job's verdict was decided by the steps
+          # above. GitHub's API drops a connection now and then ("error
+          # connecting to api.github.com" turned #242's green e2e red), so
+          # retry with backoff and, if it still fails, warn instead of failing.
+          upsert() {
+            local found existing
+            found=$(gh api "/repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+              --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id") || return 1
+            existing=$(printf '%s\n' "$found" | head -1)
+            if [ -n "$existing" ]; then
+              gh api --method PATCH "/repos/${REPO}/issues/comments/${existing}" -f body="$BODY" >/dev/null
+            else
+              gh api --method POST "/repos/${REPO}/issues/${PR_NUMBER}/comments" -f body="$BODY" >/dev/null
+            fi
+          }
+          for attempt in 1 2 3 4; do
+            upsert && exit 0
+            sleep $((attempt * 10))
+          done
+          echo "::warning::could not post the PR comment after 4 attempts (GitHub API unreachable)"

@@ -45,9 +45,23 @@ type CORSConfig struct {
 }
 
 // ServerConfig holds HTTP server related settings.
+//
+// There is deliberately no ReadTimeout or WriteTimeout here. Those bound a whole
+// request/response, which on this server means cutting SSE relay streams and
+// large uploads mid-flight; the two below bound only the phases where a slow or
+// silent peer costs us a connection for nothing.
 type ServerConfig struct {
 	// GracefulShutdownTimeout is the max wait time for in-flight requests on shutdown.
 	GracefulShutdownTimeout time.Duration
+	// ReadHeaderTimeout bounds how long a client may take to send its request
+	// headers. Zero (the Go default, and what this server ran with until cycle
+	// 12) means a peer can hold a connection open indefinitely by never
+	// finishing the header block — the classic slow-header exhaustion shape.
+	ReadHeaderTimeout time.Duration
+	// IdleTimeout bounds how long a keep-alive connection may sit unused before
+	// the server closes it. Zero falls back to ReadTimeout, which is also zero
+	// here, so idle connections were never reaped.
+	IdleTimeout time.Duration
 }
 
 // RelayConfig holds relay/streaming related settings.
@@ -85,6 +99,12 @@ type CronConfig struct {
 type SecurityConfig struct {
 	// SMSCodeExpiration is the TTL for SMS verification codes.
 	SMSCodeExpiration time.Duration
+	// TrustedProxies is the list of CIDRs gin trusts to have set X-Forwarded-For
+	// honestly. Default covers the RFC1918 + loopback + link-local ranges the
+	// in-cluster host nginx reverse proxy connects from; anything outside these
+	// ranges has its X-Forwarded-For ignored and ClientIP() falls back to the
+	// TCP peer address.
+	TrustedProxies []string
 }
 
 var (
@@ -105,6 +125,8 @@ func loadFromEnv() *Config {
 	cfg := &Config{
 		Server: ServerConfig{
 			GracefulShutdownTimeout: envDuration("GRACEFUL_SHUTDOWN_TIMEOUT", 30*time.Second),
+			ReadHeaderTimeout:       envDuration("HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
+			IdleTimeout:             envDuration("HTTP_IDLE_TIMEOUT", 120*time.Second),
 		},
 		Relay: RelayConfig{
 			StreamScannerInitialBuffer: envInt("STREAM_SCANNER_INITIAL_BUFFER", 64<<10),   // 64KB
@@ -123,6 +145,14 @@ func loadFromEnv() *Config {
 		},
 		Security: SecurityConfig{
 			SMSCodeExpiration: envDuration("SMS_CODE_EXPIRATION", 5*time.Minute),
+			TrustedProxies: envStringSlice("TRUSTED_PROXIES", []string{
+				"10.0.0.0/8",
+				"172.16.0.0/12",
+				"192.168.0.0/16",
+				"127.0.0.0/8",
+				"::1/128",
+				"fe80::/10",
+			}),
 		},
 		Storage: StorageConfig{
 			MinIOBucket:         envString("MINIO_RELEASES_BUCKET", "lurus-releases"),

@@ -2,10 +2,13 @@ package helper
 
 import (
 	"fmt"
+	"strings"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
-	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
 	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
+	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/types"
@@ -45,8 +48,84 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) types.
 	return groupRatioInfo
 }
 
+// RerankSearchUnits is the number of billable search units of a rerank call:
+// ceil(documents/100) x queries (Cohere convention, queries is always 1 here).
+// Computed from the REQUEST's document count, which the caller controls and
+// the vendor cannot inflate.
+func RerankSearchUnits(info *relaycommon.RelayInfo) int64 {
+	docs := 0
+	if info != nil && info.RerankerInfo != nil {
+		docs = len(info.Documents)
+	}
+	return ratio_setting.SearchUnits(docs, 1)
+}
+
+// SearchUnitPriced reports whether this call is settled per search unit: a
+// rerank call whose model has a search-unit price configured. Anything else
+// stays on the token / per-call paths, and a model with no price at all still
+// hits the "ratio or price not set" error below (unknown is never free).
+func SearchUnitPriced(info *relaycommon.RelayInfo) (float64, bool) {
+	if info == nil || info.RelayMode != relayconstant.RelayModeRerank {
+		return 0, false
+	}
+	return ratio_setting.GetSearchUnitPrice(info.OriginModelName)
+}
+
+// audioRelayMode is speech / transcription / translation — the only modes
+// AudioSecondPrice applies to.
+func audioRelayMode(mode int) bool {
+	switch mode {
+	case relayconstant.RelayModeAudioSpeech,
+		relayconstant.RelayModeAudioTranscription,
+		relayconstant.RelayModeAudioTranslation:
+		return true
+	default:
+		return false
+	}
+}
+
+// AudioSecondPriced reports whether this call is settled per audio second
+// (TokenHub 0.10): an audio relay whose model has AudioSecondPrice configured.
+func AudioSecondPriced(info *relaycommon.RelayInfo) (float64, bool) {
+	if info == nil || !audioRelayMode(info.RelayMode) {
+		return 0, false
+	}
+	return ratio_setting.GetAudioSecondPrice(info.OriginModelName)
+}
+
+// AudioBillableSeconds is ceil(measured duration), or a reverse estimate from
+// legacy audio tokens when duration was never stored. ok=false means neither
+// source produced a positive quantity.
+func AudioBillableSeconds(info *relaycommon.RelayInfo, legacyAudioTokens int) (secs int64, estimated bool, ok bool) {
+	if info != nil {
+		if s := ratio_setting.AudioBillableSeconds(info.AudioDurationSeconds); s > 0 {
+			return s, false, true
+		}
+	}
+	if s := ratio_setting.AudioSecondsFromLegacyTokens(legacyAudioTokens); s > 0 {
+		return s, true, true
+	}
+	return 0, false, false
+}
+
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (types.PriceData, error) {
 	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
+	if sup, ok := SearchUnitPriced(info); ok {
+		// Pre-consume at the exact search-unit amount through the existing
+		// per-call branch; postConsumeQuota recomputes the same figure.
+		modelPrice = sup * float64(RerankSearchUnits(info))
+		usePrice = true
+	} else if asp, ok := AudioSecondPriced(info); ok {
+		// Duration may be unknown at pre-consume (TTS). Use measured seconds
+		// when present; otherwise a 15s provisional floor — PostAudioConsumeQuota
+		// resettles against the real clip length.
+		secs := ratio_setting.AudioBillableSeconds(info.AudioDurationSeconds)
+		if secs == 0 {
+			secs = 15
+		}
+		modelPrice = asp * float64(secs)
+		usePrice = true
+	}
 
 	groupRatioInfo := HandleGroupRatio(c, info)
 
@@ -58,8 +137,13 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	var cacheCreationRatio float64
 	var cacheCreationRatio5m float64
 	var cacheCreationRatio1h float64
+	var cacheCreationRatioDefaulted bool
 	var audioRatio float64
 	var audioCompletionRatio float64
+	var contextTierThreshold int
+	var baseModelRatio float64
+	var baseCompletionRatio float64
+	var baseCacheRatio float64
 	var freeModel bool
 	if !usePrice {
 		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
@@ -69,24 +153,63 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		var success bool
 		var matchName string
 		modelRatio, success, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
+		if !success && isOpenRouterFreeModel(c, info) {
+			// OpenRouter ":free" variants (e.g. imported by the free-model
+			// sync) cost nothing upstream; price them exactly like a
+			// configured ratio of 0 below, no error.
+			modelRatio = 0
+			success = true
+		}
 		if !success {
 			acceptUnsetRatio := false
 			if info.UserSetting.AcceptUnsetRatioModel {
 				acceptUnsetRatio = true
 			}
 			if !acceptUnsetRatio {
-				return types.PriceData{}, fmt.Errorf("模型 %s 倍率或价格未配置，请联系管理员设置或开始自用模式；Model %s ratio or price not set, please set or start self-use mode", matchName, matchName)
+				return types.PriceData{}, fmt.Errorf("model %s ratio or price not set, please set it or enable self-use mode", matchName)
 			}
 		}
 		completionRatio = ratio_setting.GetCompletionRatio(info.OriginModelName)
 		cacheRatio, _ = ratio_setting.GetCacheRatio(info.OriginModelName)
-		cacheCreationRatio, _ = ratio_setting.GetCreateCacheRatio(info.OriginModelName)
+		var cacheCreationRatioListed bool
+		cacheCreationRatio, cacheCreationRatioListed = ratio_setting.GetCreateCacheRatio(info.OriginModelName)
+		cacheCreationRatioDefaulted = !cacheCreationRatioListed
 		cacheCreationRatio5m = cacheCreationRatio
 		// 固定1h和5min缓存写入价格的比例
 		cacheCreationRatio1h = cacheCreationRatio * claudeCacheCreation1hMultiplier
 		imageRatio, _ = ratio_setting.GetImageRatio(info.OriginModelName)
 		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
+		// Snapshot the flat, non-tiered ratios BEFORE any tier override below.
+		// helper.ResettleContextTier re-derives the settled ratio starting
+		// from this snapshot rather than re-reading the live ratio_setting
+		// maps at settlement time, so a concurrent admin edit (or a routine
+		// repo.SyncOptions tick pulling another replica's write) cannot
+		// re-price a request that is already in flight (cycle-8 plan §8 L5
+		// B-F3).
+		baseModelRatio = modelRatio
+		baseCompletionRatio = completionRatio
+		baseCacheRatio = cacheRatio
+		// Declarative context-length pricing tier (billing-pricing-14): the
+		// pre-consume estimate decides which tier applies here; every
+		// settlement site re-evaluates against the actual context length
+		// derived from the upstream-reported usage (see ResettleContextTier
+		// and its callers) so the logged ratio and prompt_tokens land on the
+		// same side of a configured threshold. Default empty map (no
+		// operator-configured tiers) makes this a no-op — GetContextLengthTier
+		// returns nil and none of modelRatio/completionRatio/cacheRatio change.
+		if t := ratio_setting.GetContextLengthTier(info.OriginModelName, promptTokens); t != nil {
+			if t.ModelRatio != nil {
+				modelRatio = *t.ModelRatio
+			}
+			if t.CompletionRatio != nil {
+				completionRatio = *t.CompletionRatio
+			}
+			if t.CacheRatio != nil {
+				cacheRatio = *t.CacheRatio
+			}
+			contextTierThreshold = t.ThresholdTokens
+		}
 		ratio := modelRatio * groupRatioInfo.GroupRatio
 		preConsumedQuota = int(float64(preConsumedTokens) * ratio)
 	} else {
@@ -116,20 +239,26 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	}
 
 	priceData := types.PriceData{
-		FreeModel:            freeModel,
-		ModelPrice:           modelPrice,
-		ModelRatio:           modelRatio,
-		CompletionRatio:      completionRatio,
-		GroupRatioInfo:       groupRatioInfo,
-		UsePrice:             usePrice,
-		CacheRatio:           cacheRatio,
-		ImageRatio:           imageRatio,
-		AudioRatio:           audioRatio,
-		AudioCompletionRatio: audioCompletionRatio,
-		CacheCreationRatio:   cacheCreationRatio,
-		CacheCreation5mRatio: cacheCreationRatio5m,
-		CacheCreation1hRatio: cacheCreationRatio1h,
-		QuotaToPreConsume:    preConsumedQuota,
+		FreeModel:                   freeModel,
+		ModelPrice:                  modelPrice,
+		ModelRatio:                  modelRatio,
+		CompletionRatio:             completionRatio,
+		GroupRatioInfo:              groupRatioInfo,
+		UsePrice:                    usePrice,
+		CacheRatio:                  cacheRatio,
+		ImageRatio:                  imageRatio,
+		AudioRatio:                  audioRatio,
+		AudioCompletionRatio:        audioCompletionRatio,
+		CacheCreationRatio:          cacheCreationRatio,
+		CacheCreation5mRatio:        cacheCreationRatio5m,
+		CacheCreation1hRatio:        cacheCreationRatio1h,
+		ContextTierThreshold:        contextTierThreshold,
+		CacheCreationRatioDefaulted: cacheCreationRatioDefaulted,
+		QuotaToPreConsume:           preConsumedQuota,
+		BaseModelRatio:              baseModelRatio,
+		BaseCompletionRatio:         baseCompletionRatio,
+		BaseCacheRatio:              baseCacheRatio,
+		BaseRatiosSet:               true,
 	}
 
 	if common.DebugEnabled {
@@ -160,6 +289,103 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) types.
 		GroupRatioInfo: groupRatioInfo,
 	}
 	return priceData
+}
+
+// ResettleContextTier re-evaluates a declarative context-length pricing tier
+// (billing-pricing-14) against the actual context length of the call
+// (actualPromptTokens — callers on a wire where the prompt-token field
+// excludes cache read/creation must add those back in before calling this;
+// see usage.AsOpenAIWire().PromptTokens at each call site). ModelPriceHelper
+// chose (or did not choose) a tier from the pre-consume ESTIMATE; the
+// estimate and the actual context length can land on different sides of a
+// configured threshold, so every settlement site that reads
+// PriceData.ModelRatio for a !UsePrice model must call this before computing
+// the final quota — otherwise the logged model_ratio and prompt_tokens could
+// disagree about which tier applied. A no-op for UsePrice (per-call) models:
+// tiers only ever apply to the token-based branch
+// (TestModelPriceHelper_PerCallModelIgnoresTiers covers the pre-consume side
+// of that same rule).
+//
+// modelRatio/completionRatio/cacheRatio start from priceData's
+// Base{ModelRatio,CompletionRatio,CacheRatio} — the flat, non-tiered ratios
+// ModelPriceHelper snapshotted at pre-consume — rather than a fresh read of
+// the live ratio_setting maps. Re-reading live would let a concurrent admin
+// edit or a routine repo.SyncOptions tick re-price a request that is already
+// in flight (cycle-8 plan §8 L5 B-F3); the frozen snapshot is the only
+// record of the model's flat ratio once priceData may already carry the
+// pre-consume tier's override.
+func ResettleContextTier(priceData *types.PriceData, modelName string, actualPromptTokens int) {
+	if priceData.UsePrice {
+		return
+	}
+	// Short-circuit for every model with no tier list at all: this keeps
+	// settlement byte-identical to pre-consume for the default-empty
+	// mechanism (and for any model an admin has never given tiers), instead
+	// of re-deriving modelRatio/completionRatio/cacheRatio from the frozen
+	// snapshot on every settlement regardless of whether this lane's
+	// mechanism is in play for that model.
+	if !ratio_setting.HasContextLengthTiers(modelName) {
+		return
+	}
+	// The frozen snapshot is written by ModelPriceHelper's token-based branch.
+	// A PriceData that never went through it (a hand-built value, or a future
+	// settlement path that constructs its own) has no snapshot to start from,
+	// and overwriting the live ratios from its zero fields would charge the
+	// call at ratio 0. Leave such a value alone:
+	// TestResettleContextTier_NoBaseSnapshotIsNoOp pins it.
+	if !priceData.BaseRatiosSet {
+		return
+	}
+	modelRatio := priceData.BaseModelRatio
+	completionRatio := priceData.BaseCompletionRatio
+	cacheRatio := priceData.BaseCacheRatio
+	threshold := 0
+	if t := ratio_setting.GetContextLengthTier(modelName, actualPromptTokens); t != nil {
+		if t.ModelRatio != nil {
+			modelRatio = *t.ModelRatio
+		}
+		if t.CompletionRatio != nil {
+			completionRatio = *t.CompletionRatio
+		}
+		if t.CacheRatio != nil {
+			cacheRatio = *t.CacheRatio
+		}
+		threshold = t.ThresholdTokens
+	}
+	priceData.ModelRatio = modelRatio
+	priceData.CompletionRatio = completionRatio
+	priceData.CacheRatio = cacheRatio
+	priceData.ContextTierThreshold = threshold
+}
+
+// isOpenRouterFreeModel reports whether this relay goes to an OpenRouter
+// channel with a model name ending in ":free". Only called from
+// ModelPriceHelper's unset-ratio branch; a configured price or ratio always
+// wins before this is reached.
+//
+// On the real relay path ModelPriceHelper runs BEFORE the handler calls
+// InitChannelMeta, so info.ChannelMeta is still nil there: the channel type
+// comes from the gin context, where the distributor published the channel it
+// selected. Only when ChannelMeta is set (channel test, later calls) is the
+// mapped upstream model name known; otherwise the requested name is used.
+// 2026-09-29: the first version read only ChannelMeta, passed its unit tests
+// (which set ChannelMeta) and never fired in production.
+func isOpenRouterFreeModel(c *gin.Context, info *relaycommon.RelayInfo) bool {
+	channelType := 0
+	upstreamName := ""
+	if info.ChannelMeta != nil {
+		channelType = info.ChannelType
+		upstreamName = info.UpstreamModelName
+	} else if c != nil {
+		channelType = common.GetContextKeyInt(c, constant.ContextKeyChannelType)
+	}
+	if channelType != constant.ChannelTypeOpenRouter {
+		return false
+	}
+	if upstreamName == "" {
+		upstreamName = info.OriginModelName
+	}
+	return strings.HasSuffix(upstreamName, ":free")
 }
 
 func ContainPriceOrRatio(modelName string) bool {

@@ -4,15 +4,39 @@ import (
 	"github.com/LurusTech/lurus-hub/internal/adapter/handler"
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
+)
+
+// internalApiPreAuthRateLimitNum/Duration bound invalid-key attempts per
+// source IP. Mounted BEFORE InternalApiAuth, so internal_api_key_id is never
+// set yet — InternalApiRateLimit's key func falls back to "ip:<ClientIP>",
+// giving an IP-keyed bucket for free without a new keying path. Looser than
+// the post-auth per-key buckets (IKR/IKW/IKP): it only needs to bound the
+// blast radius of a brute-force scan against invalid keys, not throttle
+// legitimate authenticated traffic.
+const (
+	internalApiPreAuthRateLimitNum            = 300
+	internalApiPreAuthRateLimitDuration int64 = 60
 )
 
 // SetInternalApiRouter sets up internal API routes for service-to-service communication
 // These routes use API Key authentication instead of user session auth
 func SetInternalApiRouter(router *gin.Engine) {
 	internalGroup := router.Group("/internal")
+	// IP-keyed guard mounted FIRST so a flood of invalid-key attempts is
+	// throttled before it ever reaches auth — otherwise each attempt burns a
+	// full auth check (hash compare / DB lookup) with no per-IP bound (F6).
+	internalGroup.Use(middleware.InternalApiRateLimit(
+		internalApiPreAuthRateLimitNum, internalApiPreAuthRateLimitDuration, "IKP-IP"))
 	internalGroup.Use(middleware.InternalApiAuth())
+	// Per-key general bucket on EVERY internal route (mounted after auth so the
+	// key id is in context). A stolen key is bounded even on read endpoints; the
+	// write/provision groups below add a second, tighter bucket on top. Marks are
+	// unique per tier so the buckets never collide. (P0-3)
+	internalGroup.Use(middleware.InternalApiRateLimit(
+		common.InternalApiReadRateLimitNum, common.InternalApiReadRateLimitDuration, "IKR"))
 
 	// User read APIs - query user information
 	userReadGroup := internalGroup.Group("/user")
@@ -27,6 +51,8 @@ func SetInternalApiRouter(router *gin.Engine) {
 	// User write APIs - create and modify users
 	userWriteGroup := internalGroup.Group("/user")
 	userWriteGroup.Use(middleware.RequireScope(repo.ScopeUserWrite))
+	userWriteGroup.Use(middleware.InternalApiRateLimit(
+		common.InternalApiWriteRateLimitNum, common.InternalApiWriteRateLimitDuration, "IKW"))
 	{
 		userWriteGroup.POST("", handler.InternalCreateUser)
 		userWriteGroup.PUT("/:id", handler.InternalUpdateUser)
@@ -121,10 +147,92 @@ func SetInternalApiRouter(router *gin.Engine) {
 		modelReadGroup.GET("/video-status", handler.InternalGetVideoStatus)
 	}
 
-	// Admin operations (requires wildcard scope)
+	// Admin operations (requires the admin scope; ScopeAll keys still pass via
+	// HasScope's wildcard, so existing platform-admin keys keep working).
 	adminGroup := internalGroup.Group("/admin")
-	adminGroup.Use(middleware.RequireScope(repo.ScopeAll))
+	adminGroup.Use(middleware.RequireScope(repo.ScopeAdmin))
+	// L2 audit-completeness: same fail-closed fallback as adminRoute in
+	// api-v2-router.go. AuditWriteGuard tells the two mount points apart by
+	// the presence of "internal_api_key_id" (set by InternalApiAuth, which
+	// runs on internalGroup above), attributing the fallback to
+	// governance.ActorSystem instead of ActorAdmin.
+	adminGroup.Use(middleware.AuditWriteGuard())
 	{
 		adminGroup.POST("/backfill-token-accounts", handler.InternalBackfillTokenAccountIDs)
+		adminGroup.GET("/convergence-stats", handler.InternalConvergenceStats)
+		adminGroup.POST("/rotate-due-tokens", handler.InternalRotateDueTokens)
+		adminGroup.POST("/reset-due-pools", handler.InternalResetDuePools)
 	}
+
+	// Provisioning API — Reseller sub-tenant key issuance / revocation
+	// (ADR 2026-05-18 §4.2). Auth: Bearer internal key + scope "provisioning".
+	provisioningGroup := internalGroup.Group("/v1/provisioning")
+	provisioningGroup.Use(middleware.RequireScope(repo.ScopeProvisioning))
+	provisioningGroup.Use(middleware.InternalApiRateLimit(
+		common.InternalApiProvisionRateLimitNum, common.InternalApiProvisionRateLimitDuration, "IKP"))
+	{
+		provisioningGroup.POST("/tenants/:slug/keys", handler.CreateProvisionedKey)
+		// Per-account, per-product keys for platform (migration 049).
+		provisioningGroup.POST("/accounts/:account_id/keys", handler.CreateAccountKey)
+		provisioningGroup.POST("/accounts/:account_id/keys/rotate", handler.RotateAccountKey)
+		provisioningGroup.DELETE("/accounts/:account_id/keys", handler.RevokeAccountKey)
+		provisioningGroup.GET("/accounts/:account_id/keys", handler.ListAccountKeys)
+		provisioningGroup.GET("/tenants/:slug/keys", handler.ListProvisionedKeys)
+		provisioningGroup.DELETE("/tenants/:slug/keys/:key_id", handler.RevokeProvisionedKey)
+		// Distributor batch redemption-code issuance / revoke — idempotent via
+		// UNIQUE(event_id) in provisioned_redemption_batches (migration 027).
+		provisioningGroup.POST("/tenants/:slug/redemptions", handler.InternalProvisionRedemptions)
+		provisioningGroup.POST("/tenants/:slug/redemptions/revoke", handler.InternalRevokeProvisionedRedemptions)
+	}
+
+	// Platform BillingOutbox supply endpoint — SEAM S1 model (b).
+	// Scope: balance:write — platform's internal key already carries this scope
+	// for wallet operations; no new key rotation required.
+	// Idempotency: enforced via UNIQUE(tenant_id, event_id) in credit_pool_fund_events
+	// (migration 031; supersedes the migration-019 global UNIQUE(event_id)).
+	poolFundGroup := internalGroup.Group("/v1/provisioning")
+	poolFundGroup.Use(middleware.RequireScope(repo.ScopeBalanceWrite))
+	poolFundGroup.Use(middleware.InternalApiRateLimit(
+		common.InternalApiProvisionRateLimitNum, common.InternalApiProvisionRateLimitDuration, "IKF"))
+	{
+		poolFundGroup.POST("/tenants/:slug/credit-pool/fund", handler.InternalFundCreditPool)
+	}
+
+	// PIPL §47 account erasure — platform calls POST after the deletion
+	// cooling-off period expires (newhub has no NATS consumer; trigger is
+	// internal HTTP, SEAM S1 pattern). Idempotent via UNIQUE(event_id) in
+	// privacy_erasure_requests (migration 020).
+	privacyEraseGroup := internalGroup.Group("/v1/privacy")
+	privacyEraseGroup.Use(middleware.RequireScope(repo.ScopeUserDelete))
+	{
+		privacyEraseGroup.POST("/erase", handler.InternalPrivacyErase)
+	}
+	privacyReadGroup := internalGroup.Group("/v1/privacy")
+	privacyReadGroup.Use(middleware.RequireScope(repo.ScopeUserRead))
+	{
+		privacyReadGroup.GET("/erase/:event_id", handler.InternalGetPrivacyErasure)
+	}
+
+	// L2 audit-completeness coverage endpoint (handler.GetAuditCoverageV2)
+	// needs the admin-write route list, but *gin.Context has no Engine()
+	// accessor in gin v1.12.0 — so it can't discover this itself at request
+	// time. Capture it here instead: router/main.go calls SetApiV2Router
+	// before SetInternalApiRouter, so by this point router.Routes() already
+	// contains both admin route groups this lane guards.
+	captureAdminWriteRoutes(router)
+}
+
+// captureAdminWriteRoutes filters the engine's full route table down to the
+// admin/internal-admin write surface (handler.IsAdminWriteRoute — shared with
+// router/audit_coverage_test.go so "what counts" cannot drift between the
+// production endpoint and the CI structural gate) and hands the result to
+// handler.SetAdminWriteRoutes for GetAuditCoverageV2 to read.
+func captureAdminWriteRoutes(router *gin.Engine) {
+	var routes []string
+	for _, rt := range router.Routes() {
+		if handler.IsAdminWriteRoute(rt.Method, rt.Path) {
+			routes = append(routes, rt.Method+" "+rt.Path)
+		}
+	}
+	handler.SetAdminWriteRoutes(routes)
 }

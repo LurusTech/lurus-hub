@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/currency"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
@@ -86,7 +89,7 @@ func InternalGetUserByEmail(c *gin.Context) {
 }
 
 // InternalGetUserByPhone returns 410 Gone — phone-based lookup is no longer supported.
-// Phone auth is delegated to Zitadel.
+// Phone auth is delegated to the OIDC provider.
 // GET /internal/user/by-phone/:phone
 func InternalGetUserByPhone(c *gin.Context) {
 	c.JSON(http.StatusGone, gin.H{
@@ -293,6 +296,10 @@ func InternalAdjustQuota(c *gin.Context) {
 	repo.RecordLog(req.UserId, repo.LogTypeSystem,
 		"Internal API adjusted quota by "+logger.LogQuota(req.Amount)+" via key: "+keyName+". Reason: "+req.Reason)
 
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorSystem, 0,
+		governance.ActionUserQuotaAdjusted, governance.ResourceUser, user.Id,
+		fmt.Sprintf(`{"adjustment":%d,"key_name":%q,"reason":%q}`, req.Amount, keyName, req.Reason)))
+
 	// Get updated quota
 	newQuota, _ := repo.GetUserQuota(req.UserId, true)
 
@@ -300,10 +307,10 @@ func InternalAdjustQuota(c *gin.Context) {
 		"success": true,
 		"message": "Quota adjusted successfully",
 		"data": gin.H{
-			"user_id":      user.Id,
-			"old_quota":    user.Quota,
-			"adjustment":   req.Amount,
-			"new_quota":    newQuota,
+			"user_id":    user.Id,
+			"old_quota":  user.Quota,
+			"adjustment": req.Amount,
+			"new_quota":  newQuota,
 		},
 	})
 }
@@ -339,9 +346,9 @@ func InternalGetUserBalance(c *gin.Context) {
 		"success": true,
 		"data": gin.H{
 			"user_id":     user.Id,
-			"balance":     user.Quota,                          // Balance in LUT (= quota units)
-			"balance_luc": balanceLuc,                          // Balance in LUC
-			"balance_rmb": balanceLuc,                          // LUC ~ CNY 1:1 (backward compat)
+			"balance":     user.Quota, // Balance in LUT (= quota units)
+			"balance_luc": balanceLuc, // Balance in LUC
+			"balance_rmb": balanceLuc, // LUC ~ CNY 1:1 (backward compat)
 			"used_quota":  user.UsedQuota,
 			"lute": gin.H{
 				"balance":         user.Quota,
@@ -421,8 +428,21 @@ func InternalTopupBalance(c *gin.Context) {
 		return
 	}
 
+	// A platform-linked user whose balance is the platform wallet gains
+	// nothing from users.quota; refuse rather than book money into a ledger
+	// that no longer gates spend (see repo.WalletIsLedger).
+	if user.LurusAccountID != nil && *user.LurusAccountID > 0 && repo.WalletIsLedger(user.TenantId) {
+		c.JSON(http.StatusConflict, gin.H{
+			"success":    false,
+			"message":    "user balance is the platform wallet; credit the wallet instead",
+			"error_code": repo.RedemptionErrorCodeWalletLedger,
+			"topup_url":  common.IdentityTopupURL(),
+		})
+		return
+	}
+
 	// Convert RMB to tokens
-	quotaAmount := int(req.AmountRmb * common.QuotaPerUnit)
+	quotaAmount := currency.CNYToQuota(req.AmountRmb)
 
 	// Add quota
 	err = repo.IncreaseUserQuota(req.UserId, quotaAmount, true)
@@ -512,6 +532,18 @@ func AdminCreateApiKey(c *gin.Context) {
 		if scope == repo.ScopeAll {
 			userRole := c.GetInt("role")
 			if userRole != common.RoleRootUser {
+				// Cycle 13 L4: the refusal leaves a trail too. Reachability,
+				// stated honestly: the whole /api/api-keys group is mounted
+				// behind middleware.RootAuth() (router/api-router.go), so a
+				// non-root session cannot reach this handler today and this
+				// branch is defence in depth against a future re-mount, not
+				// the closing of a live blind spot. When it does fire it is
+				// the same class of event as ActionChannelSensitiveWriteRefused.
+				// Details carry the requested name and scope; no key material
+				// exists yet at this point.
+				governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, adminId,
+					governance.ActionAuthScopeRejected, governance.ResourceInternalKey, 0,
+					fmt.Sprintf(`{"op":"create","name":%q,"requested_scope":%q,"role":%d}`, req.Name, repo.ScopeAll, userRole)))
 				c.JSON(http.StatusForbidden, gin.H{
 					"success": false,
 					"message": "Only root user can create keys with full access",
@@ -530,6 +562,17 @@ func AdminCreateApiKey(c *gin.Context) {
 		})
 		return
 	}
+
+	// Details carry name/key_prefix/scopes — apiKey.Scopes is already the
+	// JSON-array string CreateInternalApiKey persisted, and the InternalApiKey
+	// row holds the key's hash, not the key. The raw `key` local is not
+	// referenced in the Details string below; it appears only in the response
+	// body. assertAuditRowsCarryNoKeyMaterial (internal_api_audit_test.go)
+	// scans every row this handler writes for the raw key, its unrevealed
+	// remainder and its hash.
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, adminId,
+		governance.ActionInternalKeyCreated, governance.ResourceInternalKey, apiKey.Id,
+		fmt.Sprintf(`{"name":%q,"key_prefix":%q,"scopes":%s}`, apiKey.Name, apiKey.KeyPrefix, apiKey.Scopes)))
 
 	// IMPORTANT: Only return the full key ONCE during creation
 	c.JSON(http.StatusOK, gin.H{
@@ -554,6 +597,19 @@ func AdminDeleteApiKey(c *gin.Context) {
 		return
 	}
 
+	// Snapshot BEFORE the hard delete (cycle-13 hand-finish after L4's
+	// acceptance): DELETE leaves no row, so an audit row that carried only
+	// the id could never again be resolved to "which key, with which
+	// scopes". A bad id, or a key already gone, still records the attempt
+	// (found:false) rather than fabricating a snapshot. Same no-key-material
+	// rule as the create row — name/key_prefix/scopes/enabled only;
+	// assertAuditRowsCarryNoKeyMaterial scans this row too.
+	details := fmt.Sprintf(`{"key_id":%d,"found":false}`, keyId)
+	if existing, lookupErr := repo.GetInternalApiKeyById(keyId); lookupErr == nil && existing != nil {
+		details = fmt.Sprintf(`{"key_id":%d,"found":true,"name":%q,"key_prefix":%q,"scopes":%s,"enabled":%t}`,
+			keyId, existing.Name, existing.KeyPrefix, scopesJSONOrNull(existing.Scopes), existing.Enabled)
+	}
+
 	err = repo.DeleteInternalApiKey(keyId)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -562,6 +618,9 @@ func AdminDeleteApiKey(c *gin.Context) {
 		})
 		return
 	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionInternalKeyDeleted, governance.ResourceInternalKey, keyId, details))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -581,7 +640,7 @@ func AdminToggleApiKey(c *gin.Context) {
 		return
 	}
 
-	err = repo.ToggleInternalApiKey(keyId)
+	enabled, err := repo.ToggleInternalApiKey(keyId)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -589,6 +648,12 @@ func AdminToggleApiKey(c *gin.Context) {
 		})
 		return
 	}
+
+	// The resulting state is the fact an auditor needs: "toggled" alone
+	// cannot tell a disable from a re-enable (cycle-13 hand-finish after L4).
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionInternalKeyToggled, governance.ResourceInternalKey, keyId,
+		fmt.Sprintf(`{"key_id":%d,"enabled":%t}`, keyId, enabled)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -628,6 +693,14 @@ func AdminUpdateApiKey(c *gin.Context) {
 		if scope == repo.ScopeAll {
 			userRole := c.GetInt("role")
 			if userRole != common.RoleRootUser {
+				// Same refusal trail — and the same RootAuth reachability
+				// caveat — as AdminCreateApiKey above (cycle 13 L4); here the
+				// key already exists, so the row carries its id; still no key
+				// material (the raw key is not in the request and the stored
+				// row holds only its hash).
+				governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+					governance.ActionAuthScopeRejected, governance.ResourceInternalKey, keyId,
+					fmt.Sprintf(`{"op":"update","name":%q,"requested_scope":%q,"role":%d}`, req.Name, repo.ScopeAll, userRole)))
 				c.JSON(http.StatusForbidden, gin.H{
 					"success": false,
 					"message": "Only root user can assign full access",
@@ -647,8 +720,33 @@ func AdminUpdateApiKey(c *gin.Context) {
 		return
 	}
 
+	// scopesJSON mirrors what UpdateInternalApiKey just persisted — built the
+	// same way (json.Marshal) rather than hand-copied, so Details cannot drift
+	// from the stored value. A marshal error on a []string is not reachable
+	// today; the fallback below is here so that if it ever became reachable
+	// the Details string stays parseable JSON — an empty scopesJSON would
+	// render as `"scopes":}`, which is not.
+	scopesJSON, marshalErr := json.Marshal(req.Scopes)
+	if marshalErr != nil || len(scopesJSON) == 0 {
+		scopesJSON = []byte("null")
+	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionInternalKeyUpdated, governance.ResourceInternalKey, keyId,
+		fmt.Sprintf(`{"name":%q,"scopes":%s}`, req.Name, scopesJSON)))
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "API key updated successfully",
 	})
+}
+
+// scopesJSONOrNull returns s when it is the JSON array InternalApiKey.Scopes
+// stores, and "null" otherwise, so an audit Details string that embeds it
+// stays parseable JSON (an empty Scopes column would otherwise render as
+// `"scopes":}`).
+func scopesJSONOrNull(s string) string {
+	if json.Valid([]byte(s)) {
+		return s
+	}
+	return "null"
 }

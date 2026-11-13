@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/currency"
 )
 
 // Error code constants used in integration test assertions.
@@ -32,7 +34,7 @@ func authHeaders() map[string]string {
 // authHeadersWithIdempotency returns auth headers plus an idempotency key.
 func authHeadersWithIdempotency(idempotencyKey string) map[string]string {
 	return map[string]string{
-		"X-API-Key":        testApiKeyAllScopes,
+		"X-API-Key":         testApiKeyAllScopes,
 		"X-Idempotency-Key": idempotencyKey,
 	}
 }
@@ -58,7 +60,7 @@ func disableUser(t *testing.T, userId int) {
 // ============================================================
 
 // TestInteg_Login_Deprecated verifies that /internal/auth/login returns 410 Gone
-// since password-based auth is deprecated in favor of Zitadel OIDC.
+// since password-based auth is deprecated in favor of OIDC.
 func TestInteg_Login_Deprecated(t *testing.T) {
 	router, cleanup := SetupIntegrationRouter(t)
 	t.Cleanup(cleanup)
@@ -203,7 +205,6 @@ func TestInteg_CreateUser_InvalidUsername(t *testing.T) {
 	resp := parseResponse(t, w)
 	assertErrorCode(t, resp, ErrCodeValidationFailed)
 }
-
 
 func TestInteg_GetUser_Success(t *testing.T) {
 	router, cleanup := SetupIntegrationRouter(t)
@@ -1061,7 +1062,7 @@ func TestInteg_TopupAndVerifyBalance(t *testing.T) {
 	d2, _ := resp2["data"].(map[string]interface{})
 	finalBalance := d2["balance"].(float64)
 
-	expectedIncrease := topupAmount * common.QuotaPerUnit
+	expectedIncrease := topupAmount * currency.LucToLut() // CNY 25 buys the quota of $25/USDExchangeRate
 	actualIncrease := finalBalance - initialBalance
 	if actualIncrease < expectedIncrease*0.99 || actualIncrease > expectedIncrease*1.01 {
 		t.Errorf("balance increase mismatch: expected ~%v, got %v (initial=%v, final=%v)",
@@ -1435,6 +1436,68 @@ func TestInteg_CreateUser_DefaultGroup(t *testing.T) {
 	}
 }
 
+// TestInteg_CreateUser_WithTenantPlugin reproduces the production setup: the
+// GORM TenantPlugin is registered (repo/main.go does this at boot) and the
+// internal API key context carries NO tenant. Without an explicit default
+// tenant in the handler, the plugin's beforeCreate rejects the INSERT
+// ("tenant_id is required for create operations") and the endpoint 500s.
+// The harness in SetupIntegrationRouter does not register the plugin, which
+// is why the other CreateUser tests never caught this.
+func TestInteg_CreateUser_WithTenantPlugin(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       map[string]interface{}
+		wantStatus int
+		wantTenant string // assert DB row tenant when 201
+	}{
+		{
+			name: "create succeeds and lands in default tenant",
+			body: map[string]interface{}{
+				"username": "tenantpluguser",
+				"email":    "tenantplug@test.local",
+			},
+			wantStatus: http.StatusCreated,
+			wantTenant: "default",
+		},
+		{
+			name: "validation error stays 400 not 500",
+			body: map[string]interface{}{
+				"username": "x", // too short
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			router, cleanup := SetupIntegrationRouter(t)
+			t.Cleanup(cleanup)
+			if err := repo.DB.Use(&repo.TenantPlugin{}); err != nil {
+				t.Fatalf("failed to register tenant plugin: %v", err)
+			}
+
+			w := internalRequest(router, "POST", "/internal/user", tc.body, authHeaders())
+			if w.Code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d, body: %s", tc.wantStatus, w.Code, w.Body.String())
+			}
+
+			if tc.wantStatus == http.StatusCreated {
+				resp := parseResponse(t, w)
+				assertSuccess(t, resp)
+				data, _ := resp["data"].(map[string]interface{})
+				id := int(data["id"].(float64))
+				var created repo.User
+				if err := repo.WithoutTenantIsolation(repo.DB).Where("id = ?", id).First(&created).Error; err != nil {
+					t.Fatalf("created user %d not found: %v", id, err)
+				}
+				if created.TenantId != tc.wantTenant {
+					t.Errorf("expected tenant_id %q, got %q", tc.wantTenant, created.TenantId)
+				}
+			}
+		})
+	}
+}
+
 // ============================================================
 // Balance/Quota Getter Edge Cases
 // ============================================================
@@ -1561,7 +1624,6 @@ func TestInteg_Topup_MissingReason(t *testing.T) {
 // Login Edge Cases
 // ============================================================
 
-
 // ============================================================
 // Update User Edge Cases
 // ============================================================
@@ -1663,5 +1725,47 @@ func TestInteg_DeleteUser_InvalidId(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+// TestInteg_Topup_WalletLedgerRefusesLinkedUser: with the platform wallet as
+// the only balance, an internal top-up for a platform-linked user is refused
+// (409 WALLET_IS_LEDGER) and users.quota is untouched.
+func TestInteg_Topup_WalletLedgerRefusesLinkedUser(t *testing.T) {
+	router, cleanup := SetupIntegrationRouter(t)
+	t.Cleanup(cleanup)
+
+	prevUnified, prevAdvisory := common.BillingUnifiedEnabled(), common.LocalLedgerAdvisory()
+	t.Cleanup(func() {
+		common.SetBillingUnifiedEnabled(prevUnified)
+		common.SetLocalLedgerAdvisory(prevAdvisory)
+	})
+	common.SetBillingUnifiedEnabled(true)
+	common.SetLocalLedgerAdvisory(true)
+
+	if err := repo.DB.Model(&repo.User{}).Where("id = ?", 2).Update("lurus_account_id", int64(777)).Error; err != nil {
+		t.Fatalf("link user: %v", err)
+	}
+	before, err := repo.GetUserQuota(2, true)
+	if err != nil {
+		t.Fatalf("read quota: %v", err)
+	}
+
+	w := internalRequest(router, "POST", "/internal/balance/topup", map[string]interface{}{
+		"user_id":    2,
+		"amount_rmb": 10.0,
+		"reason":     "linked user topup",
+		"order_id":   "order_wallet_ledger_001",
+	}, authHeaders())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d, body: %s", w.Code, w.Body.String())
+	}
+	resp := parseResponse(t, w)
+	if resp["error_code"] != "WALLET_IS_LEDGER" || resp["topup_url"] != common.IdentityTopupURL() {
+		t.Errorf("error_code=%v topup_url=%v, want WALLET_IS_LEDGER and %s", resp["error_code"], resp["topup_url"], common.IdentityTopupURL())
+	}
+	after, _ := repo.GetUserQuota(2, true)
+	if after != before {
+		t.Errorf("quota changed on refusal: before=%d after=%d", before, after)
 	}
 }

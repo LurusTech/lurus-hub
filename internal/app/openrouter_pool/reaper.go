@@ -7,7 +7,13 @@ import (
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
+	"github.com/LurusTech/lurus-hub/internal/pkg/taskreg"
 )
+
+// openRouterPoolReapTaskName is the "task" label this job stamps on
+// metrics.LeaderTaskLastSuccess and registers under in taskreg.
+const openRouterPoolReapTaskName = "openrouter-pool-reap"
 
 // reaperInterval governs how often the reaper scans for expired cooldowns.
 // 30s strikes a balance between recovery latency and DB churn — even with
@@ -23,10 +29,16 @@ const reaperInterval = 30 * time.Second
 func AutoReapWithContext(ctx context.Context) {
 	common.SysLog("openrouter pool reaper: started, interval=" + reaperInterval.String())
 
+	metrics.LeaderTaskLastSuccess.WithLabelValues(openRouterPoolReapTaskName).Set(0)
+	taskreg.Register(openRouterPoolReapTaskName, func() time.Duration { return reaperInterval }, true, nil)
+
 	// Run once on startup so a freshly booted master doesn't wait the full
-	// interval before recovering keys whose cooldowns expired during downtime.
-	if err := ReapOnce(ctx, time.Now); err != nil {
-		common.SysLog("openrouter pool reaper initial run failed: " + err.Error())
+	// interval before recovering keys whose cooldowns expired during downtime —
+	// but only if this node already holds leadership at boot.
+	if common.IsLeader() {
+		if err := ReapOnce(ctx, time.Now); err != nil {
+			common.SysLog("openrouter pool reaper initial run failed: " + err.Error())
+		}
 	}
 
 	ticker := time.NewTicker(reaperInterval)
@@ -37,6 +49,10 @@ func AutoReapWithContext(ctx context.Context) {
 			common.SysLog("openrouter pool reaper: stopped")
 			return
 		case <-ticker.C:
+			// HA: only the leader reaps; non-leaders idle until they win the lease.
+			if !common.IsLeader() {
+				continue
+			}
 			if err := ReapOnce(ctx, time.Now); err != nil {
 				common.SysLog("openrouter pool reaper failed: " + err.Error())
 			}
@@ -44,12 +60,27 @@ func AutoReapWithContext(ctx context.Context) {
 	}
 }
 
+// listReaperChannelsFn is the reaper's channel source: every multi-key channel
+// of any type (the 429 cooldown is not OpenRouter-only), tenant-blind.
+var listReaperChannelsFn = repo.ListMultiKeyChannelsForReaper
+
 // ReapOnce performs a single reaper pass. Exposed for testing with an
 // injectable clock; in production AutoReapWithContext drives it.
-func ReapOnce(ctx context.Context, now func() time.Time) error {
-	channels, err := repo.ListOpenRouterMultiKeyChannels()
-	if err != nil {
-		return fmt.Errorf("list channels: %w", err)
+//
+// L3 heartbeat: a nil return stamps metrics.LeaderTaskLastSuccess(openrouter-pool-reap)
+// via a defer, so every successful exit — including the "nothing to do"
+// early return below — counts, not just the loop's tail.
+func ReapOnce(ctx context.Context, now func() time.Time) (err error) {
+	defer func() {
+		if err == nil {
+			metrics.RecordLeaderTaskSuccess(openRouterPoolReapTaskName)
+		}
+	}()
+
+	channels, listErr := listReaperChannelsFn()
+	if listErr != nil {
+		err = fmt.Errorf("list channels: %w", listErr)
+		return err
 	}
 	if len(channels) == 0 {
 		return nil
@@ -59,7 +90,8 @@ func ReapOnce(ctx context.Context, now func() time.Time) error {
 	for _, ch := range channels {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			err = ctx.Err()
+			return err
 		default:
 		}
 		recovered, err := reapChannel(ch, now())
@@ -127,7 +159,7 @@ func reapChannel(channel *repo.Channel, now time.Time) (int, error) {
 		}
 	}
 
-	if err := channel.SaveWithoutKey(); err != nil {
+	if err := repo.SaveChannelPoolState(channel); err != nil {
 		return recovered, fmt.Errorf("save channel: %w", err)
 	}
 	if channelStatusChanged {

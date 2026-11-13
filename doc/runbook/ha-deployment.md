@@ -1,215 +1,131 @@
 # High Availability Deployment Guide
 
-## Overview
+> 决策依据见 ADR `doc/decisions/ha-deployment.md`。唯一 manifest:`deploy/k8s/r6-stage/`。
+>
+> 2026-08-24 按 live 重核。旧版通篇是 2026-04-23 退役的 `lurus-api`/ns `lurus-system`,
+> 且有三处与现状相反:它描述了一个**集群里并不存在的 PodDisruptionBudget**、
+> 把 readiness 写成 `/api/status`(实际是深检 `/api/health`)、
+> 并推荐 `kubectl scale` / `rollout undo`(**会被 ArgoCD selfHeal 回滚**)。
 
-This document describes the high availability (HA) deployment configuration for lurus-api, enabling zero-downtime deployments and improved reliability.
+`lurus-newhub` 的 HA:宿主 nginx → NodePort 30850 → 3 副本 → 共享 PostgreSQL + Redis。
 
-## Architecture
+**前提**:Redis 可达(`REDIS_CONN_STRING`)、PostgreSQL 主库、**所有副本 `SESSION_SECRET` 相同**
+(同一个 Secret 注入,天然一致)。
 
-```
-                    ┌─────────────────┐
-                    │   Traefik LB    │
-                    │  (IngressRoute) │
-                    └────────┬────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              │                             │
-        ┌─────▼─────┐                ┌─────▼─────┐
-        │  Pod A    │                │  Pod B    │
-        │ lurus-api │                │ lurus-api │
-        └─────┬─────┘                └─────┬─────┘
-              │                             │
-              └──────────────┬──────────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-   ┌────▼────┐         ┌────▼────┐         ┌────▼────┐
-   │PostgreSQL│         │  Redis  │         │MeiliSearch│
-   └──────────┘         └─────────┘         └──────────┘
-```
+## 现状(live)
 
-## Prerequisites
+| 项 | 值 |
+|----|-----|
+| replicas | **3**(leader election 演练:杀掉 leader,看备用在 lease TTL 内接管——用 `lurus_gateway_leader` gauge/`checks.leader`,配 `/metrics` 的 `lurus_gateway_instance_info` 的 `pod` label 区分哪个副本;`/api/health` 是公网端点,不带 pod 身份,见下方演练命令) |
+| strategy | RollingUpdate,`maxUnavailable: 0` / `maxSurge: 1` |
+| PodDisruptionBudget | **无**(单节点集群,PDB 挡不住节点级中断;不要照旧版去建一个) |
+| podAntiAffinity | **无**(单节点,反亲和会让副本永远 Pending) |
+| liveness | `GET /api/status`,浅检,`initialDelaySeconds:30 periodSeconds:15` |
+| readiness | `GET /api/health`,**深检**(DB + breaker),`initialDelaySeconds:10 periodSeconds:5 failureThreshold:3 timeoutSeconds:2` |
+| preStop | `sleep 5`,给在途 relay 请求排空 |
 
-- Redis must be enabled (`REDIS_CONN_STRING` configured)
-- PostgreSQL as primary database
-- Shared session secret across replicas (`SESSION_SECRET` env var)
+浅 liveness / 深 readiness 的分工与其相关风险(3 副本共享一个 PG ⇒ PG 抖动会同时把 3 个副本
+踢出 Service)在 `deploy/k8s/r6-stage/deployment.yaml` 的探针注释里有完整论证,改探针前先读。
 
-## Configuration
+## 状态归属
 
-### Deployment Configuration
+| 组件 | 存储 | 多副本行为 |
+|------|------|-----------|
+| Session / 限流 | Redis(`lurus-system` ns,DB **2**) | 副本间共享 |
+| 渠道缓存 | PostgreSQL → 内存 | 各副本独立同步(`SYNC_FREQUENCY=60` **秒**) |
+| JWKS 缓存 | IdP 端点 | 各副本独立刷新 |
+| 倍率表 | PostgreSQL | 各副本独立加载 |
+| master-only 后台任务 | DB lease | 仅 leader 执行 |
+| DB migration | 两把 advisory lock | **每个 master-capable 副本都跑**,由锁串行化(`57e22c8a` 起与 lease 解耦) |
 
-```yaml
-spec:
-  replicas: 2  # Minimum for HA
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0  # Zero-downtime: never remove existing pod before new one is ready
-      maxSurge: 1        # Allow 1 extra pod during rollout
-```
+## 运维操作
 
-### Pod Anti-Affinity
-
-Pods are spread across nodes when possible:
-
-```yaml
-affinity:
-  podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          labelSelector:
-            matchLabels:
-              app: lurus-api
-          topologyKey: kubernetes.io/hostname
-```
-
-### PodDisruptionBudget
-
-Ensures at least 1 pod remains available during voluntary disruptions:
-
-```yaml
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: lurus-api-pdb
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: lurus-api
-```
-
-## State Management
-
-### Stateless Components
-
-| Component | State Storage | HA Behavior |
-|-----------|---------------|-------------|
-| Sessions | Redis | Shared across replicas |
-| Rate Limiting | Redis | Shared across replicas |
-| Channel Cache | PostgreSQL | Each replica syncs independently |
-| JWKS Cache | Zitadel endpoint | Each replica refreshes independently |
-| Model Ratios | PostgreSQL | Each replica loads from DB |
-
-### Potential Issues
-
-1. **Channel Cache Lag**: Each replica syncs every 60 seconds. During this window, different replicas may have slightly different channel lists. This is acceptable for load balancing.
-
-2. **JWKS Key Rotation**: If Zitadel rotates keys, each replica discovers new keys on next JWKS refresh (1 hour) or on first key-not-found error.
-
-## Deployment Procedures
-
-### Scale Up
+副本数、镜像、探针**都改 git 源 manifest**,由 ArgoCD 收敛:
 
 ```bash
-kubectl scale deployment lurus-api -n lurus-system --replicas=3
+# 扩缩容 = 改 deploy/k8s/r6-stage/deployment.yaml 的 replicas 并 merge 到 main
+# 回滚   = revert 那次 auto-pin commit(不是 kubectl rollout undo)
+# 详见 doc/runbook/staging-deploy.md
+
+# 只读核验
+ssh root@100.122.83.20 "kubectl get deploy,pods -n lurus-newhub -o wide"
+ssh root@100.122.83.20 "kubectl get app lurus-newhub -n argocd"    # 应为 Synced / Healthy
+curl -s https://test-newhub.lurus.cn/api/health                     # 四检全 ok
 ```
 
-### Scale Down
+🔴 `kubectl scale` / `kubectl rollout restart` / `kubectl set image` 在本服务上**无效**:
+ArgoCD `automated + selfHeal` 会把它们回滚,只会制造「改了没生效」的假象。
+
+## leader election 演练
+
+通过 `/metrics` 鉴权闸门的抓取会带 `X-Lurus-Instance` 头(值 = pod 名,downward API
+`POD_NAME`;被闸门拒掉的抓取不带),同一个 pod 身份也作为 `lurus_gateway_instance_info`
+的 `pod` label 出现在响应体里,据此把 `lurus_gateway_leader` gauge 归到具体副本;
+`/api/health` 只暴露粗粒度的
+`checks.leader`(`held`|`standby`,不带 pod 身份——该端点公网可达,无鉴权网关)——
+`standby` 是跟随者的正常态,**不会**被判 degraded/unhealthy。
+
+🔴 一个被降级的副本会**永远**保留它最后一次成功时打的
+`lurus_gateway_leader_task_last_success_timestamp_seconds{task}` 时间戳(该 series 不会因
+降级而清零或消失),所以针对**leader-gated**任务的告警(`time() - last_success > X`)必须同时限定
+`lurus_gateway_leader == 1`,否则一个早已下台的副本的陈旧时间戳会一直压着告警不触发。
+⚠️ 并非每个 task 都 leader-gated:`channel-health-test`(L3,2026-09-13)跑在**每个**
+master-capable 副本上,不是只跑在 leader 上——对它的告警**不能**加
+`lurus_gateway_leader == 1` 限定,否则会看不见非 leader 副本上的这个 series。哪个 task
+leader-gated 由 `GET /api/v2/admin/system/tasks`(root 专用,per-pod)的 `leader_only`
+字段逐条给出,不要凭印象假设。
 
 ```bash
-kubectl scale deployment lurus-api -n lurus-system --replicas=2
+# 逐 pod 直连 NodePort(host nginx 只转发一个 Service,单次 curl 落在哪个副本不确定)
+for p in $(kubectl get pods -n lurus-newhub -l app=lurus-newhub -o jsonpath='{.items[*].metadata.name}'); do
+  kubectl exec -n lurus-newhub "$p" -- wget -qO- http://localhost:3000/api/health | grep -o '"leader":"[^"]*"'
+done
+# 或直接看 pod 自己的 /metrics。instance_info 的 pod label 在响应体里,不依赖看响应头,
+# 所以这一条同时给出"是哪个副本"和"它是不是 leader"
+kubectl exec -n lurus-newhub <leader-pod> -- wget -qO- http://localhost:3000/metrics \
+  | grep -E '^lurus_gateway_(leader |instance_info)'
+
+# 杀掉持锁的那个副本,在 lease TTL 内应看到另一个副本的 lurus_gateway_leader 从 0 变 1
+kubectl delete pod -n lurus-newhub <leader-pod>
 ```
 
-### Rolling Update
+## 告警阈值
 
-Rolling updates are automatic when deployment spec changes:
+监控栈已切 Netdata 自托管:指标由 `/metrics` 暴露、Netdata go.d `prometheus`
+collector 主动抓(**禁为换监控栈改业务代码**)。
 
-```bash
-kubectl rollout status deployment/lurus-api -n lurus-system
-```
+🔴 **本节 2026-09-20 前的版本说"告警阈值本 repo 不跟踪"是过期的**——自 cycle 9
+起,`deploy/r6-host-netdata/health.d/newhub.conf` 就是仓内真源(旧的
+`deploy/grafana/newhub-alerts.yaml` 已删除、`deploy/k8s/r6-stage/newhub-prometheus-rule.yaml`
+仍标注 **NOT DEPLOYED** 留档,两者都不是真源)。`internal/pkg/metrics/netdata_alarm_series_test.go`
+是结构闸:每条非 `# DEAD` 块的 `on:` 必须解析到一个本包声明且真被生产代码写入的
+Prometheus 序列,否则挡 CI;它证明不了 netdata 主机侧当前是否已装载/是否已绑定图表
+(那是 live、data-dependent 状态,见 conf 文件自己的 `# STATUS`/`# STATUS UPDATE`
+行与各 runbook 的 "LIVE STATUS" 段落)。安装/reload 命令见该目录的 README.md
+"Install" 一节(owner item O2)。
 
-### Rollback
+leader-gating 相关的两条告警在这份 conf 里(cycle-13 L10 补齐,`internal/pkg/metrics/instance.go`
+的 `lurus_gateway_leader_task_age_seconds{task}` 是本节上方"🔴 一个被降级的副本…"
+提到的原始时间戳序列的伴随派生值,同样的 leader-gating 注意事项适用):
 
-```bash
-kubectl rollout undo deployment/lurus-api -n lurus-system
-```
+| 告警 | 序列 | 说明 |
+|---|---|---|
+| `newhub_task_stalled` | `lurus_gateway_leader_task_age_seconds{task}` | 阈值刻意宽松(72h = 3×最慢已注册任务的间隔),见 conf 文件该块注释 |
+| `newhub_schema_migrations_pending` | `lurus_gateway_schema_migrations_pending` | `migrations.go` 注释自称"the condition to page on"——此告警使其成立 |
 
-## Health Checks
+🔴 `newhub_task_stalled` **看不见两类任务**(2026-09-20 修复轮 D-L10-1):本进程里
+**一次都没成功过**的任务(原始时间戳读作 0,`now - 0` 是 57 年而不是"年龄",
+默认关闭 `AutoTestChannelEnabled` 时的 channel-health-test 就是这一类——第一版
+把这个数发出去,健康 leader 上该告警会恒 WARNING),以及 taskreg 里
+`Active() == false` 的任务(被管理员关掉,不在任何排期上)。两类都不会消失于无形:
+`lurus_gateway_leader_task_last_success_timestamp_seconds` 仍带着启动时写的 0,
+`GET /api/v2/admin/system/tasks`(按 pod、root-only)带 leader/active 元数据,
+判"standby 还是真 overdue"要看它,不要看这条告警。
 
-### Liveness Probe
+## 排障
 
-Checks if the application is running:
-
-```yaml
-livenessProbe:
-  httpGet:
-    path: /api/status
-    port: 3000
-  initialDelaySeconds: 30
-  periodSeconds: 15
-```
-
-### Readiness Probe
-
-Checks if the application can serve traffic:
-
-```yaml
-readinessProbe:
-  httpGet:
-    path: /api/status
-    port: 3000
-  initialDelaySeconds: 10
-  periodSeconds: 5
-```
-
-## Monitoring
-
-### Key Metrics
-
-| Metric | Threshold | Action |
-|--------|-----------|--------|
-| `request_duration_seconds_p95` | > 500ms | Investigate latency |
-| `error_rate_5m` | > 5% | Check logs, consider rollback |
-| `pod_restart_count` | > 3/hour | Check OOM, probe failures |
-
-### Verify HA Status
-
-```bash
-# Check replica count
-kubectl get deployment lurus-api -n lurus-system
-
-# Check pod distribution
-kubectl get pods -n lurus-system -l app=lurus-api -o wide
-
-# Check PDB status
-kubectl get pdb lurus-api-pdb -n lurus-system
-```
-
-## Troubleshooting
-
-### Pods Not Spreading Across Nodes
-
-Check if nodes have the required label and capacity:
-
-```bash
-kubectl get nodes -l lurus.cn/vpn=true
-kubectl describe node <node-name> | grep -A5 Allocatable
-```
-
-### Rolling Update Stuck
-
-Check for readiness probe failures:
-
-```bash
-kubectl describe pod -l app=lurus-api -n lurus-system | grep -A10 Events
-```
-
-### Session Loss After Deployment
-
-Ensure `SESSION_SECRET` is identical across all replicas and Redis is accessible.
-
-## Capacity Planning
-
-| Replicas | Expected RPS | Memory | CPU |
-|----------|--------------|--------|-----|
-| 2 | 100-500 | 2Gi | 1 core |
-| 3 | 500-1000 | 3Gi | 1.5 cores |
-| 4+ | 1000+ | 4Gi+ | 2+ cores |
-
-## References
-
-- [Kubernetes Rolling Updates](https://kubernetes.io/docs/tutorials/kubernetes-basics/update/update-intro/)
-- [Pod Disruption Budgets](https://kubernetes.io/docs/tasks/run-application/configure-pdb/)
-- [Pod Anti-Affinity](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity)
+- **滚动更新卡住**:`kubectl describe pod -l app=lurus-newhub -n lurus-newhub | grep -A10 Events`
+  —— 多半是 readiness 深检没过(先看 `/api/health` 哪一项红)。
+- **部署后重启循环**:先分清是**进程坏**还是**依赖抖**;liveness 故意保持浅检就是为了后者不触发重启。
+- **Session 在部署后失效**:确认 `SESSION_SECRET` 来自同一 Secret,且 Redis 可达。
+- **副本数与预期不符**:先看 ArgoCD 是否 Synced —— 手工改过的副本数会被 selfHeal 拉回 git 值。

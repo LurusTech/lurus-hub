@@ -29,6 +29,8 @@ import (
 	"github.com/LurusTech/lurus-hub/internal/adapter/provider/replicate"
 	"github.com/LurusTech/lurus-hub/internal/adapter/provider/siliconflow"
 	"github.com/LurusTech/lurus-hub/internal/adapter/provider/submodel"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider/systemone"
+	"github.com/LurusTech/lurus-hub/internal/adapter/provider/voyage"
 	taskali "github.com/LurusTech/lurus-hub/internal/adapter/provider/task/ali"
 	taskdoubao "github.com/LurusTech/lurus-hub/internal/adapter/provider/task/doubao"
 	taskGemini "github.com/LurusTech/lurus-hub/internal/adapter/provider/task/gemini"
@@ -50,6 +52,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// GetAdaptor returns the legacy per-vendor adaptor.
+// Soft-retire (RELAY_ENGINE=bifrost): do not add features here for ApiTypes
+// that bifrosteng.CoverageOf marks bifrost-owned — extend bifrosteng instead.
+// This path remains for deferred vendors, pass-through, and convert gaps.
 func GetAdaptor(apiType int) provider.Adaptor {
 	switch apiType {
 	case constant.APITypeAli:
@@ -118,6 +124,10 @@ func GetAdaptor(apiType int) provider.Adaptor {
 		return &minimax.Adaptor{}
 	case constant.APITypeReplicate:
 		return &replicate.Adaptor{}
+	case constant.APITypeSystemOne:
+		return &systemone.Adaptor{}
+	case constant.APITypeVoyage:
+		return &voyage.Adaptor{}
 	}
 	return nil
 }

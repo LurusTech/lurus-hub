@@ -105,7 +105,57 @@ var AutomaticEnableChannelEnabled = false
 var QuotaRemindThreshold = 1000
 var PreConsumedQuota = 500
 
-var RetryTimes = 0
+// RetryTimes is the relay failover budget. internal/adapter/handler/relay.go
+// loops while retry <= RetryTimes, so this is total upstream attempts MINUS
+// one, and shouldRetry is handed RetryTimes-retry as its remaining budget.
+//
+// It shipped at 0 until cycle 14. Zero means no failover at all: one upstream
+// 5xx reached the customer even when another healthy channel served the same
+// model, which made the cross-group / cross-priority failover that
+// internal/app/channel_select.go's doc comment describes, and the "retries
+// cover us" clause in doc/slo-relay.md, both unreachable. The production
+// options table carries no RetryTimes row (operator check, 2026-09), so the
+// value compiled here IS the production value.
+//
+// Why 2 — up to 3 upstream attempts — and not more:
+//
+//   - Each retry is a FRESH upstream call, not a resumption. Its worst case is
+//     RelayDialTimeout (10s) plus RelayResponseHeaderTimeout (90s) before any
+//     response header arrives, and there is no total request deadline to
+//     absorb it (RelayTimeout is deliberately 0 so long SSE streams are never
+//     cut — see the comment above it). The budget is therefore the only thing
+//     capping what a customer waits for against a set of wedged providers:
+//     3 x ~100s is already about five minutes, which is past the point most
+//     callers have abandoned the request. A 4th attempt buys almost nothing
+//     and costs another 100s of that worst case.
+//   - The failure this exists for — a 5xx, a 429, a 307, a channel error —
+//     comes back in well under a second, so in the case that actually happens
+//     the two extra attempts cost latency nobody notices.
+//   - On a wide upstream outage the budget is also an amplification factor
+//     against providers that are already failing. 3x is the most worth
+//     spending; the per-channel circuit breaker absorbs the rest by skipping
+//     channels whose breaker is Open.
+//   - An Open breaker consumes one iteration of that same loop (the `continue`
+//     runs the post statement), so 2 also leaves room to skip two dead
+//     channels and still make one real call — at 1 the same request would
+//     answer 503 without ever calling an upstream.
+//
+// Why raising it does not multiply anyone's money: the pre-authorisation is
+// taken ONCE per request, before the loop — relay.go calls app.PreConsumeQuota
+// outside it, and PreConsumeQuota itself short-circuits when
+// relayInfo.PlatformPreAuthID is already set. Retries reuse that single hold,
+// and the one deferred releasePreConsumedOnFailure still releases exactly one.
+// Settlement happens only on the attempt that succeeds.
+//
+// It is bounded from the other side too: shouldRetry suppresses failover the
+// moment any byte has been written to the client, so this number can never
+// cause a duplicated or interleaved stream.
+//
+// Tune per deployment through the `RetryTimes` row of the options table —
+// there is no environment variable for it. See doc/runbook/shipped-defaults.md
+// for the query that reads the live value, and
+// internal/pkg/gates/shipped_defaults_test.go for the pin.
+var RetryTimes = 2
 
 //var RootUserEmail = ""
 
@@ -124,13 +174,63 @@ var RelayTimeout int // unit is second
 var RelayMaxIdleConns int
 var RelayMaxIdleConnsPerHost int
 
+// Streaming-safe hung-upstream guards (B1/R3). RelayTimeout (http.Client.Timeout)
+// is deliberately left at its default 0 — a TOTAL timeout would cut legitimate
+// long SSE streams. Instead we bound only the two hang vectors that don't affect
+// a healthy in-flight stream:
+//   - RelayResponseHeaderTimeout caps time-to-first-response-header. It fires
+//     ONLY before the first header byte; once 200+headers arrive the SSE body is
+//     governed by the existing per-chunk streamingTimeout (300s), not this. A
+//     hung provider that never responds now surfaces as a transport error
+//     (ErrorCodeDoRequestFailed → 500) that trips the breaker and fails over.
+//   - RelayDialTimeout caps TCP connection establishment.
+//
+// Tune via RELAY_RESPONSE_HEADER_TIMEOUT / RELAY_DIAL_TIMEOUT (seconds).
+var (
+	RelayResponseHeaderTimeout = 90 * time.Second
+	RelayDialTimeout           = 10 * time.Second
+)
+
+// HealthDBPingTimeout bounds the /api/health DB ping (A1). On every readiness
+// probe the handler pings the DB; without its own deadline a ping to a DOWN
+// host can outlive the readinessProbe timeoutSeconds:2 window (~5s observed) and
+// the pod keeps draining traffic as a "zombie". This caps the ping below that
+// window. NOTE: the DSN statement_timeout governs queries on a LIVE connection,
+// not connect/ping to a dead host — this is a distinct deadline. Tune via
+// HEALTH_DB_PING_TIMEOUT_MS.
+var HealthDBPingTimeout = 1500 * time.Millisecond
+
+// DB/Redis boot connect-retry budget (A2). A transient dependency blip at
+// startup (the DB/Redis pod not yet Ready when this pod boots) otherwise
+// crashes the process on the first gorm.Open/ping → exit(1) → a burned K8s
+// restart. RetryConnect (retry.go) wraps connect+ping with bounded exponential
+// backoff so a cold cluster self-heals instead of crash-looping. The budget is
+// intentionally small — worst case ≈ 1+2+4+8s backoff + 5×5s ping ≈ 40s, well
+// under the startupProbe (~120s) — so a genuinely-misconfigured DSN only delays
+// the terminal FatalLog at the call site by that much. Tune via DB_CONNECT_*.
+var (
+	DBConnectRetries        = 5
+	DBConnectRetryBaseDelay = time.Second
+	DBConnectRetryMaxDelay  = 10 * time.Second
+	DBConnectPingTimeout    = 5 * time.Second
+)
+
 var GeminiSafetySetting string
 
 // https://docs.cohere.com/docs/safety-modes Type; NONE/CONTEXTUAL/STRICT
 var CohereSafetySetting string
 
 const (
+	// RequestIdKey is the gin context key AND the legacy response header name
+	// a request id is stored/echoed under. Kept as-is (not renamed) because it
+	// is read from dozens of call sites via c.GetString(RequestIdKey) — see
+	// RequestIdHeader below for the header this cycle adds alongside it.
 	RequestIdKey = "X-Oneapi-Request-Id"
+	// RequestIdHeader is the header middleware.RequestId() now also writes,
+	// and the one an inbound caller-supplied X-Request-Id is honoured under.
+	// RequestIdKey/"X-Oneapi-Request-Id" keeps going out as an alias for one
+	// release so existing consumers (switch/lutu) do not break mid-cycle.
+	RequestIdHeader = "X-Request-Id"
 )
 
 const (
@@ -168,6 +268,14 @@ var (
 	GlobalWebRateLimitNum      int
 	GlobalWebRateLimitDuration int64
 
+	// GlobalV2RateLimit* guards the /api/v2 route group, which previously
+	// had no rate limit at all (see middleware/rate-limit-v2.go's doc
+	// comment). Its own "GV" bucket, deliberately separate from GA/GW above,
+	// so console and /api/* traffic never share a budget with it.
+	GlobalV2RateLimitEnable   bool
+	GlobalV2RateLimitNum      int
+	GlobalV2RateLimitDuration int64
+
 	CriticalRateLimitEnable   bool
 	CriticalRateLimitNum            = 20
 	CriticalRateLimitDuration int64 = 20 * 60
@@ -177,9 +285,73 @@ var (
 
 	DownloadRateLimitNum            = 10
 	DownloadRateLimitDuration int64 = 60
+
+	// Internal API per-key rate limits. The bucket is keyed by the AUTHENTICATED
+	// internal API-key id (not client IP), so a stolen key cannot be used to DoS
+	// the internal plane or spam provisioning by spreading replays across many
+	// source IPs. Three tiers: a general/default bucket on every /internal route,
+	// a tighter bucket on write endpoints, and the tightest on provisioning +
+	// credit-pool funding (the highest-impact operations). Conservative defaults —
+	// tune via env with the owner once real traffic shape is known.
+	InternalApiRateLimitEnable = true
+
+	InternalApiReadRateLimitNum            = 600
+	InternalApiReadRateLimitDuration int64 = 60
+
+	InternalApiWriteRateLimitNum            = 120
+	InternalApiWriteRateLimitDuration int64 = 60
+
+	InternalApiProvisionRateLimitNum            = 60
+	InternalApiProvisionRateLimitDuration int64 = 60
+)
+
+// Billing degradation (P1-2). When the platform billing breaker is OPEN, a relay
+// can be admitted on fresh cached wallet balance instead of hard-failing 402 —
+// bounded so an unreachable platform can't be exploited for unlimited unsecured
+// spend. BillingDegradedSpendCapLB is the per-tenant ceiling of unsecured spend
+// (in LB) admitted within a rolling BillingDegradedWindowSec window; once hit,
+// further requests fail closed until the window rolls or the breaker recovers.
+// The cap VALUE is an owner-signed business-risk decision — the conservative
+// default ships the mechanism; tune via env with the owner.
+var (
+	BillingDegradedSpendCapLB float64 = 50.0
+	BillingDegradedWindowSec  int     = 3600
 )
 
 var RateLimitKeyExpirationDuration = 20 * time.Minute
+
+// CostSpikeProtection — per-user 5-minute sliding window safety net. Catches
+// agent loops or runaway scripts that burn through quota faster than the
+// monthly cap can intervene. On breach, the user account is auto-disabled —
+// but only when CostSpikeEnforce is true (see below).
+// Knobs (env): COST_SPIKE_PROTECTION_ENABLED, COST_SPIKE_HARD_LIMIT_PER_5MIN,
+// COST_SPIKE_ENFORCE.
+var (
+	CostSpikeProtectionEnabled = true
+	CostSpikeHardLimitPer5Min  = 50000 // quota units (~0.1 USD/5min at typical ratios)
+
+	// CostSpikeEnforce gates whether a breach actually disables the account
+	// and returns 429, versus just being logged/counted (observe mode).
+	// Defaults to false (observe-only). Reasons:
+	//   (i)   CostSpikeHardLimitPer5Min=50000 (~$0.10/5min) has never been
+	//         crossed by real traffic, and until the write side was fixed it
+	//         could not have been: PostConsumeQuota only recorded the window
+	//         inside its platform-wallet gate, so on the live gateway 1 of 6
+	//         tokens accumulated data and the other 5 were invisible to the
+	//         fuse. Recording is unconditional now (quota.go, pinned by
+	//         TestR6PostConsumeQuota_RecordsCostSpikeWindowWithoutIdentityAccount),
+	//         which means flipping this flag to enforce would for the first
+	//         time apply an uncalibrated threshold to traffic that has never
+	//         been measured against it. That is an argument for observing
+	//         first, not for leaving the write side broken.
+	//   (ii)  The breach action is repo.DisableUserById — an auto-suspend
+	//         whose failure mode is a self-inflicted outage for a paying
+	//         customer, which is worse than a fuse that has never tripped.
+	//   (iii) Observe first, collect the real distribution, then decide on
+	//         enforcement. One env var (COST_SPIKE_ENFORCE=true) flips this
+	//         back on; fully reversible.
+	CostSpikeEnforce = false
+)
 
 const (
 	UserStatusEnabled  = 1 // don't use 0, 0 is the default value!
@@ -238,21 +410,21 @@ const (
 // Login and Registration Configuration Variables
 var (
 	// Phone Verification Configuration
-	PhoneVerificationMode           = PhoneVerificationOptional // Current phone verification mode
-	PhoneRequiredForLogin           = false                     // Require phone verification for login
-	PhoneRequiredForPasswordReset   = false                     // Require phone for password reset
-	PhoneRequiredFor2FAChange       = false                     // Require phone for 2FA changes
-	PhoneRequiredForPayment         = false                     // Require phone for payment operations
-	PhoneRequiredForWithdrawal      = false                     // Require phone for withdrawal
-	PhoneRequiredForPhoneBind       = false                     // Require old phone verification to bind new phone
-	PhoneRequiredForAccountDelete   = false                     // Require phone for account deletion
-	PhoneRequiredForTokenGenerate   = false                     // Require phone for API token generation
-	PhoneRequiredForOAuthBind       = false                     // Require phone for OAuth binding
+	PhoneVerificationMode         = PhoneVerificationOptional // Current phone verification mode
+	PhoneRequiredForLogin         = false                     // Require phone verification for login
+	PhoneRequiredForPasswordReset = false                     // Require phone for password reset
+	PhoneRequiredFor2FAChange     = false                     // Require phone for 2FA changes
+	PhoneRequiredForPayment       = false                     // Require phone for payment operations
+	PhoneRequiredForWithdrawal    = false                     // Require phone for withdrawal
+	PhoneRequiredForPhoneBind     = false                     // Require old phone verification to bind new phone
+	PhoneRequiredForAccountDelete = false                     // Require phone for account deletion
+	PhoneRequiredForTokenGenerate = false                     // Require phone for API token generation
+	PhoneRequiredForOAuthBind     = false                     // Require phone for OAuth binding
 
 	// Registration Configuration
-	RegistrationMode     = RegistrationModeOpen // Current registration mode
-	SMSAutoRegister      = true                 // Auto-register new users via SMS login
-	InviteCodeRequired   = false                // Require invitation code for registration
+	RegistrationMode   = RegistrationModeOpen // Current registration mode
+	SMSAutoRegister    = true                 // Auto-register new users via SMS login
+	InviteCodeRequired = false                // Require invitation code for registration
 
 	// Security Configuration
 	SensitiveActionRequirePassword = false // Require password re-entry for sensitive actions

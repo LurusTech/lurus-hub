@@ -1,0 +1,390 @@
+package handler
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+// switchRedeemAllowDefaultTenant is the G5a escape hatch. Read once at
+// startup (package-level var init) so a single env value governs the whole
+// process lifetime — no config-drift between requests.
+//
+// Off (default, secure): a redemption code whose TenantId is "default" (the
+// platform's own tenant, and also entity.Redemption's GORM column default
+// for any code created without an explicit tenant — see
+// internal/domain/entity/redemption.go:8) is refused by this ANONYMOUS,
+// unauthenticated endpoint instead of being treated as a globally-valid
+// activation code. Real activation codes belong to a reseller tenant (see
+// 2c-gui-switch/doc/reseller-onboarding.md's ProvisionResellerHub, which
+// takes a tenantSlug) — a code sitting in "default" reaching this endpoint
+// is the G5a defect, not a supported flow.
+//
+// On: byte-for-byte the pre-fix behavior for this specific gate (the code
+// path this variable guards is skipped entirely) — restores the old
+// behavior for an operator who confirms a live integration still depends on
+// it, without a code change.
+var switchRedeemAllowDefaultTenant = common.GetEnvOrDefaultBool("SWITCH_REDEEM_ALLOW_DEFAULT_TENANT", false)
+
+// ============================================================================
+// Switch Anonymous Redeem (Phase D Track 2.1)
+//
+// POST /api/v2/switch/redeem  — NO authentication.
+//
+// Switch EndUser mode (white-label desktop client) needs to exchange an
+// activation code for a usable LLM gateway token without going through
+// OIDC. The flow:
+//
+//   1. Caller POSTs { code, fingerprint, app_version? }.
+//   2. Hub looks up the redemption row by Key.
+//   3. Hub validates: exists, not used, not disabled, not past expires_at.
+//   4. Hub find-or-creates an anonymous user keyed on the device fingerprint
+//      inside the redemption's tenant.
+//   5. Hub calls repo.Redeem() to atomically mark the code used + credit
+//      the anonymous user's quota (FOR UPDATE lock prevents double-spend).
+//   6. Hub provisions a relay Token for that user and returns it.
+//
+// Error envelope keywords are intentional: the Switch client greps the
+// message text in classifyRedeemFailure() to choose the localized UI copy
+// — substrings "已使用" / "过期" / "禁用" / "不存在" must be preserved.
+//
+// Route registration is performed by a separate sequential agent to avoid
+// router-file merge conflicts during the Phase D swarm; suggested line:
+//   switchGroup.POST("/redeem", handler.SwitchRedeemAnonymous)
+// inside the existing apiV2.Group("/switch") block of
+// internal/adapter/handler/router/api-v2-router.go.
+// ============================================================================
+
+// switchRedeemRequest is the JSON body sent by the Switch EndUser client.
+// Field names must match the Switch redemption.RedeemRequest in
+// 2c-gui-switch/internal/redemption/redeem.go.
+type switchRedeemRequest struct {
+	Code        string `json:"code"`
+	Fingerprint string `json:"fingerprint"`
+	AppVersion  string `json:"app_version,omitempty"`
+}
+
+// switchRedeemData is the success-envelope `data` payload. Mirrors Switch's
+// redemption.RedeemResponse: keys + types are load-bearing on the client.
+type switchRedeemData struct {
+	UserToken  string `json:"user_token"`
+	UserID     int    `json:"user_id"`
+	Quota      int64  `json:"quota"`
+	ExpiresAt  int64  `json:"expires_at,omitempty"`
+	TenantSlug string `json:"tenant_slug,omitempty"`
+}
+
+// switchEndUserUsernamePrefix tags users provisioned by anonymous redeem.
+// Truncated fingerprint avoids username length cap (20 chars total).
+const switchEndUserUsernamePrefix = "sw-eu-"
+
+// SwitchRedeemAnonymous handles POST /api/v2/switch/redeem.
+//
+// No auth middleware is attached: this endpoint is anonymous by design.
+// The IP-keyed middleware.RedemptionRateLimit() mounted in
+// api-v2-router.go (cycle-8 L1) is the guard in front of it. It validates
+// the request, runs the redemption transaction, provisions a relay token,
+// and returns the standard {success, data, message} envelope used by the
+// rest of v2.
+func SwitchRedeemAnonymous(c *gin.Context) {
+	var req switchRedeemRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "请求体格式错误",
+		})
+		return
+	}
+
+	code := strings.TrimSpace(req.Code)
+	fingerprint := strings.TrimSpace(req.Fingerprint)
+
+	if code == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "激活码必填",
+		})
+		return
+	}
+	if fingerprint == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "设备指纹必填",
+		})
+		return
+	}
+
+	// Step 1: look up the redemption (read-only, no lock) to classify the
+	// failure mode for the UI. The authoritative used/expired check still
+	// happens inside repo.Redeem under FOR UPDATE, so this pre-check is for
+	// branching messages — it doesn't trust its own result for state
+	// changes.
+	redemption, err := findRedemptionByKey(code)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "激活码不存在",
+			})
+			return
+		}
+		common.SysError("switch redeem: lookup failed: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "服务暂不可用，请稍后重试",
+		})
+		return
+	}
+
+	switch redemption.Status {
+	case common.RedemptionCodeStatusUsed:
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "激活码已使用",
+		})
+		return
+	case common.RedemptionCodeStatusDisabled:
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "激活码已被禁用",
+		})
+		return
+	}
+
+	if redemption.ExpiredTime != 0 && redemption.ExpiredTime < common.GetTimestamp() {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "激活码已过期",
+		})
+		return
+	}
+
+	// Step 2: resolve the tenant.
+	tenantID := redemption.TenantId
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	// G5a: a code with no tenant (or explicitly "default") is not a
+	// reseller activation code — reject before provisioning anything, so no
+	// anonymous account or token gets sedimented for a code that was never
+	// meant to be redeemed this way. The message text matches
+	// repo.ErrRedemptionWrongTenant's own text (it's also what repo.Redeem
+	// now returns for the same underlying cross-tenant mismatch — see
+	// redemption.go's Redeem), so the two paths report identically.
+	//
+	// Client-side caveat, read 2026-08-27 in 2c-gui-switch
+	// internal/redemption/redeem.go's classifyRedeemFailure: this text
+	// matches none of its substring branches (已使用/used/redeemed, 过期/expire,
+	// 禁用/停用/账户/disabled/suspend/revoked, 不存在/not found/invalid), so it
+	// lands in the `default:` arm and is TYPED as ErrCodeNotFound. The user
+	// still reads this exact sentence — defaultMessage() passes a non-empty
+	// Hub message through verbatim — but any client logic that branches on
+	// the Kind rather than the text will treat a tenant mismatch as
+	// "code does not exist". Adding a "租户" branch on the client is the fix;
+	// until then, do not rely on the Kind here.
+	if tenantID == "default" && !switchRedeemAllowDefaultTenant {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "该兑换码不属于当前租户",
+		})
+		return
+	}
+
+	var tenantSlug string
+	if tenantID != "default" {
+		t, err := repo.GetTenantByID(tenantID)
+		if err == nil && t != nil {
+			tenantSlug = t.Slug
+			if !t.IsEnabled() {
+				c.JSON(http.StatusOK, gin.H{
+					"success": false,
+					"message": "经销商账户已停用，请联系经销商",
+				})
+				return
+			}
+		}
+	}
+
+	// Step 3: find or create the anonymous user keyed on fingerprint.
+	user, err := findOrCreateSwitchEndUser(fingerprint, tenantID)
+	if err != nil {
+		common.SysError("switch redeem: provision user failed: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无法创建匿名账户，请稍后重试",
+		})
+		return
+	}
+
+	// Step 4: run the canonical redeem path. This is the same code path
+	// every other redeem flow uses (RedeemCodeV2, /api/user/topup) — we
+	// reuse it instead of duplicating the FOR UPDATE / mark-used logic.
+	quotaAdded, err := repo.Redeem(code, user.Id)
+	if err != nil {
+		// repo.Redeem itself already converts a genuine transaction failure
+		// (e.g. a constraint violation on the Save/Update calls) into the
+		// generic repo.ErrRedemptionFailed sentinel instead of a raw
+		// driver/GORM error (cycle13 L3, pinned by
+		// repo.TestRedeem_DriverErrorNeverReachesCaller).
+		// repo.RedemptionErrorMessage is
+		// defence-in-depth on top of that: only a known sentinel's own text
+		// (which the Switch classifier's substring markers still see) is
+		// echoed to this anonymous, unauthenticated caller; anything else
+		// falls back to the same generic text. Log the real error
+		// server-side regardless.
+		common.SysError("switch redeem: redeem failed: " + err.Error())
+		// Caller-side outcomes keep the HTTP 200 envelope this endpoint has
+		// always answered (the Switch client parses the JSON body whatever
+		// the status and classifies by message substring); a hub-side fault
+		// (REDEMPTION_FAILED) answers 500 so a proxy, a log line or a client
+		// that does look at the status can tell an outage from a wrong code.
+		// error_code is additive — the client's substring classifier is
+		// untouched by it.
+		c.JSON(redemptionFailureStatus(err, http.StatusOK), gin.H{
+			"success":    false,
+			"message":    repo.RedemptionErrorMessage(err),
+			"error_code": repo.RedemptionErrorCode(err),
+		})
+		return
+	}
+
+	// Step 5: provision a relay token bound to this user. The Switch client
+	// stores this as the gateway User-Token. We deliberately don't reuse
+	// AutoCreateDefaultToken — that creates an UnlimitedQuota=true token in
+	// the "default" tenant, which would break tenant isolation for paid
+	// resellers and let the EndUser drain the pool past the redeemed
+	// amount.
+	token, err := provisionSwitchEndUserToken(user.Id, tenantID, quotaAdded)
+	if err != nil {
+		common.SysError("switch redeem: provision token failed: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无法签发用户 token，请联系管理员",
+		})
+		return
+	}
+
+	data := switchRedeemData{
+		UserToken:  token.Key,
+		UserID:     user.Id,
+		Quota:      int64(quotaAdded),
+		TenantSlug: tenantSlug,
+	}
+	if redemption.ExpiredTime > 0 {
+		data.ExpiresAt = redemption.ExpiredTime
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "兑换成功",
+		"data":    data,
+	})
+}
+
+// findRedemptionByKey looks up a redemption row by Key without tenant
+// isolation. Anonymous redeem has no tenant context (caller is unauth'd);
+// repo.Redeem still enforces tenant ownership at the time of mark-used.
+func findRedemptionByKey(key string) (*repo.Redemption, error) {
+	// PG-only runtime; the SQLite test tier also accepts double-quoted identifiers.
+	keyCol := `"key"`
+	r := &repo.Redemption{}
+	err := repo.WithoutTenantIsolation(repo.DB).Where(keyCol+" = ?", key).First(r).Error
+	return r, err
+}
+
+// findOrCreateSwitchEndUser returns the User row for the given fingerprint
+// in the given tenant, creating it on first sight. The username is
+// derived deterministically from the fingerprint so repeated redeems by
+// the same machine accumulate on one account (subject to the 20-char
+// username cap; we truncate the fingerprint to fit). The lookup is
+// tenant-scoped — username is per-tenant unique since migration 025, so the
+// same fingerprint redeeming codes of two different tenants gets one
+// account per tenant (previously the cross-tenant redeem failed on the
+// global unique + repo.Redeem's tenant-ownership check).
+func findOrCreateSwitchEndUser(fingerprint, tenantID string) (*repo.User, error) {
+	// Username layout: "sw-eu-" + first 14 hex chars of fingerprint.
+	// Total 20 chars — matches User.Username validate:"max=20".
+	fpTrim := fingerprint
+	if len(fpTrim) > 14 {
+		fpTrim = fpTrim[:14]
+	}
+	username := switchEndUserUsernamePrefix + fpTrim
+
+	var existing repo.User
+	err := repo.WithoutTenantIsolation(repo.DB).Where("username = ? AND tenant_id = ?", username, tenantID).First(&existing).Error
+	if err == nil {
+		return &existing, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("lookup user: %w", err)
+	}
+
+	user := &repo.User{
+		Username:    username,
+		DisplayName: "Switch EndUser",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		TenantId:    tenantID,
+		Group:       "default",
+	}
+	if err := user.Insert(); err != nil {
+		return nil, fmt.Errorf("insert user: %w", err)
+	}
+	// user.Insert() sets Quota to QuotaForNewUser; we need the assigned ID.
+	// Insert() resolves Id via gorm's RETURNING / LastInsertId. Re-fetch by
+	// username just in case Insert() didn't repopulate the receiver.
+	if user.Id == 0 {
+		if err := repo.WithoutTenantIsolation(repo.DB).Where("username = ? AND tenant_id = ?", username, tenantID).First(user).Error; err != nil {
+			return nil, fmt.Errorf("refetch user: %w", err)
+		}
+	}
+	return user, nil
+}
+
+// provisionSwitchEndUserToken creates a bounded-quota relay Token for the
+// EndUser. Quota is set to the redeemed amount to act as a hard ceiling
+// even if repo.Redeem also credits user.Quota — defense in depth against
+// a misbehaving relay layer.
+func provisionSwitchEndUserToken(userID int, tenantID string, quota int) (*repo.Token, error) {
+	key, err := common.GenerateRandomKey(48)
+	if err != nil {
+		return nil, fmt.Errorf("generate token key: %w", err)
+	}
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	token := &repo.Token{
+		UserId:         userID,
+		TenantId:       tenantID,
+		Key:            key,
+		Status:         common.TokenStatusEnabled,
+		Name:           "switch-enduser",
+		CreatedTime:    common.GetTimestamp(),
+		AccessedTime:   common.GetTimestamp(),
+		ExpiredTime:    -1, // token never auto-expires; quota is the cap
+		RemainQuota:    quota,
+		UnlimitedQuota: false,
+		Group:          "default",
+	}
+	if err := token.Insert(); err != nil {
+		return nil, fmt.Errorf("insert token: %w", err)
+	}
+	return token, nil
+}
+
+// switchRedeemKnownErrors / sanitizeRedeemError used to live here, hand-rolled
+// around repo.Redeem's old "兑换失败，<inner>" string-wrapping convention.
+// cycle13 L3 moved that mapping to repo.RedemptionErrorMessage
+// (internal/adapter/repo/redemption.go), built on typed sentinel errors
+// (errors.Is) instead of string-prefix-stripping + a string-keyed set, so
+// v2_redemption.go and switch_user_topup.go can share it too instead of
+// hand-rolling their own (they used to echo repo.Redeem's raw error text
+// verbatim — see RedemptionErrorMessage's doc comment).

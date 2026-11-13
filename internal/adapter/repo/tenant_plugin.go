@@ -8,8 +8,13 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// TenantPlugin is a GORM plugin that automatically filters queries by tenant_id
-// and sets tenant_id on create operations
+// TenantPlugin is a GORM plugin that filters queries by tenant_id and sets
+// tenant_id on create operations. It only engages when the gorm.DB in use
+// carries a tenant-scoped context.Context (via WithTenantID / GetTenantDB*) —
+// most repo call sites use their own explicit .Where("tenant_id = ?", ...)
+// filters instead and never touch a tenant-bound DB handle, so this plugin is
+// NOT the primary enforcement layer; it is a defense-in-depth backstop for the
+// call sites that do route through a tenant-scoped handle.
 type TenantPlugin struct{}
 
 // Name returns the plugin name
@@ -76,7 +81,7 @@ func beforeCreate(db *gorm.DB) {
 	}
 
 	// Check if the table has tenant_id column FIRST
-	// Tables without tenant_id (like logs) should skip this check entirely
+	// Tables without a tenant_id column should skip this check entirely
 	if !hasTenantIDColumn(db) {
 		return
 	}
@@ -172,22 +177,37 @@ func skipTenantIsolation(db *gorm.DB) bool {
 	return ok && skip
 }
 
+// tablesWithTenantID is the plugin's auto-scoping allow-list: tables whose
+// tenant_id column is actively re-filtered (query/update/delete) or stamped
+// (create) whenever a call site routes through a tenant-scoped DB handle
+// (WithTenantID / GetTenantDB*). It is package-level (not function-local) so
+// tenant_plugin_registry_test.go can reflect over it directly — that test is
+// the forcing function keeping this list honest against both directions of
+// drift: a registered entity with a tenant_id column that isn't listed here
+// (dead protection for any call site that assumes it is), and a listed table
+// that no longer maps to any registered entity (dead configuration).
+//
+// The logs table HAS a tenant_id column (entity/log.go) but is deliberately
+// excluded — admin/cross-tenant log views legitimately span tenants, no log
+// call site uses a tenant-bound handle (so listing it here would add no read
+// protection), beforeCreate would error on the bare-handle relay write path,
+// and LOG_DB may be a separate database (LOG_SQL_DSN) that never has this
+// plugin registered. Log isolation is instead enforced structurally in
+// repo/log.go: every exported query is principal-scoped or requires an
+// explicit TenantScope argument.
+var tablesWithTenantID = map[string]bool{
+	"users":       true,
+	"tokens":      true,
+	"channels":    true,
+	"redemptions": true,
+	// Every entry MUST map to a GORM-registered model with a tenant_id column
+	// (tenant_plugin_registry_test.go enforces both directions). Do not add a
+	// table here speculatively — a listed table with no backing model is dead
+	// configuration that looks like protection but scopes nothing.
+}
+
 // hasTenantIDColumn checks if the current table has tenant_id column
 func hasTenantIDColumn(db *gorm.DB) bool {
-	// Tables that have tenant_id column
-	// Note: logs table does NOT have tenant_id, removed from list
-	tablesWithTenantID := map[string]bool{
-		"users":              true,
-		"tokens":             true,
-		"channels":           true,
-		"topups":             true,
-		"subscriptions":      true,
-		"redemptions":        true,
-		"passkeys":           true,
-		"twofa":              true,
-		// Add more tables as needed
-	}
-
 	tableName := db.Statement.Table
 	if tableName == "" {
 		// Try to get table name from schema
@@ -212,6 +232,18 @@ func WithoutTenantIsolation(db *gorm.DB) *gorm.DB {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	return db.WithContext(context.WithValue(ctx, SkipTenantIsolationKey, true))
+}
+
+// WithoutTenantIsolationCtx is the context-explicit variant of
+// WithoutTenantIsolation for callers that already hold a ctx (keeps the
+// caller's cancellation/deadline AND satisfies contextcheck — the implicit
+// variant reads ctx from db.Statement, which the linter cannot follow).
+func WithoutTenantIsolationCtx(ctx context.Context, db *gorm.DB) *gorm.DB {
+	// SkipTenantIsolationKey is a plain string by repo-wide convention — the
+	// tenant plugin reads the same untyped key everywhere (entity/tenant.go).
+	// Retyping it is a cross-cutting change out of scope here.
+	//nolint:staticcheck // SA1029: key type is a pre-existing convention shared with WithoutTenantIsolation
 	return db.WithContext(context.WithValue(ctx, SkipTenantIsolationKey, true))
 }
 

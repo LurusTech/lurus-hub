@@ -21,11 +21,18 @@ import (
 	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/app/hub"
 	"github.com/LurusTech/lurus-hub/internal/app/openrouter_pool"
+	catalog_sync "github.com/LurusTech/lurus-hub/internal/app/catalog_sync"
 	openrouter_sync "github.com/LurusTech/lurus-hub/internal/app/openrouter_sync"
+	"github.com/LurusTech/lurus-hub/internal/app/planquota"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/bifrosteng"
+	"github.com/LurusTech/lurus-hub/internal/app/sedimentation"
+	"github.com/LurusTech/lurus-hub/internal/lifecycle"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/config"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
+	hubnats "github.com/LurusTech/lurus-hub/internal/pkg/nats"
 	"github.com/LurusTech/lurus-hub/internal/pkg/search"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/tracing"
@@ -33,16 +40,65 @@ import (
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
-	sessionredis "github.com/gin-contrib/sessions/redis"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"golang.org/x/sync/errgroup"
 
-	_ "net/http/pprof"
+	_ "net/http/pprof" // #nosec G108 — pprof is exposed only when ENABLE_PPROF=true (gated in router); disabled in production.
 )
 
 var buildFS = web.BuildFS
 var indexPage = web.IndexPage
+
+// billingOutboxInterval is how often the outbox drain runs.
+const billingOutboxInterval = 5 * time.Second
+
+// billingOutboxTick drains the billing outbox once, if unified billing is on
+// right now. The toggle is read per tick rather than once at startup because
+// StartBillingConfigPoller can flip it from the platform console at runtime — a
+// boot-time gate left every settle enqueued after the flip sitting in the table
+// until the next pod restart.
+func billingOutboxTick(ctx context.Context) {
+	if !common.BillingUnifiedEnabled() {
+		return
+	}
+	_ = app.ProcessBillingOutbox(ctx)
+}
+
+// billingOutboxTickFn is the seam runBillingOutboxLoop ticks through, so a test
+// can inject a panicking pass.
+var billingOutboxTickFn = billingOutboxTick
+
+// loopRestartBackoff is how long goSupervised waits before restarting a
+// background loop that panicked.
+const loopRestartBackoff = 5 * time.Second
+
+// goSupervised runs a long-lived background loop on the errgroup. A bare g.Go
+// turns one unrecovered panic in any loop into a process exit that kills every
+// in-flight relay request; here the panic is recovered and the loop restarted
+// after loopRestartBackoff. A normal return (ctx cancelled) keeps the plain
+// errgroup semantics.
+func goSupervised(g *errgroup.Group, ctx context.Context, name string, loop func(ctx context.Context)) {
+	g.Go(func() error {
+		common.SuperviseLoop(ctx, name, loopRestartBackoff, loop)
+		return nil
+	})
+}
+
+// runBillingOutboxLoop ticks the outbox drain until ctx is cancelled. Each tick
+// is recovered on its own, so a panicking pass costs one drain, not the loop.
+func runBillingOutboxLoop(ctx context.Context, interval time.Duration) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			common.RunTickSafe("billing-outbox", func() { billingOutboxTickFn(ctx) })
+		}
+	}
+}
 
 func main() {
 	startTime := time.Now()
@@ -65,6 +121,18 @@ func run(ctx context.Context, startTime time.Time) error {
 	}
 
 	common.SysLog("New API " + common.Version + " started")
+
+	// Bifrost relay engine (RELAY_ENGINE=bifrost). Default legacy = no Init.
+	if err := bifrosteng.Init(ctx); err != nil {
+		return fmt.Errorf("bifrosteng init: %w", err)
+	}
+	defer bifrosteng.Shutdown()
+	if bifrosteng.Enabled() {
+		common.SysLog("relay engine: bifrost (modes=" + os.Getenv("RELAY_BIFROST_MODES") + ")")
+	} else {
+		common.SysLog("relay engine: legacy")
+	}
+
 	if os.Getenv("GIN_MODE") != "debug" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -91,6 +159,18 @@ func run(ctx context.Context, startTime time.Time) error {
 	// Use errgroup for managing background goroutines with context cancellation
 	g, ctx := errgroup.WithContext(ctx)
 
+	// HA leader election: master-capable nodes contend for a single DB lease.
+	// The winner's common.IsLeader() flips true, and every master-only
+	// background task below gates its per-tick work on it — so exactly one
+	// replica runs them and a dead leader is replaced within the lease TTL.
+	// Slaves (NODE_TYPE=slave) do not participate and are never leader.
+	if common.IsMasterNode {
+		leaderManager := lifecycle.NewLeaderManager()
+		goSupervised(g, ctx, "leader-election", func(ctx context.Context) {
+			_ = leaderManager.Run(ctx)
+		})
+	}
+
 	if common.RedisEnabled {
 		common.MemoryCacheEnabled = true
 	}
@@ -112,23 +192,27 @@ func run(ctx context.Context, startTime time.Time) error {
 		}()
 
 		// Background task: sync channel cache
-		g.Go(func() error {
+		goSupervised(g, ctx, "sync-channel-cache", func(ctx context.Context) {
 			repo.SyncChannelCacheWithContext(ctx, common.SyncFrequency)
-			return nil
 		})
 	}
 
 	// Background task: sync options (hot reload config)
-	g.Go(func() error {
+	goSupervised(g, ctx, "sync-options", func(ctx context.Context) {
 		repo.SyncOptionsWithContext(ctx, common.SyncFrequency)
-		return nil
 	})
 
 	// Background task: update quota dashboard data
-	g.Go(func() error {
+	goSupervised(g, ctx, "update-quota-data", func(ctx context.Context) {
 		repo.UpdateQuotaDataWithContext(ctx)
-		return nil
 	})
+
+	// Background task: notify-limit cleanup (cycle 13 L11) — evicts expired
+	// entries from the in-memory rate-limit map used when Redis is disabled.
+	// checkMemoryLimit's lazy-start fallback (internal/app/notify-limit.go)
+	// routes through this same sync.Once-guarded entry point, so whichever
+	// runs first leaves a cancellable goroutine behind.
+	app.InitNotifyLimitCleanup(ctx)
 
 	// Hub data processing: channel scoring + usage aggregation
 	hub.Init(func(flushCtx context.Context, buckets []hub.UsageBucket) error {
@@ -139,9 +223,8 @@ func run(ctx context.Context, startTime time.Time) error {
 		}
 		return nil
 	})
-	g.Go(func() error {
+	goSupervised(g, ctx, "hub-background", func(ctx context.Context) {
 		hub.Get().RunBackgroundTasks(ctx)
-		return nil
 	})
 
 	if os.Getenv("CHANNEL_UPDATE_FREQUENCY") != "" {
@@ -149,9 +232,8 @@ func run(ctx context.Context, startTime time.Time) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse CHANNEL_UPDATE_FREQUENCY: %w", err)
 		}
-		g.Go(func() error {
+		goSupervised(g, ctx, "auto-update-channels", func(ctx context.Context) {
 			handler.AutomaticallyUpdateChannelsWithContext(ctx, frequency)
-			return nil
 		})
 	}
 
@@ -160,9 +242,8 @@ func run(ctx context.Context, startTime time.Time) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse MODEL_SYNC_FREQUENCY: %w", err)
 		}
-		g.Go(func() error {
+		goSupervised(g, ctx, "auto-sync-channel-models", func(ctx context.Context) {
 			handler.AutoSyncChannelModelsWithContext(ctx, frequency)
-			return nil
 		})
 	}
 
@@ -172,60 +253,78 @@ func run(ctx context.Context, startTime time.Time) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse OPENROUTER_FREE_SYNC_FREQUENCY: %w", err)
 		}
-		g.Go(func() error {
+		goSupervised(g, ctx, "openrouter-sync", func(ctx context.Context) {
 			openrouter_sync.AutoSyncWithContext(ctx, frequency)
-			return nil
+		})
+	}
+	// Multi-provider catalog inventory + gated price proposals. Disabled when
+	// CATALOG_SYNC_FREQUENCY is empty/unset (default off until STAGE green).
+	if os.Getenv("CATALOG_SYNC_FREQUENCY") != "" {
+		frequency, err := strconv.Atoi(os.Getenv("CATALOG_SYNC_FREQUENCY"))
+		if err != nil {
+			return fmt.Errorf("failed to parse CATALOG_SYNC_FREQUENCY: %w", err)
+		}
+		goSupervised(g, ctx, "catalog-sync", func(ctx context.Context) {
+			catalog_sync.AutoCatalogSyncWithContext(ctx, frequency)
 		})
 	}
 	// Hourly aggregator runs whenever OpenRouter sync is configured (any sync job present
 	// will benefit from ranking data). Kept independent of OPENROUTER_FREE_SYNC_FREQUENCY
 	// so manual triggers still get fresh ranks even when scheduling is disabled.
 	if common.IsMasterNode {
-		g.Go(func() error {
+		goSupervised(g, ctx, "openrouter-aggregate", func(ctx context.Context) {
 			openrouter_sync.AutoAggregateWithContext(ctx)
-			return nil
 		})
 		// OpenRouter pool reaper: re-enables keys whose rate-limit cooldown has expired.
 		// Runs even when OPENROUTER_FREE_SYNC_FREQUENCY is unset — pool cooldown is
 		// triggered by live relay traffic, not by the sync feature.
-		g.Go(func() error {
+		goSupervised(g, ctx, "openrouter-reap", func(ctx context.Context) {
 			openrouter_pool.AutoReapWithContext(ctx)
-			return nil
 		})
 	}
 
+	// Background task: plan-account quota probe + expiry scan (leader-gated inside).
+	if common.IsMasterNode {
+		goSupervised(g, ctx, "plan-quota", planquota.RunBackground)
+	}
+
+	// Channel gauges (state, plan windows, expiry, balance) and content-rule
+	// counters for the host Netdata scrape; every replica runs its own.
+	handler.InstallContentMetricsSink()
+	goSupervised(g, ctx, "channel-metrics", handler.RunChannelMetricsLoop)
+
 	// Background task: automatically test channels
-	g.Go(func() error {
+	goSupervised(g, ctx, "auto-test-channels", func(ctx context.Context) {
 		handler.AutomaticallyTestChannelsWithContext(ctx)
-		return nil
+	})
+
+	// Background task: active per-model health prober for pooled channels
+	// (internal/app/modelprobe) — probes every model of a multi-model
+	// channel individually, not just the channel's first/TestModel model.
+	// Leader-gated and no-op unless model_probe_setting.enabled is set.
+	goSupervised(g, ctx, "model-prober", func(ctx context.Context) {
+		handler.StartModelProber(ctx)
 	})
 
 	if common.IsMasterNode && constant.UpdateTask {
-		g.Go(func() error {
+		goSupervised(g, ctx, "update-image-tasks", func(ctx context.Context) {
 			handler.UpdateMidjourneyTaskBulkWithContext(ctx)
-			return nil
 		})
-		g.Go(func() error {
+		goSupervised(g, ctx, "update-tasks", func(ctx context.Context) {
 			handler.UpdateTaskBulkWithContext(ctx)
-			return nil
 		})
 	}
 
-	// Background task: billing outbox processor (5s ticker)
-	if common.BillingUnifiedEnabled {
-		g.Go(func() error {
-			ticker := time.NewTicker(5 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return nil
-				case <-ticker.C:
-					_ = app.ProcessBillingOutbox(ctx)
-				}
-			}
-		})
-	}
+	// Background task: poll platform billing-config endpoint every 30s so the
+	// unified-billing toggle can be flipped from the platform console at runtime
+	// without a pod restart.  No-op when IDENTITY_SERVICE_URL is unset.
+	common.StartBillingConfigPoller(ctx)
+
+	// Background task: billing outbox processor. Started unconditionally — see
+	// runBillingOutboxLoop for why the toggle is read per tick instead.
+	g.Go(func() error {
+		return runBillingOutboxLoop(ctx, billingOutboxInterval)
+	})
 
 	if os.Getenv("BATCH_UPDATE_ENABLED") == "true" {
 		common.BatchUpdateEnabled = true
@@ -236,6 +335,41 @@ func run(ctx context.Context, startTime time.Time) error {
 	// Start daily quota reset cron job with context for graceful shutdown
 	if os.Getenv("DAILY_QUOTA_ENABLED") != "false" {
 		repo.StartDailyQuotaResetCronWithContext(ctx)
+	}
+
+	// Phase E3: audit retention cleanup. Master-only to avoid duplicate
+	// deletes when scaled out; the operation is idempotent but firing it
+	// once per node would inflate DB write amplification.
+	if common.IsMasterNode {
+		lifecycle.StartAuditCleanupWithContext(ctx)
+		// Phase H1.4: automatic token rotation. Leader-gated internally so only
+		// one replica rotates each due token; started on master-capable nodes.
+		lifecycle.StartSecretRotationWithContext(ctx)
+		// PIPL §47 erasure cascade executor. Leader-gated internally; the
+		// cascade is idempotent + crash-resumable via the per-request step cursor.
+		lifecycle.StartPrivacyErasureWithContext(ctx)
+		// Stranded credit-pool topup reconcile: compensates wallet debits whose
+		// pool credit + revert both failed. Leader-gated per tick; each event is
+		// settled at most once via a conditional-UPDATE claim (money-safe even
+		// if two sweeps overlap). Interval: CREDIT_POOL_RECONCILE_INTERVAL_SECONDS.
+		app.StartCreditPoolReconcileWithContext(ctx)
+		// L7 per-device session registry retention sweep: hard-deletes rows
+		// revoked >30 days ago or idle (never revoked) >90 days. Leader-gated
+		// internally, same pattern as StartSecretRotationWithContext.
+		lifecycle.StartSessionSweepWithContext(ctx)
+		// cycle-13 L6: logs / download_logs age-based retention. Leader-gated
+		// internally, same pattern as StartSessionSweepWithContext. Deletes
+		// NOTHING until LOG_RETENTION_DAYS / LOG_RETENTION_MONEY_DAYS are set
+		// (both default 0 = off); see doc/runbook/log-retention.md.
+		lifecycle.StartLogRetentionWithContext(ctx)
+		// Opt-in body archive (migration 052): sweeps log_bodies rows past their
+		// own expires_at (LOG_BODY_RETENTION_DAYS, default 30). Leader-gated
+		// internally; a no-op while no tenant has consented.
+		lifecycle.StartLogBodyCleanupWithContext(ctx)
+		// cycle-8 L7 (tasks-plugins-12): response_registry retention sweep —
+		// hard-deletes rows whose RESPONSE_REGISTRY_TTL_DAYS has elapsed.
+		// Leader-gated internally, same pattern as StartSecretRotationWithContext.
+		lifecycle.StartResponseRegistrySweepWithContext(ctx)
 	}
 
 	// pprof server
@@ -254,9 +388,8 @@ func run(ctx context.Context, startTime time.Time) error {
 			defer cancel()
 			return pprofServer.Shutdown(shutdownCtx)
 		})
-		g.Go(func() error {
+		goSupervised(g, ctx, "system-monitor", func(ctx context.Context) {
 			common.MonitorWithContext(ctx)
-			return nil
 		})
 	}
 
@@ -266,7 +399,12 @@ func run(ctx context.Context, startTime time.Time) error {
 
 	// Initialize Gin HTTP server
 	engine := gin.New()
+	if err := router.ConfigureTrustedProxies(engine, config.Get().Security.TrustedProxies); err != nil {
+		//nolint:contextcheck // boot-time fatal, same shape as the other FatalLog calls in run(); there is no request context to pass
+		common.FatalLog(fmt.Sprintf("invalid TRUSTED_PROXIES: %v", err))
+	}
 	engine.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
+		metrics.RecordPanic("http")
 		common.SysLog(fmt.Sprintf("panic detected: %v", err))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{
@@ -278,55 +416,34 @@ func run(ctx context.Context, startTime time.Time) error {
 	engine.Use(middleware.RequestId())
 	middleware.SetUpLogger(engine)
 
-	// Initialize session store (Redis if available, cookie fallback)
-	sessionSecure := os.Getenv("GIN_MODE") == "release"
-	if envSecure := os.Getenv("SESSION_SECURE"); envSecure != "" {
-		sessionSecure = envSecure == "true"
-	}
-	// Default to ".lurus.cn" so the lurus.cn deployments share session cookies
-	// across subdomains. Standalone deployments under a single host (especially
-	// when accessed via IP, where browsers reject mismatched Domain attributes
-	// and silently drop the cookie) should set SESSION_COOKIE_DOMAIN="" to opt
-	// into a host-only cookie.
-	cookieDomain := ".lurus.cn"
-	if d, ok := os.LookupEnv("SESSION_COOKIE_DOMAIN"); ok {
-		cookieDomain = d
-	}
-	sessionOpts := sessions.Options{
-		Path:     "/",
-		MaxAge:   7776000, // 90 days
-		HttpOnly: true,
-		Secure:   sessionSecure,
-		SameSite: http.SameSiteLaxMode,
-		Domain:   cookieDomain,
+	// Initialize session store (Redis if available, cookie fallback).
+	// middleware.SessionCookieBaseOptions computes Path/Domain/Secure/SameSite
+	// from the same env vars this used to read inline (SESSION_SECURE,
+	// GIN_MODE, SESSION_COOKIE_DOMAIN — see that function's doc for the
+	// ".lurus.cn" default and the SESSION_COOKIE_DOMAIN="" host-only opt-out);
+	// the session-clearing call sites (authHelper, RevokeCurrentSessionV2,
+	// RevokeSessionByIDV2) now build their clearing cookie from the same
+	// function so a revoke's Set-Cookie matches what this store issued
+	// instead of each guessing its own Domain/Secure/SameSite.
+	sessionOpts := middleware.SessionCookieBaseOptions()
+	sessionOpts.MaxAge = 7776000 // 90 days
+	// Refuse to boot with a cookie Domain the OIDC callback host is outside of:
+	// the browser would drop the session cookie and every SSO login would end
+	// logged out, silently.
+	if err := ValidateSessionCookieDomain(os.Getenv("OIDC_ENABLED") == "true", sessionOpts.Domain, os.Getenv("OIDC_REDIRECT_URI")); err != nil {
+		return err
 	}
 	var store sessions.Store
 	if redisURL := os.Getenv("REDIS_CONN_STRING"); redisURL != "" {
-		// Parse redis://host:port format to extract address and password
-		redisAddr := "127.0.0.1:6379"
-		redisPassword := ""
-		if strings.HasPrefix(redisURL, "redis://") {
-			parsed := strings.TrimPrefix(redisURL, "redis://")
-			// Handle redis://password@host:port or redis://host:port
-			if atIdx := strings.LastIndex(parsed, "@"); atIdx >= 0 {
-				redisPassword = parsed[:atIdx]
-				redisAddr = parsed[atIdx+1:]
-			} else {
-				redisAddr = parsed
-			}
-			// Remove trailing path if present
-			if slashIdx := strings.Index(redisAddr, "/"); slashIdx >= 0 {
-				redisAddr = redisAddr[:slashIdx]
-			}
-		}
-		var err error
-		store, err = sessionredis.NewStore(10, "tcp", redisAddr, "", redisPassword, []byte(common.SessionSecret))
+		redisStore, redisAddr, redisDB, err := newRedisSessionStore(redisURL, []byte(common.SessionSecret))
 		if err != nil {
-			common.SysLog("Failed to create Redis session store, falling back to cookie: " + err.Error())
-			store = cookie.NewStore([]byte(common.SessionSecret))
+			// No cookie fallback: siblings use Redis sessions, and a pod on a
+			// different store would reject every session they issued.
+			common.SysError(fmt.Sprintf("Session store: Redis (%s db=%d) not reachable at boot, sessions fail until it is: %v", redisAddr, redisDB, err))
 		} else {
-			common.SysLog("Session store: Redis (" + redisAddr + ")")
+			common.SysLog(fmt.Sprintf("Session store: Redis (%s db=%d)", redisAddr, redisDB))
 		}
+		store = redisStore
 	} else {
 		store = cookie.NewStore([]byte(common.SessionSecret))
 		common.SysLog("Session store: cookie")
@@ -362,10 +479,7 @@ func run(ctx context.Context, startTime time.Time) error {
 	}
 
 	// Create http.Server for graceful shutdown
-	httpServer := &http.Server{
-		Addr:    ":" + port,
-		Handler: engine,
-	}
+	httpServer := buildHTTPServer(port, engine)
 
 	// Start HTTP server
 	g.Go(func() error {
@@ -381,19 +495,48 @@ func run(ctx context.Context, startTime time.Time) error {
 		<-ctx.Done()
 		common.SysLog("shutdown signal received, initiating graceful shutdown...")
 
-		// Allow 30 seconds for graceful shutdown
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Graceful shutdown timeout is configurable (config.Get().Server.GracefulShutdownTimeout,
+		// internal/pkg/config/config.go:50; env GRACEFUL_SHUTDOWN_TIMEOUT, config.go:113,
+		// default 30s) so it can be raised to match terminationGracePeriodSeconds:90
+		// without a code change.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), config.Get().Server.GracefulShutdownTimeout)
 		defer cancel()
 
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("HTTP server shutdown error: %w", err)
-		}
+		// cycle 13 L11: the Drainer marks readiness/liveness draining before it
+		// starts waiting, and turns a budget timeout into an accounted,
+		// non-fatal outcome — a blown GRACEFUL_SHUTDOWN_TIMEOUT used to reach
+		// FatalLog + os.Exit(1) from here, crash-looping the busiest pod. nil =
+		// count in-flight requests from metrics.ActiveConnections. Returns nil
+		// in every outcome by design; see doc/runbook/graceful-drain.md.
+		//nolint:contextcheck // the errgroup ctx is already cancelled here; the shutdown budget needs its own deadline (doc/runbook/graceful-drain.md)
+		_, _ = lifecycle.Default().Shutdown(shutdownCtx, httpServer, nil)
 		common.SysLog("HTTP server shutdown complete")
 		return nil
 	})
 
 	// Wait for all goroutines to complete
 	return g.Wait()
+}
+
+// buildHTTPServer constructs the public HTTP server.
+//
+// ReadHeaderTimeout and IdleTimeout come from config (env HTTP_READ_HEADER_TIMEOUT,
+// default 10s; HTTP_IDLE_TIMEOUT, default 120s — internal/pkg/config/config.go).
+// Both were zero, i.e. unlimited, until cycle 12: a peer could hold a connection
+// open indefinitely by never finishing its header block, and idle keep-alive
+// connections were never reaped.
+//
+// ReadTimeout and WriteTimeout are deliberately left at zero. They bound a whole
+// request/response, which on this server means cutting SSE relay streams and large
+// uploads mid-flight (cycle 12 do-not-regress list).
+func buildHTTPServer(port string, handler http.Handler) *http.Server {
+	srvCfg := config.Get().Server
+	return &http.Server{
+		Addr:              ":" + port,
+		Handler:           handler,
+		ReadHeaderTimeout: srvCfg.ReadHeaderTimeout,
+		IdleTimeout:       srvCfg.IdleTimeout,
+	}
 }
 
 func InjectUmamiAnalytics() {
@@ -450,6 +593,10 @@ func InitResources(ctx context.Context) error {
 	// 加载环境变量
 	common.InitEnv()
 
+	// Re-read identity/session/billing env vars whose package-level initializers
+	// ran before godotenv.Load above (see RefreshIdentityClientEnv comment).
+	common.RefreshIdentityClientEnv()
+
 	// Initialize structured logging from env vars (LOG_FORMAT, LOG_LEVEL)
 	common.InitSlog(common.SlogConfigFromEnv())
 
@@ -489,10 +636,12 @@ func InitResources(ctx context.Context) error {
 		return err
 	}
 
-	// Initialize Redis
+	// Initialize Redis. Non-fatal like Meilisearch/OIDC/NATS below: InitRedisClient
+	// keeps the client (go-redis reconnects per command) and health reports Redis
+	// as degraded, so a Redis blip at boot must not crash-loop the gateway.
 	err = common.InitRedisClient()
 	if err != nil {
-		return err
+		common.SysError(fmt.Sprintf("Failed to initialize Redis, continuing degraded: %v", err))
 	}
 
 	// Initialize Meilisearch
@@ -511,22 +660,27 @@ func InitResources(ctx context.Context) error {
 		}
 	}
 
-	// Initialize billing outbox (pre-auth settlement retry queue)
-	if common.BillingUnifiedEnabled {
-		if err := app.InitBillingOutbox(repo.DB); err != nil {
-			common.SysError(fmt.Sprintf("Failed to initialize billing outbox: %v", err))
-		} else {
-			common.SysLog("billing unified mode enabled, outbox initialized")
-		}
+	// Initialize billing outbox (pre-auth settlement retry queue). Not gated on
+	// BillingUnifiedEnabled(): the toggle is runtime-flippable, and an
+	// uninitialized outbox makes EnqueueSettle drop the settle on the floor.
+	if err := app.InitBillingOutbox(repo.DB); err != nil {
+		common.SysError(fmt.Sprintf("Failed to initialize billing outbox: %v", err))
+	} else {
+		common.SysLog("billing outbox initialized")
 	}
 
-	// Initialize Zitadel authentication (multi-tenant OAuth)
-	// 初始化 Zitadel 认证（多租户 OAuth）
-	err = middleware.InitZitadelAuth()
+	// Initialize zita SDK client (Layer B/C of ADR-0011 — replaces
+	// direct IdP coupling per ADR-0005). Optional: nil ZitaClient
+	// when env not set, legacy OIDC path remains as fallback.
+	common.InitZitaClient()
+
+	// Initialize OIDC authentication (multi-tenant OAuth)
+	// 初始化 OIDC 认证（多租户 OAuth）
+	err = middleware.InitOIDCAuth()
 	if err != nil {
-		common.SysError(fmt.Sprintf("Failed to initialize Zitadel authentication: %v", err))
-		// Don't return error - Zitadel is optional and can be enabled later
-		// 不返回错误 - Zitadel 是可选的，可以稍后启用
+		common.SysError(fmt.Sprintf("Failed to initialize OIDC authentication: %v", err))
+		// Do not return error - OIDC is optional and can be enabled later
+		// 不返回错误 - OIDC 是可选的，可以稍后启用
 	}
 
 	// Initialize OpenTelemetry tracing
@@ -536,6 +690,20 @@ func InitResources(ctx context.Context) error {
 		common.SysError(fmt.Sprintf("Failed to initialize tracing: %v", err))
 		// Don't return error - tracing is optional
 		// 不返回错误 - 追踪是可选的
+	}
+
+	// Initialize NATS publisher for LLM_QUOTA threshold events.
+	// Optional — Init is no-op when LLM_QUOTA_NATS_ENABLED=false.
+	if hubnats.Enabled() {
+		if err := hubnats.Init(); err != nil {
+			common.SysError(fmt.Sprintf("Failed to initialize NATS quota publisher: %v", err))
+			// Non-fatal: quota threshold events skipped, main path unaffected
+		} else {
+			common.SysLog(fmt.Sprintf("NATS quota publisher initialized, url=%s stream=%s",
+				os.Getenv("NATS_URL"), os.Getenv("LLM_QUOTA_NATS_STREAM")))
+			// llm.usage.recorded (metadata only, tenants that consented to sedimentation).
+			sedimentation.RegisterUsageEvents(ctx)
+		}
 	}
 
 	return nil

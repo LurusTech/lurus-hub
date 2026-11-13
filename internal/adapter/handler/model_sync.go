@@ -13,17 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-)
-
-// 上游地址
-const (
-	upstreamModelsURL  = "https://basellm.github.io/llm-metadata/api/newapi/models.json"
-	upstreamVendorsURL = "https://basellm.github.io/llm-metadata/api/newapi/vendors.json"
 )
 
 func normalizeLocale(locale string) (string, bool) {
@@ -143,7 +138,7 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 			lastErr = err
 			// backoff with jitter
 			sleep := baseDelay * time.Duration(1<<attempt)
-			jitter := time.Duration(rand.Intn(150)) * time.Millisecond
+			jitter := time.Duration(rand.Intn(150)) * time.Millisecond // #nosec G404 — backoff jitter; math/rand is sufficient.
 			time.Sleep(sleep + jitter)
 			continue
 		}
@@ -215,7 +210,7 @@ func fetchJSON[T any](ctx context.Context, url string, out *upstreamEnvelope[T])
 			return nil
 		}
 		sleep := baseDelay * time.Duration(1<<attempt)
-		jitter := time.Duration(rand.Intn(150)) * time.Millisecond
+		jitter := time.Duration(rand.Intn(150)) * time.Millisecond // #nosec G404 — backoff jitter; math/rand is sufficient.
 		time.Sleep(sleep + jitter)
 	}
 	return lastErr
@@ -435,6 +430,11 @@ func SyncUpstreamModels(c *gin.Context) {
 			})
 		}
 	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionModelSyncTriggered, governance.ResourceModel, 0,
+		fmt.Sprintf(`{"locale":%q,"created_models":%d,"created_vendors":%d,"updated_models":%d}`,
+			req.Locale, createdModels, createdVendors, updatedModels)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

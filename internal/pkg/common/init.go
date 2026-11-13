@@ -60,9 +60,6 @@ func InitEnv() {
 	} else {
 		CryptoSecret = SessionSecret
 	}
-	if os.Getenv("SQLITE_PATH") != "" {
-		SQLitePath = os.Getenv("SQLITE_PATH")
-	}
 	if *LogDir != "" {
 		var err error
 		*LogDir, err = filepath.Abs(*LogDir)
@@ -93,6 +90,21 @@ func InitEnv() {
 	RelayMaxIdleConns = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS", 500)
 	RelayMaxIdleConnsPerHost = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS_PER_HOST", 100)
 
+	// Streaming-safe hung-upstream guards (B1/R3) — seconds. NOT a total timeout.
+	RelayResponseHeaderTimeout = time.Duration(GetEnvOrDefault("RELAY_RESPONSE_HEADER_TIMEOUT", 90)) * time.Second
+	RelayDialTimeout = time.Duration(GetEnvOrDefault("RELAY_DIAL_TIMEOUT", 10)) * time.Second
+
+	// Health-check DB ping deadline (A1) + boot connect-retry budget (A2).
+	HealthDBPingTimeout = time.Duration(GetEnvOrDefault("HEALTH_DB_PING_TIMEOUT_MS", 1500)) * time.Millisecond
+	DBConnectRetries = GetEnvOrDefault("DB_CONNECT_RETRIES", 5)
+	DBConnectRetryBaseDelay = time.Duration(GetEnvOrDefault("DB_CONNECT_RETRY_DELAY_MS", 1000)) * time.Millisecond
+	DBConnectRetryMaxDelay = time.Duration(GetEnvOrDefault("DB_CONNECT_RETRY_MAX_DELAY_MS", 10000)) * time.Millisecond
+	DBConnectPingTimeout = time.Duration(GetEnvOrDefault("DB_CONNECT_PING_TIMEOUT_MS", 5000)) * time.Millisecond
+
+	CostSpikeProtectionEnabled = GetEnvOrDefaultBool("COST_SPIKE_PROTECTION_ENABLED", true)
+	CostSpikeHardLimitPer5Min = GetEnvOrDefault("COST_SPIKE_HARD_LIMIT_PER_5MIN", 50000)
+	CostSpikeEnforce = GetEnvOrDefaultBool("COST_SPIKE_ENFORCE", false)
+
 	// Initialize string variables with GetEnvOrDefaultString
 	GeminiSafetySetting = GetEnvOrDefaultString("GEMINI_SAFETY_SETTING", "BLOCK_NONE")
 	CohereSafetySetting = GetEnvOrDefaultString("COHERE_SAFETY_SETTING", "NONE")
@@ -106,9 +118,26 @@ func InitEnv() {
 	GlobalWebRateLimitNum = GetEnvOrDefault("GLOBAL_WEB_RATE_LIMIT", 60)
 	GlobalWebRateLimitDuration = int64(GetEnvOrDefault("GLOBAL_WEB_RATE_LIMIT_DURATION", 180))
 
+	GlobalV2RateLimitEnable = GetEnvOrDefaultBool("GLOBAL_V2_RATE_LIMIT_ENABLE", true)
+	GlobalV2RateLimitNum = GetEnvOrDefault("GLOBAL_V2_RATE_LIMIT", 600)
+	GlobalV2RateLimitDuration = int64(GetEnvOrDefault("GLOBAL_V2_RATE_LIMIT_DURATION", 180))
+
 	CriticalRateLimitEnable = GetEnvOrDefaultBool("CRITICAL_RATE_LIMIT_ENABLE", true)
 	CriticalRateLimitNum = GetEnvOrDefault("CRITICAL_RATE_LIMIT", 20)
 	CriticalRateLimitDuration = int64(GetEnvOrDefault("CRITICAL_RATE_LIMIT_DURATION", 20*60))
+
+	// Internal API per-key rate limits (keyed by API-key id, not IP — see constants.go).
+	InternalApiRateLimitEnable = GetEnvOrDefaultBool("INTERNAL_API_RATE_LIMIT_ENABLE", true)
+	InternalApiReadRateLimitNum = GetEnvOrDefault("INTERNAL_API_READ_RATE_LIMIT", 600)
+	InternalApiReadRateLimitDuration = int64(GetEnvOrDefault("INTERNAL_API_READ_RATE_LIMIT_DURATION", 60))
+	InternalApiWriteRateLimitNum = GetEnvOrDefault("INTERNAL_API_WRITE_RATE_LIMIT", 120)
+	InternalApiWriteRateLimitDuration = int64(GetEnvOrDefault("INTERNAL_API_WRITE_RATE_LIMIT_DURATION", 60))
+	InternalApiProvisionRateLimitNum = GetEnvOrDefault("INTERNAL_API_PROVISION_RATE_LIMIT", 60)
+	InternalApiProvisionRateLimitDuration = int64(GetEnvOrDefault("INTERNAL_API_PROVISION_RATE_LIMIT_DURATION", 60))
+
+	// Billing degradation cap (P1-2) — owner-tunable; default is conservative.
+	BillingDegradedSpendCapLB = GetEnvOrDefaultFloat("BILLING_DEGRADED_SPEND_CAP_LB", 50.0)
+	BillingDegradedWindowSec = GetEnvOrDefault("BILLING_DEGRADED_WINDOW_SEC", 3600)
 	initConstantEnv()
 }
 

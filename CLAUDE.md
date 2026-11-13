@@ -1,15 +1,17 @@
-# Lurus Hub (2b-svc-api)
+# Lurus Newhub (2b-svc-newhub)
 
-AI 数据处理枢纽 — Platform 产品组核心成员。在 New API 开源基座上进化：数据处理管道 + 个性化定制中转 + 企业级计费集成。
+> **[STATUS 2026-08-30]**: 本目录是 `2b-svc-newhub`（生产 domain: `hub.lurus.cn`；`test-newhub.lurus.cn` 自 2026-08-30 起指向隔离 UAT 实例,不再是生产别名）。
+> 原 `2b-svc-api`（lurus-hub）已于 **2026-04-23 REMOVED**，由 newapi 接管直接中转职能。
 
-**产品定位**: 不只是 LLM 中转站，更是数据处理枢纽 — 实时用量分析、成本优化、模型性能监控、按产品个性化路由。
+AI 数据处理枢纽 — Platform 产品组核心成员。在 New API 开源基座上进化：数据处理管道 + 个性化定制中转 + 企业级计费集成。多租户 Hub 层（newapi 之上 + Platform 计费），详见 `doc/` 和 `_bmad-output/`。
+
 **与 NewAPI 的关系**: lurus-newapi 是稳定开源中转基座（定期同步上游），Hub 在其上增加数据处理能力和公司定制逻辑。
 
 - **Module**: `github.com/LurusTech/lurus-hub`
-- **Namespace / Port**: `lurus-system` / pod:3000, svc:8850
-- **Image**: `ghcr.io/LurusTech/lurus-api:main` (runtime resource name preserved)
-- **DB**: PostgreSQL (`lurus_api` schema, GORM auto-migrate) + SQLite fallback (dev only), Redis DB 0, Meilisearch (optional)
-- **Auth**: Zitadel OIDC (`auth.lurus.cn`), Passkey, session cookie/Redis
+- **Namespace / Port**: `lurus-newhub`(R6;2026-07-15 live 核实,旧记载 `lurus-system` 已 rot)/ pod:3000, svc:8850(NodePort 30850)
+- **Image**: `ghcr.io/hanmahong5-arch/lurus-newhub`(digest 钉版,imagePullPolicy=IfNotPresent;`:main` 由 Publish workflow 更新)
+- **DB**: PostgreSQL **16.14**，库 `newhub`，表在 **`public`** schema（2026-08-24 实测 40 张；旧记载的 `lurus_api` schema 已 rot）。GORM auto-migrate + embedded migration runner；非 postgres:// DSN boot fast-fail（2026-06 起）。Redis **DB 2**（`redis.lurus-system.svc:6379/2`，旧记载 DB 0 已 rot）。Meilisearch 未部署（`MEILISEARCH_ENABLED=false`）
+- **Auth**: OIDC (vendor-neutral; issuer/clientId deploy-time owner-gated), TOTP step-up (`internal/app/totp`), session cookie/Redis。Passkey 从未有过 handler/route(2026-09-01 清除 settings 空壳 34c665d9,见 `r5c_status_capability_test.go` N5)
 - **Product Group**: Platform (P0)
 
 ## Core Capabilities
@@ -26,13 +28,13 @@ AI 数据处理枢纽 — Platform 产品组核心成员。在 New API 开源基
 
 | Layer | Tech |
 |-------|------|
-| Backend | Go 1.25.1, Gin, GORM |
-| Frontend | React 18, Vite, Semi UI (`web/`), Bun |
-| DB | PostgreSQL / MySQL / SQLite |
-| Cache | Redis DB 0 (session + channel cache + quota sync) |
+| Backend | Go 1.26.7, Gin, GORM |
+| Frontend | React 19, TanStack Router/Query, shadcn + Tailwind 4, rsbuild (`web/next/`), Bun。旧 Semi UI 控制台(`web/src`)已于 2026-10 退役,`/console/*` 只做 302 跳到新页面 |
+| DB | PostgreSQL（runtime 唯一；glebarez SQLite 仅 hermetic 单测 tier） |
+| Cache | Redis — session + channel cache + quota sync all follow the DSN's DB (prod `/2`, UAT `/3`; see the "DB" line above) |
 | Search | Meilisearch (log full-text, 可选) |
-| Observability | Prometheus `/metrics`, OpenTelemetry traces (OTLP), pprof :8005, Pyroscope |
-| Providers | 30+ LLM vendors（详见 AI Providers 章节） |
+| Observability | Prometheus `/metrics` (Netdata go.d 主动抓，**禁为换栈改业务代码**) |
+| Providers | 30+ LLM vendors（`internal/adapter/provider/<vendor>/`：openai/claude/gemini/aws/baidu/cohere/zhipu/… 详见目录） |
 
 ## Directory Structure
 
@@ -40,7 +42,7 @@ AI 数据处理枢纽 — Platform 产品组核心成员。在 New API 开源基
 cmd/server/main.go           # Entry point
 internal/
 ├── domain/entity/           # Domain entities (channel, user, log, token, tenant, task…)
-├── app/                     # Business logic (relay/, passkey/, billing, quota, channel…)
+├── app/                     # Business logic (relay/, totp/, tenantpolicy/, governance/, billing, quota, channel…)
 │   └── relay/               # Multi-modal request dispatch (30+ providers)
 ├── adapter/
 │   ├── handler/             # HTTP controllers + router/ (v1/v2/relay/internal/web)
@@ -60,15 +62,19 @@ deploy/k8s/                  # K8s manifests + staging overlay
 # --- Local Dev ---
 cp .env.example .env                        # 复制并填写 SQL_DSN, REDIS_CONN_STRING, SESSION_SECRET
 go run ./cmd/server                         # 后端 port 3000
-cd web && bun install && bun run dev        # 前端 port 5173 (代理到 3000)
+cd web/next && bun install && bun run dev   # 控制台 dev server(代理到 3000;连远端后端设 VITE_REACT_APP_SERVER_URL)
+# 多工作树并行跑 docker-compose.dev.yml / docker-compose.yml / docker-compose.meilisearch.yml：
+# 各设 COMPOSE_PROJECT_NAME + NEWHUB_HTTP_PORT / NEWHUB_DEV_REDIS_PORT / NEWHUB_DEV_PG_PORT /
+# NEWHUB_MEILISEARCH_PORT，避免容器名与宿主端口冲突
 
 # --- Build (production) ---
 CGO_ENABLED=0 go build -ldflags "-s -w -X 'github.com/LurusTech/lurus-hub/internal/pkg/common.Version=$(cat VERSION)'" -o lurus-api ./cmd/server
 
 # --- Frontend ---
-cd web && bun run typecheck
-cd web && bun run lint
-cd web && bun run build
+# NB: web/ has no `typecheck` script (plain JS, not TS) — `bun run typecheck`
+# has always failed here. Real gates: lint = prettier --check, plus eslint.
+cd web/next && bun run typecheck && bun run lint && bun run test
+cd web/next && bun run build                # 产物 web/dist/next(+ site-root/ 拷到 web/dist 根)
 
 # --- Test ---
 go test -short ./...                        # 单元测试（跳过集成测试）
@@ -77,150 +83,62 @@ go test -v ./internal/adapter/handler/...  # 指定包
 go test -run Integration ./...             # 仅集成测试
 go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
 
-# --- K8s ---
-ssh root@100.98.57.55 "kubectl get pods -n lurus-system"
-ssh root@100.98.57.55 "kubectl rollout restart deployment/lurus-api -n lurus-system"
-ssh root@100.98.57.55 "kubectl logs -n lurus-system -l app=lurus-api --tail=100"
-ssh root@100.98.57.55 "kubectl describe pod -n lurus-system <pod>"
+# --- K8s (hub.lurus.cn 生产 = R6, ns lurus-newhub) ---
+ssh root@100.122.83.20 "kubectl get pods -n lurus-newhub"                # R6 Tailscale;备用 ssh -p 12222 root@43.226.45.87
+ssh root@100.122.83.20 "kubectl logs -n lurus-newhub deploy/lurus-newhub --tail=100"
+# 部署 = merge main → docker-image-main.yml 出 :main 镜像并 auto-pin r6-stage
+# manifest（[skip ci] commit）→ ArgoCD Application（deploy/k8s/argocd/,
+# automated+selfHeal, prune off）自动收敛。禁手工 kubectl set image——selfHeal
+# 会把它回滚;应急路径与回滚见 doc/runbook/staging-deploy.md。
+# 后备（ArgoCD 不可用时）: SKIP_SECRETS=1 bash scripts/deploy-stage.sh
+# migration 与 leadership lease 解耦(57e22c8a):每个 master-capable 副本启动都跑,
+# 两把 advisory lock 串行化。带 migration 的部署后核 schema_migrations;
+# 漂移信号 = /metrics 的 lurus_gateway_schema_migrations_pending 与
+# /api/health 的 checks.schema_migrations。
 ```
 
 ## K8s Deployment Facts
 
+> 全表 2026-08-24 对 **live deployment 逐项重核**（旧表整张是 2026-04 退役的
+> `lurus-api`/ns `lurus-system` 的配置——nodeSelector、Redis 地址、Meilisearch、
+> ALLOWED_ORIGINS、Secret 名、出站代理**全部是错的**)。真源 =
+> `deploy/k8s/r6-stage/deployment.yaml`。
+
 | Key | Value |
 |-----|-------|
-| nodeSelector | `lurus.cn/vpn: "true"` |
+| Replicas | `3`（leader election 抽屉演练用;仅 leader 跑 master-only 后台任务) |
+| nodeSelector | **无**(单节点集群 `cloud-ubuntu-5-32c32g`) |
 | Resources | req: 256Mi/100m  lim: 1Gi/500m |
 | Security | runAsUser:65534, readOnlyRootFilesystem, drop ALL caps |
 | Volumes | `data: emptyDir`, `tmp: emptyDir` (no persistent disk) |
-| Redis | `redis://redis:6379` (in-cluster) |
-| Meilisearch | `http://meilisearch:7700` (in-cluster) |
-| Outbound proxy | `http://10.42.1.1:10808` (for Gemini/OpenAI/外网 LLM) |
-| NO_PROXY | `*.svc,*.svc.cluster.local,*.lurus.cn,10.0.0.0/8,…` |
-| ALLOWED_ORIGINS | `https://www.lurus.cn,https://lucrum.lurus.cn` |
-| MODEL_SYNC_FREQUENCY | `60` (分钟) |
-| Secret | `lurus-api-secrets` (SESSION_SECRET, SQL_DSN, ZITADEL_CLIENT_ID, IDENTITY_SESSION_SECRET, IDENTITY_SERVICE_INTERNAL_KEY, ALIPAY_*) |
+| Redis | `redis://redis.lurus-system.svc.cluster.local:6379/2`(**DB 2**,不是 0) |
+| Meilisearch | `MEILISEARCH_ENABLED=false`(集群内无 meilisearch 实例) |
+| 出站代理 | **无,且不要加**——上游供应商直连 :443。被墙供应商走 per-channel proxy;理由与实测见 `deploy/k8s/r6-stage/netpol-nats-egress.yaml` 头注释 |
+| Egress 管控 | NetworkPolicy `newhub-nats-egress`：仅放行 NATS/DNS/PG/lurus-system/lurus-platform + 公网 80/443（RFC1918 全 except) |
+| ALLOWED_ORIGINS | `https://hub.lurus.cn,https://identity.lurus.cn`(2026-08-30 切换时**移除** test-newhub——它已是 UAT 的 origin,留着=授权弱加固实例对生产发凭证跨域调用) |
+| 边缘 | **无 k8s Ingress**;宿主 nginx vhost:`hub.lurus.cn`→`proxy_pass http://127.0.0.1:30850`(生产),`test-newhub.lurus.cn`→`:30851`(UAT,2026-08-30 切换),源码在 `deploy/r6-host-nginx/`。均设 `X-Forwarded-For`/`X-Real-IP` ⇒ **pod 侧 `RemoteAddr` 恒为私网**,任何「靠 RemoteAddr 判内外网」的守卫在此拓扑下恒真 |
+| SSO/Cookie | `OIDC_REDIRECT_URI=https://hub.lurus.cn/api/v2/oauth/callback`、`SESSION_COOKIE_DOMAIN=""`(host-only;2026-08-30 切换,旧值 test-newhub 曾让 hub 域浏览器拒收 cookie ⇒ hub 域 SSO 一直是坏的)、`OIDC_POST_LOGOUT_REDIRECT_URI=https://hub.lurus.cn/`。IdP 侧 redirect 由 platform `config/apps.yaml` newhub 条目 domain 派生(单 URI,client_id 稳定) |
+| `/metrics` | 双层封堵(2026-08-25):nginx `location = /metrics { return 404; }` + 应用层 `metricsAuthMiddleware`(无转发头的直连放行、带转发头则要 `METRICS_AUTH_TOKEN`)。唯一合法抓取者 = 宿主 netdata go.d job `newhub` → `http://localhost:30850/metrics`(直连,不经 nginx) |
+| SYNC_FREQUENCY | `60`(秒;渠道缓存同步) |
+| Secret | `lurus-newhub-secrets`,注入 7 个 key：SESSION_SECRET, SQL_DSN, OIDC_CLIENT_ID, IDENTITY_SESSION_SECRET, IDENTITY_SERVICE_INTERNAL_KEY, LURUS_WHITELABEL_MASTER_SECRET, TAVILY_API_KEY(optional) |
+
+## UAT Instance (2026-08-30 起)
+
+隔离 UAT 实例 `ns lurus-newhub-uat` / **NodePort 30851** / 域名 **`https://test-newhub.lurus.cn`**(2026-08-30 nginx 切换,原指生产 30850):独立 PG 库 `newhub_uat`、Redis DB 3、与生产**同 digest**(auto-pin 双写两个 manifest)。有意差异:OIDC/billing-unified/NATS 关、`E2E_BRIDGE_TOKEN` 开(bridge 登录;浏览器走 `/bridge-login`,`#t=<token>` 可一键进,见 `deploy/k8s/r6-uat/README.md`)、web 限流 600、注册关(`options.RegisterEnabled=false`,代码默认开)。session cookie host-only + **Secure**(⇒ 隧道 `http://localhost:30851` 的浏览器流会丢 cookie,浏览器/e2e 走域名;API 级隧道照旧)。真源 = `deploy/k8s/r6-uat/`(README 有对照表)。**e2e**:`cd web/next && E2E_BRIDGE_TOKEN=$(ssh … kubectl -n lurus-newhub-uat get secret …) bun run test:e2e`(E2E_BASE_URL 默认即 test-newhub 域;2026-08-30 域名双跑 33 passed/1 legit skip×2,状态幂等)。**CI 夜跑**:web-ci.yml schedule 19:00 UTC(03:00 北京)跑 e2e job,repo secret `E2E_BRIDGE_TOKEN`(R6 侧生成,轮换后要 `gh secret set` 同步)。
 
 ## Environment Variables
 
-### Required
-
-| Variable | Description |
-|----------|-------------|
-| `SQL_DSN` | PostgreSQL: `postgresql://user:pass@host/db`；MySQL: `user:pass@tcp(host:3306)/db` |
-| `SESSION_SECRET` | Session 签名密钥（多节点必须一致） |
-| `REDIS_CONN_STRING` | `redis://redis:6379`，缺失则退化为 cookie session |
-
-### lurus-platform Integration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `IDENTITY_SERVICE_URL` | `http://platform-core.lurus-platform.svc.cluster.local:18104` | HTTP 地址 |
-| `IDENTITY_GRPC_ADDR` | `platform-core.lurus-platform.svc.cluster.local:18105` | gRPC 地址（自动 HTTP fallback） |
-| `IDENTITY_SERVICE_INTERNAL_KEY` | — | platform `/internal/v1/*` bearer token |
-| `IDENTITY_SESSION_SECRET` | — | 与 lurus-platform 共享的 session token 验签密钥 |
-| `IDENTITY_AUTH_REDIRECT` | `false` | `true` → register/login/topup 重定向到 identity |
-| `IDENTITY_PUBLIC_URL` | `https://identity.lurus.cn` | 用于 redirect URL 构造 |
-
-### Zitadel OIDC (v2 API)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ZITADEL_ENABLED` | `false` | 启用 Zitadel OIDC |
-| `ZITADEL_ISSUER` | — | `https://auth.lurus.cn` |
-| `ZITADEL_JWKS_URI` | — | `https://auth.lurus.cn/oauth/v2/keys` |
-| `ZITADEL_CLIENT_ID` | — | Zitadel app client ID |
-| `ZITADEL_REDIRECT_URI` | — | 生产: `https://api.lurus.cn/api/v2/oauth/callback` |
-| `ZITADEL_POST_LOGOUT_REDIRECT_URI` | — | 登出后跳转 URL |
-| `ZITADEL_ALLOWED_REDIRECT_DOMAINS` | — | `lurus.cn,api.lurus.cn` |
-| `ZITADEL_ENABLE_PKCE` | `false` | 启用 PKCE |
-| `ZITADEL_AUTO_CREATE_USER` | `false` | OIDC 登录自动建用户 |
-| `ZITADEL_AUTO_CREATE_TENANT` | `false` | OIDC 登录自动建租户 |
-
-### Meilisearch (Optional)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEILISEARCH_ENABLED` | `false` | 启用 Meilisearch |
-| `MEILISEARCH_HOST` | — | `http://meilisearch:7700` |
-| `MEILISEARCH_API_KEY` | — | Master key |
-| `MEILISEARCH_SYNC_ENABLED` | `false` | 启用日志同步 |
-| `MEILISEARCH_SYNC_WORKERS` | `32` | 同步并发数 |
-| `MEILISEARCH_SYNC_BATCH_SIZE` | `1000` | 批次大小 |
-| `MEILISEARCH_WORKER_COUNT` | `2` | 生产用 worker 数 |
-
-### Runtime Tuning
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | HTTP 监听端口 |
-| `GIN_MODE` | `debug` | `release` 关闭 debug 输出 |
-| `DEBUG` | `false` | 启用 debug 日志 |
-| `NODE_TYPE` | `master` | `slave` 禁用 master-only 任务 |
-| `SYNC_FREQUENCY` | `60` | 缓存同步周期（秒） |
-| `RELAY_TIMEOUT` | `0` | Relay 超时（秒，0=不限） |
-| `RELAY_MAX_IDLE_CONNS` | `500` | HTTP 连接池最大空闲连接 |
-| `BATCH_UPDATE_ENABLED` | `false` | 启用批量数据库写入 |
-| `BATCH_UPDATE_INTERVAL` | `5` | 批量写入间隔（秒） |
-| `DAILY_QUOTA_ENABLED` | `true` | `false` 禁用每日配额重置 |
-| `CHANNEL_UPDATE_FREQUENCY` | — | 渠道自动更新频率（分钟） |
-| `MODEL_SYNC_FREQUENCY` | — | 模型自动同步频率（分钟） |
-| `MEMORY_CACHE_ENABLED` | `false` | 启用内存缓存（Redis 存在时自动开启） |
-| `STREAMING_TIMEOUT` | `300` | 流式请求无响应超时（秒） |
-| `MAX_REQUEST_BODY_MB` | `64` | 请求体最大大小（MB） |
-| `GRACEFUL_SHUTDOWN_TIMEOUT` | `30s` | 优雅停机等待时间 |
-| `ALLOWED_ORIGINS` | 见 config.go | CORS 允许域名（逗号分隔） |
-| `FRONTEND_BASE_URL` | — | slave 节点将前端路由重定向到此 URL |
-| `MINIO_RELEASES_BUCKET` | `lurus-releases` | Release 文件的 MinIO bucket |
-
-### Observability (Optional)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OTEL_TRACING_ENABLED` | `false` | 启用 OpenTelemetry traces |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `jaeger-collector.observability.svc:4318` |
-| `OTEL_EXPORTER_OTLP_INSECURE` | — | `true` |
-| `OTEL_TRACE_SAMPLE_RATE` | `0.1` | 采样率（0.0~1.0） |
-| `OTEL_ENVIRONMENT` | — | `production` |
-| `ENABLE_PPROF` | `false` | 启用 pprof（port 8005） |
-| `LOG_FORMAT` | — | `json` 启用结构化日志 |
-| `LOG_LEVEL` | — | 日志级别 |
-
-### Proxy (For External LLM APIs)
-
-| Variable | Value (production) | Description |
-|----------|--------------------|-------------|
-| `HTTP_PROXY` / `http_proxy` | `http://10.42.1.1:10808` | 出站代理（访问 OpenAI/Gemini 等） |
-| `HTTPS_PROXY` / `https_proxy` | `http://10.42.1.1:10808` | — |
-| `NO_PROXY` / `no_proxy` | `localhost,127.0.0.1,10.0.0.0/8,*.svc,*.lurus.cn…` | 内网绕过代理 |
-
-### OAuth Providers (Optional)
-
-`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `ALIPAY_PRIVATE_KEY`, `ALIPAY_PUBLIC_KEY`,
-`WECHAT_SERVER_ADDRESS`, `WECHAT_SERVER_TOKEN`, `TELEGRAM_BOT_TOKEN`,
-`UMAMI_WEBSITE_ID`, `GOOGLE_ANALYTICS_ID`
-
-## Route Groups
-
-| Group | Auth | Description |
-|-------|------|-------------|
-| `GET /api/status` | public | Healthcheck → `{"success": true}` |
-| `/api/*` | session (v1) | 用户/管理/渠道/Token 等 v1 API |
-| `/api/v2/:tenant_slug/*` | Zitadel JWT | 多租户 v2 API (渠道/Token/日志/配置/兑换码) |
-| `/api/v2/oauth/*` | public | Zitadel OAuth callback/logout/refresh |
-| `/api/v2/switch/*` | public | lurus-switch 版本查询 + 预设库 |
-| `/api/v2/user/identity-overview` | Zitadel JWT | VIP/钱包/订阅信息（来自 platform） |
-| `/api/v2/admin/*` | v1 session + RootAuth | 平台管理员：租户管理/用户映射/统计 |
-| `/v1/*` | Token auth | Relay: chat/completions, messages(Claude), responses, images, audio, embeddings, rerank, realtime(WS) |
-| `/v1beta/models/*` | Token auth | Gemini relay |
-| `/mj/*`, `/:mode/mj/*` | Token auth | Midjourney relay |
-| `/suno/*` | Token auth | Suno task relay |
-| `/pg/chat/completions` | User session | Playground |
-| `/internal/*` | API Key + Scope | 服务内通信（见 Internal API Scopes） |
-| `GET /metrics` | public | Prometheus scrape |
+env 详表（Required / platform Integration / OIDC / Meilisearch / Runtime Tuning / Observability / Proxy / OAuth）见 **`.env.example`** 与 **`doc/claude-md-archive-2026-06-10.md`**。
+⚠️ Observability: 监控栈已切 **Netdata 自托管**（lurus/CLAUDE.md HARD RULE）；旧 OTLP→jaeger-collector...:4318 collector 已停。服务继续暴露 Prometheus-format `/metrics` 由 go.d `prometheus` collector 主动抓，**禁为换栈改业务代码**。
 
 ## Internal API Scopes
 
-路径前缀 `/internal`，需 `Authorization: Bearer <key>` + scope 匹配（`repo.ScopeXxx`）。
+路径前缀 `/internal`，需 **`Authorization: Bearer lurus_ik_…`** 头 + scope 匹配（`repo.ScopeXxx`）。
+`X-API-Key: lurus_ik_…` 仍接受但**已弃用**：响应带 `Warning: 299 - "X-API-Key is deprecated; use Authorization: Bearer"`，
+并计入 `lurus_gateway_internal_auth_legacy_header_total{route,key_id}`（判零流量后再移除）。两头都带时**以 Bearer 为准**
+（Bearer 错 → 401，不回退 X-API-Key）；非 Bearer 形式的 Authorization 被忽略、回退 X-API-Key。见 `internal_api_auth.go` `extractInternalApiKey`。
+`/internal/admin/*`（backfill-token-accounts / convergence-stats / rotate-due-tokens / reset-due-pools）要 `ScopeAdmin`；线上唯一那把
+key `platform-core` 只有 `balance:write / user:delete / provisioning`，**没有 admin**，调用前先确认 scope。
 
 | Scope | Endpoints |
 |-------|-----------|
@@ -231,65 +149,32 @@ ssh root@100.98.57.55 "kubectl describe pod -n lurus-system <pod>"
 | `ScopeBalanceRead` | `GET /internal/balance/user/:id` |
 | `ScopeBalanceWrite` | `POST /internal/balance/topup` |
 
-## lurus-platform gRPC Integration
-
-`internal/pkg/common/identity_grpc_client.go` — singleton gRPC client，连接失败自动 fallback 到 HTTP。
-
-| Function | gRPC Method | Description |
-|----------|-------------|-------------|
-| `GetAccountByZitadelSubGRPC` | `GetAccountByZitadelSub` | 通过 Zitadel sub 查账户 |
-| `UpsertAccountGRPC` | `UpsertAccount` | 创建或更新账户（OIDC 首次登录） |
-| `GetEntitlementsGRPC` | `GetEntitlements` | 查权益（产品功能开关） |
-| `GetAccountOverviewGRPC` | `GetAccountOverview` | 聚合：账户 + VIP + 钱包 + 订阅 |
-| `ReportLLMUsageGRPC` | `ReportUsage` | 上报 LLM 用量 (amountCNY) |
-| `DebitWalletGRPC` | `WalletDebit` | 钱包扣款（消费 LLM 时） |
-| `CreditWalletGRPC` | `WalletCredit` | 钱包充值 |
-
-gRPC auth: Bearer token in metadata `authorization` header (同 `IDENTITY_SERVICE_INTERNAL_KEY`)。
-
-## Relay Formats
-
-`internal/pkg/types/relay_format.go` 定义，`handler.Relay(c, types.RelayFormatXxx)` 分发。
-
-| RelayFormat | Endpoint | Notes |
-|-------------|----------|-------|
-| `RelayFormatOpenAI` | `/v1/chat/completions`, `/v1/completions` | 主流 chat |
-| `RelayFormatClaude` | `/v1/messages` | Anthropic 原生格式 |
-| `RelayFormatGemini` | `/v1beta/models/*`, `/v1/models/*path` | Gemini 原生格式 |
-| `RelayFormatOpenAIResponses` | `/v1/responses` | OpenAI Responses API |
-| `RelayFormatOpenAIImage` | `/v1/images/generations`, `/v1/images/edits`, `/v1/edits` | 图像生成 |
-| `RelayFormatEmbedding` | `/v1/embeddings`, `/v1/engines/:model/embeddings` | Embeddings |
-| `RelayFormatOpenAIAudio` | `/v1/audio/*` | TTS/ASR |
-| `RelayFormatRerank` | `/v1/rerank` | Rerank |
-| `RelayFormatOpenAIRealtime` | `GET /v1/realtime` (WebSocket) | Realtime API |
-
-Midjourney/Suno 通过独立 handler 处理（`handler.RelayMidjourney`, `handler.RelayTask`）。
-
-## AI Providers
-
-`internal/adapter/provider/<vendor>/` 目录：
-
-`openai`, `claude` (Anthropic), `gemini`, `aws` (Bedrock), `baidu`, `cloudflare`,
-`cohere`, `coze`, `dify`, `jina`, `minimax`, `mokaai`, `ollama`, `palm`,
-`perplexity`, `siliconflow`, `tencent`, `vertex`, `xunfei`, `zhipu`, `zhipu_4v`
+> Route Groups / gRPC Integration / Relay Formats 全表移至 `doc/claude-md-archive-2026-06-10.md`；契约真源 = `lurus/doc/coord/contracts.md`。
 
 ## Key Runtime Notes
 
-- **DB 自动迁移**: 启动时 GORM 自动建表（Go 结构体驱动）；PostgreSQL 手动 SQL migration 在 `migrations/` (001-004)
-- **SQLite fallback**: 未设置 `SQL_DSN` 时使用 SQLite (`one-api.db`)，仅用于开发
+- **Relay engine**: `RELAY_ENGINE=bifrost|legacy` (default legacy if unset). In-process Bifrost (`internal/app/relay/bifrosteng`) owns mapped chat/embeddings/messages when modes allow; newhub Pre/PostConsume remains the sole ledger. UAT/prod manifests and soak: `doc/runbook/bifrost-uat-soak.md`, `doc/runbook/bifrost-stage-prod-flip.md`, ADR `doc/adr/bifrost-relay-engine.md`.
+- **Grok2API upstream** (optional): self-hosted `chenyme/grok2api` in ns `lurus-grok2api`; products still call Hub `/v1/*`. Manifests `deploy/k8s/r6-grok2api/`, ops `doc/runbook/grok2api-upstream.md`. Official xAI stays `ChannelTypeXai`.
+- **DB 自动迁移**: 启动时 GORM 自动建表（Go 结构体驱动）+ embedded SQL migration runner（`internal/pkg/migration`，**每个 master 副本**上自动跑并由 advisory lock 串行化，`MIGRATIONS_AUTO_RUN=false` 可关）。**Baseline 契约**: `migrations/` 001–020 只记账永不执行（001–004 是 MySQL 方言）；021 起必须 PG-only + 幂等，ID 先在 root `doc/coord/migration-ledger.md` 预留
+- **PG-only (2026-06)**: `SQL_DSN` 必须 `postgres://`/`postgresql://`，否则 boot fast-fail；MySQL 与 SQLite dev fallback 已删（glebarez SQLite 仅存于 hermetic 单测 tier）
 - **渠道缓存**: Redis 存在时自动启用内存缓存，`SYNC_FREQUENCY` 控制同步周期
 - **Background tasks**: `lifecycle.Manager` 管理，`TickerTask` 封装定时任务
-- **ProtoImport**: 通过独立模块 `lurus-proto-go` 引用 identity gRPC 契约类型（`github.com/LurusTech/lurus-proto-go/identity/v1`）
-- **go.mod replace**: `github.com/LurusTech/lurus-proto-go => ../shared/lurus-proto-go`（本地开发；发布到 GitHub 后移除）
+- **platform 调用只走 HTTP**: identity/钱包调用在 `internal/pkg/common/identity_calls.go`（`*GRPC` 后缀为历史命名，内部直调 HTTP，受 `IDENTITY_TIMEOUT_MS` 总预算约束）；gRPC 客户端与 `lurus-proto-go` 依赖已移除（其生成物无 protoimpl，从未成功过一次调用）
+- **go.mod replace**: 仅 `github.com/LurusTech/lurus-entkit => ../shared/lurus-entkit`
 
 ## BMAD
 
-| Resource | Path |
-|----------|------|
-| PRD | `./_bmad-output/planning-artifacts/prd.md` |
-| Epics | `./_bmad-output/planning-artifacts/epics.md` |
-| Architecture | `./_bmad-output/planning-artifacts/architecture.md` |
-| Sprint Status | `./_bmad-output/planning-artifacts/sprint-status.yaml` |
-| Project Context | `./_bmad-output/planning-artifacts/project-context.md` |
+| Resource | Path | 状态 |
+|----------|------|------|
+| PRD | `./_bmad-output/planning-artifacts/prd.md` | 2026-08-09 |
+| Epics | `./_bmad-output/planning-artifacts/epics.md` | 2026-05-07 |
+| Architecture | `./_bmad-output/planning-artifacts/architecture.md` | 2026-04-23 |
+| Project Context | `./_bmad-output/planning-artifacts/project-context.md` | 2026-04-23 |
+| Sprint Status | `./_bmad-output/planning-artifacts/sprint-status.yaml` | **2026-05-05 快照,非当前状态** |
 
-**Story 文档规则（Epic 6+ 严格执行）**: 实现前建 story 文档 → 通过 `dev-story/checklist.md` → 含验证证据才可标 done。违反 = 工作无效。
+**当轮计划**: `_bmad-output/planning-artifacts/cycle<N>-*.md`,一轮一份。git 里只剩 `cycle13-industrial-grade-2026-09-20.md`(最近完成的一轮)与 `cycle11-first-customer-2026-09-19.md`(被 `internal/pkg/metrics/l7_settlement_failed_zero_init_test.go` 引用);更早各轮在 git 历史里。
+
+⚠️ 原 "Story 文档规则(Epic 6+ 严格执行 → `dev-story/checklist.md`)" 已删:**本仓从来没有 `dev-story/checklist.md`**(2026-09-22 全仓 grep 核实),且 2026-05 之后 14 轮工作没有一轮建过 story 文档 —— 实际形态是「当轮计划文档 + PR 正文带实跑证据」。
+
+---
+_2026-09-22 文档瘦身: 删除 62 份一次性产物(story/acceptance/各轮计划/审计报告),doc 79→63、_bmad-output 62→16;保留 runbook、ADR/decisions、契约、对外材料与被代码引用的文档。_

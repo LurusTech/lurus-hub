@@ -226,6 +226,7 @@ func getOpusDuration(r io.ReadSeeker) (float64, error) {
 		}
 
 		// 读取 granule position (字节 6-13, 小端序)
+		// #nosec G115 — Ogg granule position is bounded by sample count; overflow not exploitable.
 		granulePos := int64(binary.LittleEndian.Uint64(buf[6:14]))
 		if granulePos > totalGranulePos {
 			totalGranulePos = granulePos
@@ -246,6 +247,14 @@ func getOpusDuration(r io.ReadSeeker) (float64, error) {
 		if _, err := r.Seek(int64(pageSize), io.SeekCurrent); err != nil {
 			break
 		}
+	}
+
+	// 扫描一页有效 granule position 都没拿到（不是 OGG 容器 / 流被截断 / 只有头部页）
+	// 时不能报成功：调用方只在 err != nil 时才走兜底（TTS 按响应体积估算 token、
+	// STT 直接拒绝请求），(0, nil) 会被当成"这段音频就是 0 秒"而静默计 0 token。
+	// 与 getAACDuration 的 "no valid aac frames found" 保持同一约定。
+	if totalGranulePos <= 0 {
+		return 0, errors.New("no valid ogg/opus page with a granule position found")
 	}
 
 	// Opus 的采样率固定为 48000 Hz

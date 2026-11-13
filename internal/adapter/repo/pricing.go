@@ -3,12 +3,14 @@ package repo
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"sync"
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/domain/entity"
+	"github.com/LurusTech/lurus-hub/internal/pkg/capability"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
@@ -28,6 +30,13 @@ var (
 	lastGetPricingTime   time.Time
 	updatePricingLock    sync.Mutex
 
+	// pricingOwnerGroups[model name][channel tenant id] lists the groups
+	// that tenant's channels serve the model in. Built by updatePricing
+	// next to pricingMap and read by GetPricingForTenant, which is how one
+	// process-wide catalogue can answer per-tenant without a second query.
+	// Guarded by updatePricingLock.
+	pricingOwnerGroups = make(map[string]map[string][]string)
+
 	// 缓存映射：模型名 -> 启用分组 / 计费类型
 	modelEnableGroups     = make(map[string][]string)
 	modelQuotaTypeMap     = make(map[string]int)
@@ -38,6 +47,26 @@ var (
 	modelSupportEndpointTypes = make(map[string][]constant.EndpointType)
 	modelSupportEndpointsLock = sync.RWMutex{}
 )
+
+// InvalidatePricingCache forces the next GetPricing/GetVendors call to
+// rebuild the catalogue instead of serving the ~1-minute cache. Called after
+// a versioned pricing write commits (handler v2_pricing_write.go,
+// pricing_write_legacy.go) so a console refetch right after a save shows the
+// ratios just written.
+func InvalidatePricingCache() {
+	updatePricingLock.Lock()
+	defer updatePricingLock.Unlock()
+	lastGetPricingTime = time.Time{}
+}
+
+// PricingCacheAge reports how long ago the catalogue cache was rebuilt; a
+// zero lastGetPricingTime (never built, or invalidated) reads as very old.
+// Test seam for the invalidation contract.
+func PricingCacheAge() time.Duration {
+	updatePricingLock.Lock()
+	defer updatePricingLock.Unlock()
+	return time.Since(lastGetPricingTime)
+}
 
 func GetPricing() []Pricing {
 	if time.Since(lastGetPricingTime) > time.Minute*1 || len(pricingMap) == 0 {
@@ -72,6 +101,47 @@ func GetModelSupportEndpointTypes(model string) []constant.EndpointType {
 		return endpoints
 	}
 	return make([]constant.EndpointType, 0)
+}
+
+const (
+	UsageUnitToken       = "token"
+	UsageUnitSearchUnit  = "search_unit"
+	UsageUnitAudioSecond = "audio_second"
+)
+
+// catalogUsage derives the billing unit of a model from the live price tables.
+// SearchUnitPrice and AudioSecondPrice both distinguish absent vs explicit 0.
+// Search unit wins when both are set (rerank models are never audio).
+func catalogUsage(model string) (unit string, searchPrice, audioPrice *float64) {
+	if price, ok := ratio_setting.GetSearchUnitPrice(model); ok {
+		return UsageUnitSearchUnit, &price, nil
+	}
+	if price, ok := ratio_setting.GetAudioSecondPrice(model); ok {
+		return UsageUnitAudioSecond, nil, &price
+	}
+	return UsageUnitToken, nil, nil
+}
+
+// pickModality resolves a model's catalogue modality: a valid administrator
+// override wins; otherwise the most common non-empty ability modality, ties
+// broken alphabetically so the answer is stable across rebuilds.
+func pickModality(override string, abilityModalities []string) string {
+	if capability.Valid(override) {
+		return override
+	}
+	counts := map[string]int{}
+	for _, m := range abilityModalities {
+		if m != "" {
+			counts[m]++
+		}
+	}
+	best, bestN := "", 0
+	for m, n := range counts {
+		if n > bestN || (n == bestN && m < best) {
+			best, bestN = m, n
+		}
+	}
+	return best
 }
 
 func updatePricing() {
@@ -156,14 +226,32 @@ func updatePricing() {
 	}
 
 	modelGroupsMap := make(map[string]*types.Set[string])
+	modelModalities := make(map[string][]string)
+	// ownerGroups is modelGroupsMap split by the owning channel's tenant, so
+	// GetPricingForTenant can rebuild a per-tenant view of both the model
+	// list and each model's enable_groups without re-querying.
+	ownerGroups := make(map[string]map[string]*types.Set[string])
 
 	for _, ability := range enableAbilities {
+		modelModalities[ability.Model] = append(modelModalities[ability.Model], ability.Modality)
 		groups, ok := modelGroupsMap[ability.Model]
 		if !ok {
 			groups = types.NewSet[string]()
 			modelGroupsMap[ability.Model] = groups
 		}
 		groups.Add(ability.Group)
+
+		owners, ok := ownerGroups[ability.Model]
+		if !ok {
+			owners = make(map[string]*types.Set[string])
+			ownerGroups[ability.Model] = owners
+		}
+		ownerSet, ok := owners[ability.ChannelTenantId]
+		if !ok {
+			ownerSet = types.NewSet[string]()
+			owners[ability.ChannelTenantId] = ownerSet
+		}
+		ownerSet.Add(ability.Group)
 	}
 
 	//这里使用切片而不是Set，因为一个模型可能支持多个端点类型，并且第一个端点是优先使用端点
@@ -255,8 +343,10 @@ func updatePricing() {
 			SupportedEndpointTypes: modelSupportEndpointTypes[model],
 		}
 
+		override := ""
 		// 补充模型元数据（描述、标签、供应商、状态）
 		if meta, ok := metaMap[model]; ok {
+			override = meta.Modality
 			// 若模型被禁用(status!=1)，则直接跳过，不返回给前端
 			if meta.Status != 1 {
 				continue
@@ -266,17 +356,20 @@ func updatePricing() {
 			pricing.Tags = meta.Tags
 			pricing.VendorID = meta.VendorID
 		}
-		modelPrice, findPrice := ratio_setting.GetModelPrice(model, false)
-		if findPrice {
-			pricing.ModelPrice = modelPrice
-			pricing.QuotaType = 1
-		} else {
-			modelRatio, _, _ := ratio_setting.GetModelRatio(model)
-			pricing.ModelRatio = modelRatio
-			pricing.CompletionRatio = ratio_setting.GetCompletionRatio(model)
-			pricing.QuotaType = 0
-		}
+		pricing.Modality = pickModality(override, modelModalities[model])
+		applyCatalogPrice(&pricing, model)
 		pricingMap = append(pricingMap, pricing)
+	}
+
+	pricingOwnerGroups = make(map[string]map[string][]string, len(ownerGroups))
+	for model, owners := range ownerGroups {
+		byOwner := make(map[string][]string, len(owners))
+		for owner, groups := range owners {
+			items := groups.Items()
+			sort.Strings(items)
+			byOwner[owner] = items
+		}
+		pricingOwnerGroups[model] = byOwner
 	}
 
 	// 刷新缓存映射，供高并发快速查询
@@ -292,7 +385,129 @@ func updatePricing() {
 	lastGetPricingTime = time.Now()
 }
 
+// applyCatalogPrice fills the price columns of one catalogue row from the live
+// ratio tables. A model with neither a fixed per-call price nor a configured
+// ratio keeps PriceConfigured=false and ModelRatio=0: GetModelRatio answers a
+// 37.5 fallback for it (about $75 per 1M tokens) while the relay, by default,
+// refuses the model (self-use mode and a user's AcceptUnsetRatioModel are the
+// exceptions), so listing that number would advertise a price nobody priced.
+func applyCatalogPrice(pricing *Pricing, model string) {
+	modelPrice, findPrice := ratio_setting.GetModelPrice(model, false)
+	if findPrice {
+		pricing.ModelPrice = modelPrice
+		pricing.PriceConfigured = true
+		pricing.QuotaType = 1
+		return
+	}
+	modelRatio, ratioConfigured, _ := ratio_setting.GetModelRatio(model)
+	if !ratioConfigured && strings.HasSuffix(model, ":free") {
+		// The relay bills an OpenRouter ":free" variant at ratio 0 without a
+		// configured entry (relay/helper isOpenRouterFreeModel); list it as
+		// the free model it is rather than as unpriced. The catalogue row has
+		// no channel type, so this is the name rule only: a ":free" name
+		// served by a non-OpenRouter channel would be refused yet listed free.
+		modelRatio, ratioConfigured = 0, true
+	}
+	pricing.PriceConfigured = ratioConfigured
+	if ratioConfigured {
+		pricing.ModelRatio = modelRatio
+	}
+	pricing.CompletionRatio = ratio_setting.GetCompletionRatio(model)
+	pricing.QuotaType = 0
+}
+
 // GetSupportedEndpointMap 返回全局端点到路径的映射
 func GetSupportedEndpointMap() map[string]common.EndpointInfo {
 	return supportedEndpointMap
+}
+
+// sharedChannelTenantIDs are the two channels.tenant_id values that mean
+// "platform-shared, every tenant routes through it": the literal "default"
+// (entity/channel.go's column default) and the empty string (rows written
+// before the column existed). Same pair abilityTenantScope and
+// channel_cache.go's tenantCanUseChannel use.
+var sharedChannelTenantIDs = []string{"default", ""}
+
+// GetPricingForTenant is GetPricing projected onto the channels tenantID can
+// route through: the platform-shared ones plus its own. A model no visible
+// channel serves is dropped from the catalogue entirely, and each surviving
+// row's EnableGroup lists only the groups the visible channels serve it in —
+// so a tenant's private model names and private group names stay out of the
+// answer given to anyone else, including the anonymous public catalogue
+// (tenantID ""), without a second DB round trip.
+//
+// The row values other than EnableGroup (ratios, endpoints, vendor, metadata)
+// are the shared catalogue's and are copied by value; the JSON field set is
+// identical to GetPricing's, so this narrows what is listed without changing
+// the response shape any consumer parses.
+func GetPricingForTenant(tenantID string) []Pricing {
+	// Refresh the shared catalogue if it is stale (GetPricing releases the
+	// lock before it returns), then take the catalogue and its owner index
+	// together under one lock so the two cannot come from different rebuilds.
+	// updatePricing replaces both slices/maps wholesale rather than mutating
+	// them in place, so the values read here stay valid after the unlock.
+	GetPricing()
+	updatePricingLock.Lock()
+	all := pricingMap
+	owners := pricingOwnerGroups
+	updatePricingLock.Unlock()
+
+	visible := make([]Pricing, 0, len(all))
+	for _, p := range all {
+		groups := visiblePricingGroups(owners[p.ModelName], tenantID)
+		if len(groups) == 0 {
+			continue
+		}
+		item := p
+		item.UsageUnit, item.SearchUnitPrice, item.AudioSecondPrice = catalogUsage(p.ModelName)
+		item.EnableGroup = groups
+		visible = append(visible, item)
+	}
+	return visible
+}
+
+// PricedOnly drops the rows whose price is not configured. The public
+// catalogues (/api/pricing, /api/v2/switch/pricing) are read by consumers that
+// predate price_configured and only see model_ratio: the desktop client ranks
+// models by it (a 0 would be recommended as the cheapest) and peer gateways
+// sync ratios from /api/pricing (a 0 would be copied as free). A model with no
+// price cannot be relayed by default anyway, so it is left out of those
+// answers; the tenant pricing view keeps it, flagged, so an admin can price it.
+func PricedOnly(rows []Pricing) []Pricing {
+	out := make([]Pricing, 0, len(rows))
+	for _, p := range rows {
+		if p.PriceConfigured {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// visiblePricingGroups unions the groups contributed by the platform-shared
+// channels with those contributed by tenantID's own channels, sorted so the
+// answer does not depend on map iteration order. An empty result means no
+// channel this caller can route through serves the model.
+func visiblePricingGroups(byOwner map[string][]string, tenantID string) []string {
+	if len(byOwner) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(byOwner))
+	appendOwner := func(owner string) {
+		for _, g := range byOwner[owner] {
+			if _, dup := seen[g]; dup {
+				continue
+			}
+			seen[g] = struct{}{}
+			out = append(out, g)
+		}
+	}
+	for _, shared := range sharedChannelTenantIDs {
+		appendOwner(shared)
+	}
+	if tenantID != "" {
+		appendOwner(tenantID)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -1,6 +1,6 @@
 # Single-node Docker Compose for a 32-core / 32GB host.
 # Stack: lurus-api + PostgreSQL 15 + Redis 7. Auth is delegated to an external
-# Zitadel (e.g. https://auth.lurus.cn). No HTTPS terminator — expose IP:3000.
+# OIDC provider (e.g. https://identity.lurus.cn). No HTTPS terminator — expose IP:3000.
 #
 # Usage:
 #   1. cp .env.example .env  &&  fill it in
@@ -24,7 +24,7 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
 
-      SQL_DSN: "postgresql://lurus:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-lurus_hub}?sslmode=disable"
+      SQL_DSN: "postgresql://lurus:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-newhub}?sslmode=disable"
       REDIS_CONN_STRING: "redis://redis:6379"
 
       SESSION_SECRET: ${SESSION_SECRET}
@@ -34,24 +34,24 @@ services:
       ERROR_LOG_ENABLED: "true"
       BATCH_UPDATE_ENABLED: "true"
 
-      # Zitadel — reuses the production auth instance by default.
-      ZITADEL_ENABLED: ${ZITADEL_ENABLED:-true}
-      ZITADEL_FALLBACK_TO_LEGACY: ${ZITADEL_FALLBACK_TO_LEGACY:-true}
-      ZITADEL_ISSUER: ${ZITADEL_ISSUER}
-      ZITADEL_CLIENT_ID: ${ZITADEL_CLIENT_ID}
-      ZITADEL_CLIENT_SECRET: ${ZITADEL_CLIENT_SECRET}
-      ZITADEL_REDIRECT_URI: ${ZITADEL_REDIRECT_URI}
-      ZITADEL_POST_LOGOUT_REDIRECT_URI: ${ZITADEL_POST_LOGOUT_REDIRECT_URI}
-      ZITADEL_JWKS_URI: ${ZITADEL_JWKS_URI}
-      ZITADEL_AUTHORIZATION_ENDPOINT: ${ZITADEL_AUTHORIZATION_ENDPOINT}
-      ZITADEL_TOKEN_ENDPOINT: ${ZITADEL_TOKEN_ENDPOINT}
-      ZITADEL_USERINFO_ENDPOINT: ${ZITADEL_USERINFO_ENDPOINT}
-      ZITADEL_END_SESSION_ENDPOINT: ${ZITADEL_END_SESSION_ENDPOINT}
-      ZITADEL_INTROSPECTION_ENDPOINT: ${ZITADEL_INTROSPECTION_ENDPOINT}
-      ZITADEL_DEFAULT_ORG_ID: ${ZITADEL_DEFAULT_ORG_ID}
-      ZITADEL_DEFAULT_ORG_NAME: ${ZITADEL_DEFAULT_ORG_NAME:-Lurus Platform}
-      ZITADEL_DEFAULT_ORG_DOMAIN: ${ZITADEL_DEFAULT_ORG_DOMAIN:-lurus}
-      ZITADEL_OAUTH_SCOPES: ${ZITADEL_OAUTH_SCOPES:-openid email profile offline_access}
+      # OIDC — points at the configured provider (deploy-time, owner-gated).
+      OIDC_ENABLED: ${OIDC_ENABLED:-true}
+      OIDC_FALLBACK_TO_LEGACY: ${OIDC_FALLBACK_TO_LEGACY:-true}
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI}
+      OIDC_POST_LOGOUT_REDIRECT_URI: ${OIDC_POST_LOGOUT_REDIRECT_URI}
+      OIDC_JWKS_URI: ${OIDC_JWKS_URI}
+      OIDC_AUTHORIZATION_ENDPOINT: ${OIDC_AUTHORIZATION_ENDPOINT}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT}
+      OIDC_USERINFO_ENDPOINT: ${OIDC_USERINFO_ENDPOINT}
+      OIDC_END_SESSION_ENDPOINT: ${OIDC_END_SESSION_ENDPOINT}
+      OIDC_INTROSPECTION_ENDPOINT: ${OIDC_INTROSPECTION_ENDPOINT}
+      OIDC_DEFAULT_ORG_ID: ${OIDC_DEFAULT_ORG_ID}
+      OIDC_DEFAULT_ORG_NAME: ${OIDC_DEFAULT_ORG_NAME:-Lurus Platform}
+      OIDC_DEFAULT_ORG_DOMAIN: ${OIDC_DEFAULT_ORG_DOMAIN:-lurus}
+      OIDC_OAUTH_SCOPES: ${OIDC_OAUTH_SCOPES:-openid email profile offline_access}
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,17 +74,41 @@ services:
           memory: 1G
 
   postgres:
-    image: postgres:15
+    # Custom image = postgres:15 + wal-g for continuous WAL archiving.
+    # wal-g settings (WALG_*, AWS_*) are provided via .env; PG's archive_command
+    # invokes wal-g on every WAL segment.
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres-walg
+    image: lurus-postgres:walg-15
     container_name: lurus-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: lurus
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB:-lurus_hub}
+      POSTGRES_DB: ${POSTGRES_DB:-newhub}
       TZ: ${TZ:-Asia/Shanghai}
+
+      # ── wal-g target (S3-compatible: MinIO / Aliyun OSS / AWS S3) ──
+      # Backups + WAL segments are written under WALG_S3_PREFIX.
+      # For R6 stage: typically AWS_ENDPOINT=http://minio:9000 (in-cluster MinIO)
+      # or http://10.0.0.1:9000 (host-network MinIO).
+      WALG_S3_PREFIX: ${WALG_S3_PREFIX:-}
+      AWS_ENDPOINT: ${WALG_AWS_ENDPOINT:-}
+      AWS_ACCESS_KEY_ID: ${WALG_AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${WALG_AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${WALG_AWS_REGION:-us-east-1}
+      AWS_S3_FORCE_PATH_STYLE: "true"
+      WALG_COMPRESSION_METHOD: ${WALG_COMPRESSION_METHOD:-lz4}
+      # When WALG_S3_PREFIX is empty, archive-wal.sh no-ops so PG keeps running.
+      # (The in-repo restore drill script was removed 2026-09-19; the restore
+      # paths live in doc/runbook/pg-restore.md.)
     volumes:
       - pg_data:/var/lib/postgresql/data
     # PG tuned for 12 GB RAM, 6 logical CPUs, SSD storage.
+    # archive_mode/archive_command: wal-g pushes each completed WAL segment.
+    # archive_timeout=60: force a WAL switch every 60s so RPO ≤ 1 minute even
+    # under low write traffic.
     command:
       - postgres
       - -c
@@ -115,8 +139,19 @@ services:
       - min_wal_size=1GB
       - -c
       - max_wal_size=4GB
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      # archive-wal.sh (baked into image) gracefully no-ops when WALG_S3_PREFIX
+      # is empty, so a fresh deploy boots before backups are provisioned.
+      # Once env is filled in + container restarts, real archiving kicks in.
+      - archive_command=/usr/local/bin/archive-wal.sh %p
+      - -c
+      - archive_timeout=60
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lurus -d ${POSTGRES_DB:-lurus_hub}"]
+      test: ["CMD-SHELL", "pg_isready -U lurus -d ${POSTGRES_DB:-newhub}"]
       interval: 10s
       timeout: 5s
       retries: 5

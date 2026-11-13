@@ -1,11 +1,9 @@
 package handler
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,18 +11,63 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// OAuth token response from Zitadel
+// OIDC provider endpoint paths.
+//
+// Best practice (and the intended end-state) is to resolve these from the
+// provider's discovery document <issuer>/.well-known/openid-configuration
+// (authorization_endpoint / token_endpoint / end_session_endpoint). They are
+// extracted here as configurable constants/env so the code carries no
+// vendor-specific path: the defaults below match the historical layout, and a
+// deploy targeting a different IdP overrides each via the matching OIDC_*_PATH
+// env (or, preferably, wires a discovery step). See doc/oidc-setup-guide.md.
+const (
+	defaultAuthorizePath  = "/oauth/v2/authorize"
+	defaultTokenPath      = "/oauth/v2/token"
+	defaultEndSessionPath = "/oidc/v1/end_session"
+	defaultUserinfoPath   = "/oidc/v1/userinfo"
+)
+
+// oidcAuthorizePath returns the authorization endpoint path, overridable via
+// OIDC_AUTHORIZE_PATH (ideally sourced from the discovery document).
+func oidcAuthorizePath() string {
+	if v := os.Getenv("OIDC_AUTHORIZE_PATH"); v != "" {
+		return v
+	}
+	return defaultAuthorizePath
+}
+
+// oidcTokenPath returns the token endpoint path, overridable via OIDC_TOKEN_PATH.
+func oidcTokenPath() string {
+	if v := os.Getenv("OIDC_TOKEN_PATH"); v != "" {
+		return v
+	}
+	return defaultTokenPath
+}
+
+// oidcEndSessionPath returns the end-session (logout) endpoint path, overridable
+// via OIDC_END_SESSION_PATH.
+func oidcEndSessionPath() string {
+	if v := os.Getenv("OIDC_END_SESSION_PATH"); v != "" {
+		return v
+	}
+	return defaultEndSessionPath
+}
+
+// OAuthTokenResponse is the token endpoint response from the OIDC provider.
 type OAuthTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
@@ -49,22 +92,27 @@ type PKCEData struct {
 	CodeChallenge string `json:"code_challenge"`
 }
 
-// IDTokenClaims represents the claims in Zitadel ID token
+// IDTokenClaims represents the claims in an OIDC ID token.
+//
+// The org/role JSON tags use vendor-NEUTRAL default keys (org_id, roles, …).
+// Provider-specific claim keys (which may be vendor-prefixed URNs) are injected
+// at deploy time via OIDC_CLAIM_* env vars and overlaid by the middleware's
+// configurable-claim resolver — the code itself carries no vendor claim URN.
 type IDTokenClaims struct {
 	jwt.RegisteredClaims
 	Email             string                 `json:"email"`
 	EmailVerified     bool                   `json:"email_verified"`
 	Name              string                 `json:"name"`
 	PreferredUsername string                 `json:"preferred_username"`
-	OrgID             string                 `json:"urn:zitadel:iam:org:id"`
-	OrgDomain         string                 `json:"urn:zitadel:iam:org:domain:primary"`
-	Roles             map[string]interface{} `json:"urn:zitadel:iam:org:project:roles"`
+	OrgID             string                 `json:"org_id"`
+	OrgDomain         string                 `json:"org_domain"`
+	Roles             map[string]interface{} `json:"roles"`
 	Nonce             string                 `json:"nonce"` // OIDC nonce for replay protection
 }
 
-// ZitadelLoginRedirect redirects user to Zitadel OAuth login page
+// OIDCLoginRedirect redirects the user to the OIDC provider's login page.
 // Route: GET /api/v2/:tenant_slug/auth/login
-func ZitadelLoginRedirect(c *gin.Context) {
+func OIDCLoginRedirect(c *gin.Context) {
 	tenantSlug := c.Param("tenant_slug")
 	if tenantSlug == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -163,20 +211,20 @@ func ZitadelLoginRedirect(c *gin.Context) {
 		prompt = "create"
 	}
 
-	// Build Zitadel authorization URL
-	authURL := buildZitadelAuthURL(tenant.ZitadelOrgID, state, nonce, pkceData, prompt)
+	// Build OIDC authorization URL
+	authURL := buildOIDCAuthURL(tenant.IDPOrgID, state, nonce, pkceData, prompt)
 
-	// Redirect to Zitadel login page
+	// Redirect to OIDC provider login page
 	c.Redirect(http.StatusFound, authURL)
 }
 
-// ZitadelCallback handles OAuth callback from Zitadel
+// OIDCCallback handles the OAuth callback from the OIDC provider.
 // Route: GET /api/v2/oauth/callback
-func ZitadelCallback(c *gin.Context) {
-	// Check for error response from Zitadel
+func OIDCCallback(c *gin.Context) {
+	// Check for error response from the OIDC provider
 	if errCode := c.Query("error"); errCode != "" {
 		errDesc := c.Query("error_description")
-		common.SysError(fmt.Sprintf("OAuth error from Zitadel: %s - %s", errCode, errDesc))
+		common.SysError(fmt.Sprintf("OAuth error from IdP: %s - %s", errCode, errDesc))
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": fmt.Sprintf("OAuth authentication failed: %s", errDesc),
@@ -260,7 +308,7 @@ func ZitadelCallback(c *gin.Context) {
 			return
 		}
 
-		if os.Getenv("ZITADEL_DEBUG_LOGGING") == "true" {
+		if os.Getenv("OIDC_DEBUG_LOGGING") == "true" {
 			common.SysLog(fmt.Sprintf("ID token validated for user: %s (org: %s)", claims.Email, claims.OrgID))
 		}
 	}
@@ -274,15 +322,15 @@ func ZitadelCallback(c *gin.Context) {
 		return
 	}
 
-	// Find or create tenant from Zitadel organization
+	// Find or create tenant from OIDC organization
 	tenant, err := repo.GetTenantBySlug(stateData.TenantSlug)
-	if err != nil && os.Getenv("ZITADEL_AUTO_CREATE_TENANT") == "true" && claims.OrgID != "" {
+	if err != nil && os.Getenv("OIDC_AUTO_CREATE_TENANT") == "true" && claims.OrgID != "" {
 		orgDomain := claims.OrgDomain
 		if orgDomain == "" {
 			orgDomain = stateData.TenantSlug
 		}
 		orgName := orgDomain
-		tenant, err = repo.CreateTenantFromZitadel(claims.OrgID, orgDomain, orgName)
+		tenant, err = repo.CreateTenantFromIDP(claims.OrgID, orgDomain, orgName)
 		if err != nil {
 			common.SysError(fmt.Sprintf("Failed to auto-create tenant: %v", err))
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -291,7 +339,7 @@ func ZitadelCallback(c *gin.Context) {
 			})
 			return
 		}
-		common.SysLog(fmt.Sprintf("Auto-created tenant: %s (org: %s)", tenant.Slug, tenant.ZitadelOrgID))
+		common.SysLog(fmt.Sprintf("Auto-created tenant: %s (org: %s)", tenant.Slug, tenant.IDPOrgID))
 	}
 	if err != nil || tenant == nil {
 		common.SysError(fmt.Sprintf("Tenant not found: %s", stateData.TenantSlug))
@@ -302,20 +350,59 @@ func ZitadelCallback(c *gin.Context) {
 		return
 	}
 
-	// Find or create local user from Zitadel identity
-	zitadelClaims := &repo.ZitadelUserClaims{
+	// Organization binding. tenants.zitadel_org_id is a unique 1:1 projection
+	// of an upstream IdP organization (entity/tenant.go:18), but the tenant
+	// resolved above came from stateData.TenantSlug — i.e. from the login URL
+	// the browser was pointed at, not from the token. Without this check, and
+	// with OIDC_AUTO_CREATE_USER on, an account belonging to organization A
+	// that follows tenant B's login URL gets provisioned INTO tenant B.
+	//
+	// Compared only when both sides name a real organization: a token with no
+	// org claim (an IdP that does not advertise one) and a tenant still
+	// carrying a *_PLACEHOLDER stand-in (orgIDIsBound; the "default" and
+	// "switch" rows the SQL baseline seeds) each keep the pre-guard behaviour,
+	// so turning this on cannot lock out a deployment whose org ids were never
+	// filled in.
+	//
+	// Blast radius today, stated plainly: both tenants a live deployment has
+	// are seeded with a placeholder, so until owner item O-org replaces those
+	// two values this guard refuses nothing — an account from ANY organization
+	// following the "default" tenant's login URL is still auto-provisioned into
+	// it. Every outcome below is counted (lurus_gateway_tenant_gate_total), so
+	// one day of production logins answers both halves of O-org: whether the
+	// IdP emits an organization claim at all (org_claim_absent) and whether the
+	// tenants are bound yet (org_tenant_unbound).
+	if !recordOrgBindingOutcome(tenant.IDPOrgID, claims.OrgID) {
+		common.SysError(fmt.Sprintf("oidc callback: organization mismatch — tenant %s is bound to org %s, ID token carries org %s; login refused",
+			tenant.Id, tenant.IDPOrgID, claims.OrgID))
+		governance.RecordAuditEvent(governance.NewAuditEvent(
+			c, governance.ActorSystem, 0,
+			governance.ActionAuthFailed, governance.ResourceTenant, 0,
+			fmt.Sprintf(`{"reason":"tenant_org_mismatch","tenant_id":%q,"tenant_org_id":%q,"claim_org_id":%q}`,
+				tenant.Id, tenant.IDPOrgID, claims.OrgID),
+		))
+		c.JSON(http.StatusForbidden, gin.H{
+			"success":    false,
+			"message":    "此账号所属组织与该租户不匹配 / This account's organization does not match this tenant",
+			"error_code": "TENANT_ORG_MISMATCH",
+		})
+		return
+	}
+
+	// Find or create local user from OIDC identity
+	oidcClaims := &repo.OIDCUserClaims{
 		Sub:               claims.Subject,
 		Email:             claims.Email,
 		EmailVerified:     claims.EmailVerified,
 		Name:              claims.Name,
-		PreferredUsername:  claims.PreferredUsername,
+		PreferredUsername: claims.PreferredUsername,
 		OrgID:             claims.OrgID,
 		OrgDomain:         claims.OrgDomain,
 	}
 
-	user, _, err := repo.CreateUserFromZitadelClaims(zitadelClaims, tenant.Id)
+	user, _, err := repo.CreateUserFromIDPClaims(oidcClaims, tenant.Id)
 	if err != nil {
-		if os.Getenv("ZITADEL_AUTO_CREATE_USER") != "true" {
+		if os.Getenv("OIDC_AUTO_CREATE_USER") != "true" {
 			common.SysError(fmt.Sprintf("User not found and auto-create disabled: %v", err))
 			c.JSON(http.StatusForbidden, gin.H{
 				"success": false,
@@ -323,7 +410,7 @@ func ZitadelCallback(c *gin.Context) {
 			})
 			return
 		}
-		common.SysError(fmt.Sprintf("Failed to create user from Zitadel claims: %v", err))
+		common.SysError(fmt.Sprintf("Failed to create user from OIDC claims: %v", err))
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Failed to create user account",
@@ -339,6 +426,35 @@ func ZitadelCallback(c *gin.Context) {
 		return
 	}
 
+	// Retire the pre-authentication session id before the first identity
+	// write below (middleware/session_rotation.go). This is the login an
+	// attacker can most easily aim a planted cookie at: the victim arrives
+	// at /api/v2/oauth/callback carrying whatever session cookie their
+	// browser already held. A failure is logged and the login continues —
+	// the fallback inside RotateSessionID has already cleared the incoming
+	// session's values.
+	if err := middleware.RotateSessionID(c); err != nil {
+		common.SysError(fmt.Sprintf("oidc callback: session rotation failed for user %d: %v", user.Id, err))
+	}
+
+	// Resolve platform account ID for billing integration and persist the
+	// link onto the user row BEFORE the auto-create-token step below, so a
+	// brand-new user's very first token is minted already wallet-linked
+	// (AutoCreateDefaultToken re-reads the user row and stamps
+	// IdentityAccountID from it). Store in session too so billing endpoints
+	// work without JWT. Best-effort: an identity platform outage or a link
+	// collision must never fail login — mirrors every other newhub→platform
+	// caller (see repo.LinkUserPlatformAccount for the never-re-bind guard).
+	// backfillTokens=false: a login must never silently strip an admin-set
+	// quota cap off an existing token — only the /internal provisioning
+	// self-heal path (internal_api_ext.go) backfills tokens.
+	if im, _ := common.GetAccountByZitadelSubGRPC(c.Request.Context(), claims.Subject); im != nil {
+		session.Set("identity_account_id", im.ID)
+		if linkErr := repo.LinkUserPlatformAccount(user.Id, im.ID, false); linkErr != nil {
+			common.SysLog(fmt.Sprintf("oidc callback: account link failed for user %d (account=%d): %v", user.Id, im.ID, linkErr))
+		}
+	}
+
 	// Ensure user has at least one API token (auto-create if none).
 	tokenCount, _ := repo.CountUserTokens(user.Id)
 	if tokenCount == 0 {
@@ -347,12 +463,6 @@ func ZitadelCallback(c *gin.Context) {
 		} else {
 			common.SysLog(fmt.Sprintf("Auto-created default token for user %s (id=%d, key_prefix=%s)", user.Username, user.Id, defaultToken.Key[:8]))
 		}
-	}
-
-	// Resolve platform account ID for billing integration.
-	// Store in session so billing endpoints work without JWT.
-	if im, _ := common.GetAccountByZitadelSubGRPC(c.Request.Context(), claims.Subject); im != nil {
-		session.Set("identity_account_id", im.ID)
 	}
 
 	// Clear PKCE and nonce from session (one-time use)
@@ -384,10 +494,15 @@ func ZitadelCallback(c *gin.Context) {
 
 	common.SysLog(fmt.Sprintf("OAuth login successful: user=%s (id=%d) tenant=%s", user.Username, user.Id, stateData.TenantSlug))
 
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, user.Id,
+		governance.ActionAuthLoginSuccess, governance.ResourceUser, user.Id,
+		fmt.Sprintf(`{"provider":"oidc","tenant_slug":%q}`, stateData.TenantSlug)))
+
 	// Redirect to frontend OAuth callback page to complete login
 	redirectURL := stateData.RedirectURL
 	if redirectURL == "" || redirectURL == "/dashboard" {
-		redirectURL = "/oauth/zitadel"
+		// redirect URI /oauth/oidc 须在 IdP(Casdoor)Application 注册,owner-gated
+		redirectURL = "/oauth/oidc" // frontend callback route; kept in lockstep with web/ App.jsx route
 	}
 
 	c.Redirect(http.StatusFound, redirectURL)
@@ -400,7 +515,7 @@ func GetSessionInfo(c *gin.Context) {
 	session := sessions.Default(c)
 	id := session.Get("id")
 	if id == nil {
-		if os.Getenv("ZITADEL_DEBUG_LOGGING") == "true" {
+		if os.Getenv("OIDC_DEBUG_LOGGING") == "true" {
 			common.SysLog(fmt.Sprintf("GetSessionInfo: session has no 'id' key (cookie present: %v)", c.Request.Header.Get("Cookie") != ""))
 		}
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -430,9 +545,8 @@ func GetSessionInfo(c *gin.Context) {
 		return
 	}
 
-	// Get tenant_slug from session (stored during OAuth callback)
-	tenantSlug, _ := session.Get("tenant_slug").(string)
-
+	tenantSlug := sessionTenantSlug(session, user.TenantId, userId)
+	tenantRole, isPayer := tenantRoleView(user)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
@@ -443,33 +557,40 @@ func GetSessionInfo(c *gin.Context) {
 			"status":       user.Status,
 			"group":        user.Group,
 			"tenant_slug":  tenantSlug,
+			"tenant_role":  tenantRole,
+			"is_payer":     isPayer,
 			"quota":        user.Quota,
 			"used_quota":   user.UsedQuota,
 		},
 	})
 }
 
-// ZitadelLogout logs out user from Zitadel and clears session
+// OIDCLogout logs out user from the OIDC provider and clears session
 // Route: POST /api/v2/oauth/logout
-func ZitadelLogout(c *gin.Context) {
+func OIDCLogout(c *gin.Context) {
 	// Get ID token from session
 	session := sessions.Default(c)
 	idToken, _ := session.Get("oauth_id_token").(string)
+	userID, _ := session.Get("id").(int)
 
 	// Clear session
 	session.Clear()
 	session.Save()
 
-	// If ID token exists, redirect to Zitadel logout endpoint
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, userID,
+		governance.ActionAuthLogout, governance.ResourceUser, userID,
+		`{"provider":"oidc"}`))
+
+	// If ID token exists, redirect to the OIDC provider logout endpoint
 	if idToken != "" {
-		postLogoutRedirectURI := os.Getenv("ZITADEL_POST_LOGOUT_REDIRECT_URI")
+		postLogoutRedirectURI := os.Getenv("OIDC_POST_LOGOUT_REDIRECT_URI")
 		if postLogoutRedirectURI == "" {
 			postLogoutRedirectURI = "/login"
 		}
 
 		logoutURL := fmt.Sprintf(
-			"%s/oidc/v1/end_session?id_token_hint=%s&post_logout_redirect_uri=%s",
-			os.Getenv("ZITADEL_ISSUER"),
+			"%s"+oidcEndSessionPath()+"?id_token_hint=%s&post_logout_redirect_uri=%s",
+			os.Getenv("OIDC_ISSUER"),
 			url.QueryEscape(idToken),
 			url.QueryEscape(postLogoutRedirectURI),
 		)
@@ -485,145 +606,76 @@ func ZitadelLogout(c *gin.Context) {
 	})
 }
 
-// RefreshAccessToken refreshes the access token using refresh token
-// Route: POST /api/v2/oauth/refresh
-func RefreshAccessToken(c *gin.Context) {
-	// Get refresh token from session or request body
-	session := sessions.Default(c)
-	refreshToken, _ := session.Get("oauth_refresh_token").(string)
-
-	if refreshToken == "" {
-		var req struct {
-			RefreshToken string `json:"refresh_token"`
-		}
-		if err := c.ShouldBindJSON(&req); err == nil {
-			refreshToken = req.RefreshToken
-		}
-	}
-
-	if refreshToken == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Refresh token is required",
-		})
-		return
-	}
-
-	// Exchange refresh token for new access token
-	tokenResp, err := refreshAccessToken(refreshToken)
-	if err != nil {
-		common.SysError(fmt.Sprintf("Failed to refresh access token: %v", err))
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "Failed to refresh access token",
-		})
-		return
-	}
-
-	// Update session
-	session.Set("oauth_access_token", tokenResp.AccessToken)
-	if tokenResp.RefreshToken != "" {
-		session.Set("oauth_refresh_token", tokenResp.RefreshToken)
-	}
-	session.Save()
-
-	// Return new tokens
-	c.JSON(http.StatusOK, gin.H{
-		"success":       true,
-		"access_token":  tokenResp.AccessToken,
-		"refresh_token": tokenResp.RefreshToken,
-		"expires_in":    tokenResp.ExpiresIn,
-	})
-}
-
 // ============================================================================
 // Helper functions
 // ============================================================================
 
-// computeStateHMAC computes HMAC-SHA256 of data using SessionSecret as the key.
-func computeStateHMAC(data []byte) string {
-	mac := hmac.New(sha256.New, []byte(common.SessionSecret))
-	mac.Write(data)
-	return hex.EncodeToString(mac.Sum(nil))
+// orgIDPlaceholderSuffix is the tail the SQL baseline gives a tenant row whose
+// IdP organization has not been created yet. Two seeded rows carry one today:
+// migrations/021_pg_baseline_gaps.sql:172 writes
+// 'ZITADEL_DEFAULT_ORG_ID_PLACEHOLDER' onto the "default" tenant and
+// migrations/030_seed_switch_tenant_and_credit_pool.sql:71 writes
+// 'SWITCH_ORG_ID_PLACEHOLDER' onto the "switch" tenant (that file's own comment
+// asks the owner to replace it once the organization exists). The column is
+// NOT NULL + UNIQUE (entity/tenant.go:18), which is why a stand-in exists at
+// all instead of an empty string.
+const orgIDPlaceholderSuffix = "_PLACEHOLDER"
+
+// orgIDIsBound reports whether orgID identifies a real IdP organization, i.e.
+// is non-empty and is not one of the stand-ins described on
+// orgIDPlaceholderSuffix. Both "unbound" spellings are treated the same way
+// everywhere this lane touches: no organization hint on the authorize URL
+// (buildOIDCAuthURL) and no organization equality check on the callback
+// (OIDCCallback) — an unbound tenant keeps exactly the pre-cycle-12 behaviour.
+func orgIDIsBound(orgID string) bool {
+	return orgID != "" && !strings.HasSuffix(orgID, orgIDPlaceholderSuffix)
 }
 
-// generateOAuthState generates a state parameter and nonce for OAuth flow.
-// The state is HMAC-signed to prevent tampering.
-// Format: base64(json).hmac_hex
-// Returns: state (signed), nonce (for ID token verification), error
-func generateOAuthState(tenantSlug string, redirectURL string) (string, string, error) {
-	// Generate random nonce (used for both state and ID token verification)
-	nonceBytes := make([]byte, 32) // 256 bits for security
-	if _, err := rand.Read(nonceBytes); err != nil {
-		return "", "", fmt.Errorf("failed to generate nonce: %w", err)
+// recordOrgBindingOutcome classifies one OIDC callback's organization binding,
+// counts it on lurus_gateway_tenant_gate_total, and reports whether the login
+// may proceed. Exactly one outcome is recorded per call, and the admitted
+// outcomes are counted too — without the denominator the operator cannot tell
+// "the guard never fired because everything matched" from "the guard never
+// fired because nothing was comparable", which is precisely owner item O-org:
+//
+//	org_claim_absent    — the verified ID token names no organization. The
+//	                      guard can never fire on this deployment's logins.
+//	org_tenant_unbound  — the token names one but the tenant row still carries
+//	                      a *_PLACEHOLDER stand-in, so there is nothing to
+//	                      compare it against (the two seeded rows).
+//	org_matched         — both name a real organization and they agree.
+//	org_mismatch_denied — both name a real organization and they disagree:
+//	                      the login is refused.
+func recordOrgBindingOutcome(tenantOrgID, claimOrgID string) (admit bool) {
+	switch {
+	case claimOrgID == "":
+		metrics.RecordTenantGate(metrics.TenantGateOutcomeOrgClaimAbsent)
+		return true
+	case !orgIDIsBound(tenantOrgID):
+		metrics.RecordTenantGate(metrics.TenantGateOutcomeOrgTenantUnbound)
+		return true
+	case tenantOrgID == claimOrgID:
+		metrics.RecordTenantGate(metrics.TenantGateOutcomeOrgMatched)
+		return true
+	default:
+		metrics.RecordTenantGate(metrics.TenantGateOutcomeOrgMismatchDenied)
+		return false
 	}
-	nonce := base64.URLEncoding.EncodeToString(nonceBytes)
-
-	// Create state data
-	stateData := OAuthStateData{
-		TenantSlug:  tenantSlug,
-		RedirectURL: redirectURL,
-		Nonce:       nonce,
-		CreatedAt:   time.Now(),
-	}
-
-	// Serialize to JSON
-	stateJSON, err := json.Marshal(stateData)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to marshal state: %w", err)
-	}
-
-	// Encode as base64
-	payload := base64.URLEncoding.EncodeToString(stateJSON)
-
-	// Sign with HMAC-SHA256 using SessionSecret
-	sig := computeStateHMAC([]byte(payload))
-
-	// Final state format: payload.signature
-	state := payload + "." + sig
-	return state, nonce, nil
 }
 
-// parseOAuthState parses and validates the state parameter.
-// Verifies HMAC-SHA256 signature before parsing to prevent tampering.
-// Expected format: base64(json).hmac_hex
-func parseOAuthState(state string) (*OAuthStateData, error) {
-	// Split into payload and signature
-	dotIdx := strings.LastIndex(state, ".")
-	if dotIdx < 0 {
-		return nil, fmt.Errorf("invalid state format: missing signature")
-	}
-	payload := state[:dotIdx]
-	sig := state[dotIdx+1:]
+// placeholderOrgLogged remembers which placeholder org ids already produced a
+// system-log line, so a tenant stuck on a stand-in logs once per process
+// instead of once per login. Keyed by the org id itself; the key space is the
+// set of tenant rows, not anything a caller supplies.
+var placeholderOrgLogged sync.Map
 
-	// Verify HMAC signature
-	expectedSig := computeStateHMAC([]byte(payload))
-	if !hmac.Equal([]byte(sig), []byte(expectedSig)) {
-		return nil, fmt.Errorf("invalid state signature")
-	}
-
-	// Decode base64
-	stateJSON, err := base64.URLEncoding.DecodeString(payload)
-	if err != nil {
-		return nil, fmt.Errorf("invalid base64 encoding: %w", err)
-	}
-
-	// Parse JSON
-	var stateData OAuthStateData
-	if err := json.Unmarshal(stateJSON, &stateData); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
-	}
-
-	return &stateData, nil
-}
-
-// buildZitadelAuthURL builds the Zitadel authorization URL with PKCE and nonce support
+// buildOIDCAuthURL builds the OIDC authorization URL with PKCE and nonce support
 // prompt: "login" for fresh login, "create" for registration
-func buildZitadelAuthURL(orgID string, state string, nonce string, pkceData *PKCEData, prompt string) string {
-	issuer := os.Getenv("ZITADEL_ISSUER")
-	clientID := os.Getenv("ZITADEL_CLIENT_ID")
-	redirectURI := os.Getenv("ZITADEL_REDIRECT_URI")
-	scopes := os.Getenv("ZITADEL_OAUTH_SCOPES")
+func buildOIDCAuthURL(orgID string, state string, nonce string, pkceData *PKCEData, prompt string) string {
+	issuer := os.Getenv("OIDC_ISSUER")
+	clientID := os.Getenv("OIDC_CLIENT_ID")
+	redirectURI := os.Getenv("OIDC_REDIRECT_URI")
+	scopes := os.Getenv("OIDC_OAUTH_SCOPES")
 	if scopes == "" {
 		scopes = "openid email profile offline_access"
 	}
@@ -637,9 +689,17 @@ func buildZitadelAuthURL(orgID string, state string, nonce string, pkceData *PKC
 	params.Set("state", state)
 	params.Set("nonce", nonce) // OIDC nonce for ID token validation
 
-	// Add organization hint if provided
-	if orgID != "" {
+	// Add organization hint when the tenant is bound to a real IdP
+	// organization. A placeholder org id is not forwarded: the IdP has no such
+	// organization, so the hint either fails the authorize request outright or
+	// is ignored — both worse than omitting it, which is the pre-organization
+	// behaviour the login already supports (orgID == "" took this branch).
+	if orgIDIsBound(orgID) {
 		params.Set("organization", orgID)
+	} else if orgID != "" {
+		if _, seen := placeholderOrgLogged.LoadOrStore(orgID, struct{}{}); !seen {
+			common.SysLog(fmt.Sprintf("oidc: tenant org id %q is a placeholder — omitting the organization hint from the authorize URL until the IdP organization is created and the row updated", orgID))
+		}
 	}
 
 	// Set prompt mode:
@@ -655,15 +715,15 @@ func buildZitadelAuthURL(orgID string, state string, nonce string, pkceData *PKC
 		params.Set("code_challenge_method", "S256")
 	}
 
-	return issuer + "/oauth/v2/authorize?" + params.Encode()
+	return issuer + oidcAuthorizePath() + "?" + params.Encode()
 }
 
 // exchangeCodeForToken exchanges authorization code for access token (with PKCE support)
 func exchangeCodeForToken(code string, codeVerifier string) (*OAuthTokenResponse, error) {
-	issuer := os.Getenv("ZITADEL_ISSUER")
-	clientID := os.Getenv("ZITADEL_CLIENT_ID")
-	clientSecret := os.Getenv("ZITADEL_CLIENT_SECRET")
-	redirectURI := os.Getenv("ZITADEL_REDIRECT_URI")
+	issuer := os.Getenv("OIDC_ISSUER")
+	clientID := os.Getenv("OIDC_CLIENT_ID")
+	clientSecret := os.Getenv("OIDC_CLIENT_SECRET")
+	redirectURI := os.Getenv("OIDC_REDIRECT_URI")
 
 	// Build token request
 	data := url.Values{}
@@ -688,7 +748,7 @@ func exchangeCodeForToken(code string, codeVerifier string) (*OAuthTokenResponse
 	}
 
 	// Send POST request to token endpoint
-	resp, err := client.PostForm(issuer+"/oauth/v2/token", data)
+	resp, err := client.PostForm(issuer+oidcTokenPath(), data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to post token request: %w", err)
 	}
@@ -721,67 +781,13 @@ func exchangeCodeForToken(code string, codeVerifier string) (*OAuthTokenResponse
 	return &tokenResp, nil
 }
 
-// refreshAccessToken refreshes the access token using refresh token
-func refreshAccessToken(refreshToken string) (*OAuthTokenResponse, error) {
-	issuer := os.Getenv("ZITADEL_ISSUER")
-	clientID := os.Getenv("ZITADEL_CLIENT_ID")
-	clientSecret := os.Getenv("ZITADEL_CLIENT_SECRET")
-
-	// Build token request
-	data := url.Values{}
-	data.Set("grant_type", "refresh_token")
-	data.Set("refresh_token", refreshToken)
-	data.Set("client_id", clientID)
-	if clientSecret != "" {
-		data.Set("client_secret", clientSecret)
-	}
-
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Send POST request to token endpoint
-	resp, err := client.PostForm(issuer+"/oauth/v2/token", data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to post token request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		// Parse error response for better error messages
-		var errResp struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description"`
-		}
-		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
-			return nil, fmt.Errorf("token refresh error: %s - %s", errResp.Error, errResp.ErrorDescription)
-		}
-		return nil, fmt.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
-	var tokenResp OAuthTokenResponse
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to decode token response: %w", err)
-	}
-
-	return &tokenResp, nil
-}
-
 // ============================================================================
 // PKCE (Proof Key for Code Exchange) Functions
 // ============================================================================
 
 // isPKCEEnabled checks if PKCE is enabled via environment variable
 func isPKCEEnabled() bool {
-	return os.Getenv("ZITADEL_ENABLE_PKCE") == "true"
+	return os.Getenv("OIDC_ENABLE_PKCE") == "true"
 }
 
 // generatePKCE generates PKCE code_verifier and code_challenge
@@ -818,7 +824,7 @@ func generatePKCE() (*PKCEData, error) {
 // SECURITY: The token signature is verified against the IdP's published JWKS keys,
 // preventing token forgery regardless of how the token was obtained.
 func validateIDToken(idToken string, expectedNonce string) (*IDTokenClaims, error) {
-	// Verify the token signature using the Zitadel JWKS public keys.
+	// Verify the token signature using the OIDC provider JWKS public keys.
 	token, err := middleware.VerifyIDTokenWithJWKS(idToken, &IDTokenClaims{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify ID token: %w", err)
@@ -829,14 +835,39 @@ func validateIDToken(idToken string, expectedNonce string) (*IDTokenClaims, erro
 		return nil, fmt.Errorf("invalid ID token claims type")
 	}
 
-	// Validate issuer
-	expectedIssuer := os.Getenv("ZITADEL_ISSUER")
-	if claims.Issuer != expectedIssuer {
-		return nil, fmt.Errorf("invalid issuer: expected %s, got %s", expectedIssuer, claims.Issuer)
+	// Overlay the deploy-configured (possibly URN-shaped) org claim keys, the
+	// same resolver middleware.OIDCAuth runs on the bearer-JWT path. No-op when
+	// OIDC_CLAIM_* are left at the neutral defaults the struct tags above
+	// already cover. IDTokenClaims has no resource-owner fields, so those two
+	// resolved values are deliberately unread here.
+	extra := middleware.ResolveConfiguredExtraClaims(idToken)
+	if extra.OrgID != nil {
+		claims.OrgID = *extra.OrgID
+	}
+	if extra.OrgDomain != nil {
+		claims.OrgDomain = *extra.OrgDomain
+	}
+	if extra.Roles != nil {
+		claims.Roles = extra.Roles
 	}
 
-	// Validate audience (should contain our client ID)
-	expectedAudience := os.Getenv("ZITADEL_CLIENT_ID")
+	if err := validateIDTokenClaims(claims, expectedNonce); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+// validateIDTokenClaims performs OIDC claim-level checks on an already-parsed
+// IDTokenClaims: issuer, audience, expiry, nonce, issued-at. Signature
+// verification is the caller's responsibility (see validateIDToken). Split out
+// so unit tests can exercise claim logic without an initialized JWKS manager.
+func validateIDTokenClaims(claims *IDTokenClaims, expectedNonce string) error {
+	expectedIssuer := os.Getenv("OIDC_ISSUER")
+	if claims.Issuer != expectedIssuer {
+		return fmt.Errorf("invalid issuer: expected %s, got %s", expectedIssuer, claims.Issuer)
+	}
+
+	expectedAudience := os.Getenv("OIDC_CLIENT_ID")
 	audienceValid := false
 	for _, aud := range claims.Audience {
 		if aud == expectedAudience {
@@ -845,25 +876,22 @@ func validateIDToken(idToken string, expectedNonce string) (*IDTokenClaims, erro
 		}
 	}
 	if !audienceValid {
-		return nil, fmt.Errorf("invalid audience: client_id %s not found in audience", expectedAudience)
+		return fmt.Errorf("invalid audience: client_id %s not found in audience", expectedAudience)
 	}
 
-	// Validate expiration
 	if claims.ExpiresAt != nil && claims.ExpiresAt.Before(time.Now()) {
-		return nil, fmt.Errorf("ID token has expired")
+		return fmt.Errorf("ID token has expired")
 	}
 
-	// Validate nonce (prevents replay attacks)
 	if expectedNonce != "" && claims.Nonce != expectedNonce {
-		return nil, fmt.Errorf("invalid nonce: expected %s, got %s", expectedNonce, claims.Nonce)
+		return fmt.Errorf("invalid nonce: expected %s, got %s", expectedNonce, claims.Nonce)
 	}
 
-	// Validate issued at (not in the future)
 	if claims.IssuedAt != nil && claims.IssuedAt.After(time.Now().Add(5*time.Minute)) {
-		return nil, fmt.Errorf("ID token issued in the future")
+		return fmt.Errorf("ID token issued in the future")
 	}
 
-	return claims, nil
+	return nil
 }
 
 // ============================================================================
@@ -926,7 +954,7 @@ func isValidRedirectURL(redirectURL string) bool {
 
 	// If host is specified, check against allowed domains
 	if parsedURL.Host != "" {
-		allowedDomains := os.Getenv("ZITADEL_ALLOWED_REDIRECT_DOMAINS")
+		allowedDomains := os.Getenv("OIDC_ALLOWED_REDIRECT_DOMAINS")
 		if allowedDomains == "" {
 			// No domains configured, only allow relative URLs
 			return false

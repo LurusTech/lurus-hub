@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"time"
 
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
 	"github.com/LurusTech/lurus-hub/internal/domain/entity"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	"github.com/LurusTech/lurus-hub/internal/pkg/currency"
+	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 )
@@ -72,6 +74,38 @@ func EnrichLogParams(c *gin.Context, info *relaycommon.RelayInfo, params *entity
 	// Total latency from request start to now.
 	params.TotalLatencyMs = int(time.Since(info.StartTime).Milliseconds())
 
+	// Cost attribution (migration 029): stamp the token's project onto the log
+	// row. This function is THE chokepoint — every RecordConsumeLog call site
+	// in the repo (app/quota.go, relay/compatible_handler.go,
+	// relay/relay_task.go, relay/mjproxy_handler.go) calls it first — so the
+	// attribution is wired in one place rather than six.
+	//
+	// RelayInfo is the primary source because settlement has no gin.Context;
+	// the context read is the fallback for relay paths that assemble a
+	// RelayInfo without genBaseRelayInfo. 0 means unassigned either way, and
+	// unassigned is a legitimate first-class value — never "fix" it to
+	// something non-zero here or the per-project figures stop summing to the
+	// tenant total.
+	params.ProjectId = info.ProjectId
+	params.ChargedCNY4 = info.WalletChargeCNY4
+	if params.ProjectId == 0 && c != nil {
+		params.ProjectId = common.GetContextKeyInt(c, constant.ContextKeyProjectId)
+	}
+	// Employee attribution (migration 045), same two-source rule as the
+	// project above: RelayInfo first, context as the fallback. '' = none.
+	params.EmployeeRef = info.EmployeeRef
+	if params.EmployeeRef == "" && c != nil {
+		params.EmployeeRef = common.GetContextKeyString(c, constant.ContextKeyEmployeeRef)
+	}
+	// Record-time price of the quota (migration 042), from params.Quota
+	// alone: RelayInfo only knows a charge when the wallet paid, and the
+	// rows that never touch the wallet (credit pool, local quota) are the
+	// ones an invoice would otherwise re-price at the rate of the day it is
+	// read. Zero quota stays 0, the same value a pre-042 row has.
+	if params.Quota > 0 {
+		params.PricedCNY4 = currency.CNYToUnits4(currency.QuotaToCNY(params.Quota))
+	}
+
 	// Apply log detail level from user setting.
 	logLevel := info.UserSetting.LogDetailLevel
 	params.LogDetailLevel = logLevel
@@ -82,6 +116,36 @@ func EnrichLogParams(c *gin.Context, info *relaycommon.RelayInfo, params *entity
 	}
 	params.Other["data_flow_source"] = params.TokenName
 	params.Other["data_flow_dest"] = constant.GetChannelTypeName(params.ChannelType)
+	// Workstream 0: cross-product attribution. Resolved on the relay path; paths
+	// that don't set it (MJ/Task/WS) fall back to the default product id so the
+	// field is always present and queryable.
+	sourceProduct := info.SourceProduct
+	if sourceProduct == "" {
+		sourceProduct = ratio_setting.DefaultSourceProduct
+	}
+	params.Other["source_product"] = sourceProduct
+	// L2-REQUEST-IDENTITY: session_id/end_user, like source_product above,
+	// only exist on RelayInfo — the settlement path has no gin.Context.
+	// Written only when non-empty: an absent conversation id / end-user
+	// field is not the same signal as "we failed to resolve it", and an
+	// empty string in Other would still be a key every row carries.
+	if info.SessionId != "" {
+		params.Other["session_id"] = info.SessionId
+	}
+	if info.EndUserHash != "" {
+		params.Other["end_user"] = info.EndUserHash
+	}
+	// UpstreamRequestId is the vendor's own request/trace id (provider.doRequest
+	// captures it off the upstream response headers). TierInternal in
+	// classification.go — it names the upstream, like channel_id — so it is
+	// written here without a role check (the role split happens in
+	// repo.SanitizeOtherForUser), the same split request_id/session_id above
+	// do NOT need (those are TierPublic). Written only when non-empty: an
+	// upstream that sent none of the headers in upstreamRequestIdHeaders is
+	// not the same signal as "we failed to capture it".
+	if info.UpstreamRequestId != "" {
+		params.Other["upstream_request_id"] = info.UpstreamRequestId
+	}
 	// NOTE: client_ip is NOT written here — it is controlled by the user's
 	// RecordIpLog setting and handled in RecordConsumeLog / RecordErrorLog.
 }

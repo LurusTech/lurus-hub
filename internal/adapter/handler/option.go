@@ -2,12 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/console_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
@@ -18,7 +20,10 @@ import (
 
 func GetOptions(c *gin.Context) {
 	var options []*repo.Option
-	common.OptionMapRWMutex.Lock()
+	// Read lock: this iteration only reads OptionMap, and taking the write
+	// lock made every concurrent admin console load serialise against the
+	// option-sync tick and against each other.
+	common.OptionMapRWMutex.RLock()
 	for k, v := range common.OptionMap {
 		if strings.HasSuffix(k, "Token") ||
 			strings.HasSuffix(k, "Secret") ||
@@ -32,7 +37,7 @@ func GetOptions(c *gin.Context) {
 			Value: common.Interface2String(v),
 		})
 	}
-	common.OptionMapRWMutex.Unlock()
+	common.OptionMapRWMutex.RUnlock()
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -63,6 +68,14 @@ func UpdateOption(c *gin.Context) {
 		option.Value = common.Interface2String(option.Value.(float64))
 	case int:
 		option.Value = common.Interface2String(option.Value.(int))
+	case nil:
+		// JSON null carries no usable value: stringifying a nil interface
+		// would persist the literal "<nil>". Callers must send "" to clear.
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "无效的参数：value 不能为 null，清空请传空字符串",
+		})
+		return
 	default:
 		option.Value = fmt.Sprintf("%v", option.Value)
 	}
@@ -214,11 +227,55 @@ func UpdateOption(c *gin.Context) {
 			return
 		}
 	}
-	err = repo.UpdateOption(option.Key, option.Value.(string))
+	// The pricing option rows (pricingOptionKeys) are guarded by the
+	// PricingVersion lock: rewriting one here goes through the same
+	// transaction, version bump and
+	// pricing.updated audit row as the console batch write
+	// (writePricingOptionVersioned), so this route cannot change a price
+	// behind the optimistic lock
+	// (TestLegacyOptionWrite_PricingKeyBumpsVersionAndAudits).
+	if pricingOptionKeys[option.Key] {
+		err = writePricingOptionVersioned(c, option.Key, option.Value.(string), "legacy_option_api")
+	} else {
+		err = repo.UpdateOption(option.Key, option.Value.(string))
+	}
 	if err != nil {
+		// Every outcome of an authenticated admin write leaves an audit row.
+		// Before this, a write whose value could not be applied returned here
+		// and recorded nothing, so the only trace of it was a log line on
+		// whichever replica served the request.
+		//
+		// "rejected" means repo.UpdateOption refused the value before writing,
+		// so the row is unchanged. "failed" is everything else — a database
+		// error, a lost pricing-version CAS, a JSON document of the wrong
+		// shape that only the dispatch could refuse — and it does not say
+		// whether the row was written. Both carry the key only: option values
+		// include the OAuth client secret and the SMTP password, which must
+		// never reach audit_events.
+		outcome := "failed"
+		if errors.Is(err, repo.ErrOptionValueRejected) {
+			outcome = "rejected"
+		}
+		governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+			governance.ActionOptionUpdated, governance.ResourceOption, 0,
+			fmt.Sprintf(`{"key":%q,"outcome":%q}`, option.Key, outcome)))
+		if outcome == "rejected" {
+			// 400 because the request is what is wrong, and the stored
+			// configuration is untouched; the v1 body shape is unchanged.
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
+	// Audit log records the key only — option values may carry secrets
+	// (OAuth client_secret, API keys) that must never reach audit_events.
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		governance.ActionOptionUpdated, governance.ResourceOption, 0,
+		fmt.Sprintf(`{"key":%q}`, option.Key)))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
+
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 )
 
 // IdentityServiceURL is the base URL for the lurus-platform core service.
@@ -23,12 +26,28 @@ func getIdentityServiceURL() string {
 // IdentityServiceInternalKey is the bearer token for /internal/v1/* endpoints.
 var IdentityServiceInternalKey = os.Getenv("IDENTITY_SERVICE_INTERNAL_KEY")
 
-// IdentityAuthRedirect controls whether register/login/topup endpoints redirect to identity service.
-// Set IDENTITY_AUTH_REDIRECT=true to enable.
-var IdentityAuthRedirect = os.Getenv("IDENTITY_AUTH_REDIRECT") == "true"
+// RefreshIdentityClientEnv re-reads the identity/session/billing env vars whose
+// package-level initializers run at program init — BEFORE main() calls
+// godotenv.Load(".env"). Without this refresh, any of these vars set only in a
+// .env file (not real process env) would be silently ignored. Real process env
+// (K8s) is honoured either way. Call once, right after godotenv.Load succeeds.
+func RefreshIdentityClientEnv() {
+	IdentityServiceInternalKey = os.Getenv("IDENTITY_SERVICE_INTERNAL_KEY")
+	IdentitySessionSecret = os.Getenv("IDENTITY_SESSION_SECRET")
+	SetBillingUnifiedEnabled(os.Getenv("BILLING_UNIFIED_ENABLED") == "true")
+	SetLocalLedgerAdvisory(os.Getenv("LOCAL_LEDGER_ADVISORY") == "true")
+}
 
 // IdentityPublicURL is the external-facing URL for lurus-platform (used in redirect responses).
 var IdentityPublicURL = getIdentityPublicURL()
+
+// IdentityTopupPath is the platform's wallet top-up page (its SPA route
+// "/topup"; "/wallet/topup" is not a route there and answers 404).
+const IdentityTopupPath = "/topup"
+
+// IdentityTopupURL is the one top-up link every newhub surface hands out:
+// API 402 metadata, the wallet endpoint, and money-in refusals.
+func IdentityTopupURL() string { return IdentityPublicURL + IdentityTopupPath }
 
 func getIdentityPublicURL() string {
 	if url := os.Getenv("IDENTITY_PUBLIC_URL"); url != "" {
@@ -43,97 +62,68 @@ var identityClient = &http.Client{
 
 // IdentityMapping represents the unified user identity mapping returned by lurus-platform.
 type IdentityMapping struct {
-	ID          int64     `json:"id"`
-	LurusID     string    `json:"lurus_id"`
-	ZitadelSub  string    `json:"zitadel_sub"`
+	ID      int64  `json:"id"`
+	LurusID string `json:"lurus_id"`
+	// ZitadelSub decodes the OIDC subject from platform responses. platform now
+	// emits idp_subject (canonical) alongside the deprecated zitadel_sub; this
+	// field accepts either so the Go name can stay stable while the wire migrates.
+	// TODO(idp-migration): rename the Go field to IDPSubject once all platform
+	// responses have dropped the legacy zitadel_sub key.
+	ZitadelSub  string    `json:"idp_subject"`
 	Email       string    `json:"email"`
 	DisplayName string    `json:"display_name"`
 	AvatarURL   string    `json:"avatar_url,omitempty"`
 	Status      int16     `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
+	// IsPlatformAdmin mirrors identity.accounts.is_platform_admin, the
+	// cross-product platform-admin roster owned by lurus-platform.
+	IsPlatformAdmin bool `json:"is_platform_admin"`
 }
 
-// Entitlements is a key→value map describing an account's product permissions.
-type Entitlements map[string]string
-
-// GetString returns a string entitlement value, falling back to defaultVal.
-func (e Entitlements) GetString(key, defaultVal string) string {
-	if v, ok := e[key]; ok {
-		return v
+// UnmarshalJSON decodes IdentityMapping accepting BOTH the canonical
+// idp_subject and the deprecated zitadel_sub subject keys (platform double-writes
+// during the migration window). idp_subject wins when both are present.
+func (m *IdentityMapping) UnmarshalJSON(data []byte) error {
+	type alias IdentityMapping
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
 	}
-	return defaultVal
+	*m = IdentityMapping(a)
+	if m.ZitadelSub == "" {
+		var legacy struct {
+			ZitadelSub string `json:"zitadel_sub"`
+		}
+		if err := json.Unmarshal(data, &legacy); err == nil && legacy.ZitadelSub != "" {
+			m.ZitadelSub = legacy.ZitadelSub
+		}
+	}
+	return nil
 }
 
-// GetInt returns an integer entitlement value, falling back to defaultVal.
-func (e Entitlements) GetInt(key string, defaultVal int) int {
-	v := e.GetString(key, "")
-	if v == "" {
-		return defaultVal
-	}
-	var i int
-	if _, err := fmt.Sscanf(v, "%d", &i); err != nil {
-		return defaultVal
-	}
-	return i
-}
-
-// GetBool returns a boolean entitlement value, falling back to defaultVal.
-func (e Entitlements) GetBool(key string, defaultVal bool) bool {
-	v := e.GetString(key, "")
-	switch v {
-	case "true":
-		return true
-	case "false":
-		return false
-	default:
-		return defaultVal
-	}
-}
-
-// GetAccountByZitadelSub retrieves account info from lurus-platform by Zitadel OIDC sub.
-// Returns nil on not-found or network errors (callers degrade gracefully).
+// GetAccountByZitadelSub retrieves account info from lurus-platform by OIDC sub.
+// It calls platform's canonical /by-idp-sub/ route (platform serves both
+// /by-idp-sub/ and the deprecated /by-zitadel-sub/ on the same handler).
+// The Go name is kept stable while the underlying route/wire migrates.
+// Returns nil on not-found or any error (callers degrade gracefully).
 func GetAccountByZitadelSub(ctx context.Context, sub string) (*IdentityMapping, error) {
-	if IdentityServiceURL == "" {
-		return nil, nil
-	}
-	req, err := http.NewRequestWithContext(ctx,
-		http.MethodGet,
-		IdentityServiceURL+"/internal/v1/accounts/by-zitadel-sub/"+sub,
-		nil,
-	)
+	a, err := LookupAccountByIDPSubject(ctx, sub)
 	if err != nil {
 		return nil, nil
 	}
-	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
-
-	resp, err := identityClient.Do(req)
-	if err != nil {
-		SysLog(fmt.Sprintf("identity GetAccountByZitadelSub: %v", err))
-		return nil, nil
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		SysLog(fmt.Sprintf("identity GetAccountByZitadelSub: status %d", resp.StatusCode))
-		return nil, nil
-	}
-	var a IdentityMapping
-	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
-		return nil, nil
-	}
-	return &a, nil
+	return a, nil
 }
 
 // UpsertAccount creates or updates an account in lurus-platform (called on OIDC login).
+// The body uses the canonical idp_subject field (platform accepts idp_subject or
+// the deprecated zitadel_sub — see platform UpsertAccountRequest). The Go param
+// name is kept for caller stability.
 func UpsertAccount(ctx context.Context, zitadelSub, email, displayName, avatarURL string) (*IdentityMapping, error) {
 	if IdentityServiceURL == "" {
 		return nil, nil
 	}
 	body, _ := json.Marshal(map[string]string{
-		"zitadel_sub":  zitadelSub,
+		"idp_subject":  zitadelSub,
 		"email":        email,
 		"display_name": displayName,
 		"avatar_url":   avatarURL,
@@ -307,7 +297,7 @@ func GetAccountByEmail(ctx context.Context, email string) (*IdentityMapping, err
 	}
 	req, err := http.NewRequestWithContext(ctx,
 		http.MethodGet,
-		IdentityServiceURL+"/internal/v1/accounts/by-email/"+email,
+		IdentityServiceURL+"/internal/v1/accounts/by-email/"+url.PathEscape(email),
 		nil,
 	)
 	if err != nil {
@@ -336,13 +326,21 @@ func GetAccountByEmail(ctx context.Context, email string) (*IdentityMapping, err
 }
 
 // GetAccountByZitadelSub_ByAccountID retrieves account info from lurus-platform by account ID.
-// Used to resolve identity session tokens to zitadel_sub for user mapping lookup.
+// Used to resolve identity session tokens to the IdP subject for user mapping lookup.
+//
+// It calls GET /internal/v1/accounts/by-id/:id (scope account:read), which
+// returns the full platform entity.Account — including idp_subject (emitted by
+// Account.MarshalJSON) alongside the deprecated zitadel_sub, plus email and
+// status. It must NOT use /accounts/:id/overview: that endpoint's
+// AccountSummary only carries id / lurus_id / display_name / avatar_url, so the
+// subject was always empty and the platform session-token branch of
+// middleware auth never resolved a user.
 func GetAccountByZitadelSub_ByAccountID(ctx context.Context, accountID int64) (*IdentityMapping, error) {
 	if IdentityServiceURL == "" {
 		return nil, nil
 	}
-	url := fmt.Sprintf("%s/internal/v1/accounts/%d/overview", IdentityServiceURL, accountID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	endpoint := fmt.Sprintf("%s/internal/v1/accounts/by-id/%d", IdentityServiceURL, accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, nil
 	}
@@ -356,32 +354,18 @@ func GetAccountByZitadelSub_ByAccountID(ctx context.Context, accountID int64) (*
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode != http.StatusNotFound {
+			SysLog(fmt.Sprintf("identity GetAccountByAccountID: status %d", resp.StatusCode))
+		}
 		return nil, nil
 	}
-	// The overview endpoint returns a nested structure; extract the account part.
-	var ov struct {
-		Account struct {
-			ID         int64  `json:"id"`
-			LurusID    string `json:"lurus_id"`
-			ZitadelSub string `json:"zitadel_sub"`
-			Email      string `json:"email"`
-			DisplayName string `json:"display_name"`
-			AvatarURL  string `json:"avatar_url"`
-			Status     int16  `json:"status"`
-		} `json:"account"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&ov); err != nil {
+	// IdentityMapping.UnmarshalJSON accepts idp_subject (canonical) and falls
+	// back to zitadel_sub (deprecated) during the platform migration window.
+	var a IdentityMapping
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
 		return nil, nil
 	}
-	return &IdentityMapping{
-		ID:          ov.Account.ID,
-		LurusID:     ov.Account.LurusID,
-		ZitadelSub:  ov.Account.ZitadelSub,
-		Email:       ov.Account.Email,
-		DisplayName: ov.Account.DisplayName,
-		AvatarURL:   ov.Account.AvatarURL,
-		Status:      ov.Account.Status,
-	}, nil
+	return &a, nil
 }
 
 // DebitWalletResult holds the response from a wallet debit call.
@@ -392,7 +376,7 @@ type DebitWalletResult struct {
 
 // DebitWallet deducts credits from an account's wallet in lurus-platform.
 // Returns the remaining balance after the debit, or an error if insufficient balance.
-func DebitWallet(ctx context.Context, accountID int64, amount float64, txType, description, productID string) (*DebitWalletResult, error) {
+func DebitWallet(ctx context.Context, accountID int64, amount float64, txType, description, productID, idempotencyKey string) (*DebitWalletResult, error) {
 	if IdentityServiceURL == "" {
 		return nil, fmt.Errorf("identity service not configured")
 	}
@@ -409,6 +393,11 @@ func DebitWallet(ctx context.Context, accountID int64, amount float64, txType, d
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+	// Platform money-mutation endpoints require an Idempotency-Key (else 400). A
+	// stable per-operation key also dedupes retries against double-charge.
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
@@ -416,12 +405,13 @@ func DebitWallet(ctx context.Context, accountID int64, amount float64, txType, d
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusBadRequest {
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Error == "insufficient_balance" {
-			return nil, fmt.Errorf("insufficient_balance")
+	if mayCarryInsufficientBalance(resp.StatusCode) {
+		// Same sentinel PreAuthorize returns (enriched with the platform's
+		// top-up link when present), so a caller that classifies with
+		// errors.Is gets the same answer whichever wallet call produced it.
+		// The body code decides, whether the platform sent it as 400, 402 or 409.
+		if eb := parsePlatformErrorBody(resp.Body); eb.Error == insufficientBalanceCode {
+			return nil, eb.insufficientBalanceErr()
 		}
 		return nil, fmt.Errorf("debit failed: status %d", resp.StatusCode)
 	}
@@ -432,12 +422,19 @@ func DebitWallet(ctx context.Context, accountID int64, amount float64, txType, d
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
+	// The single place a confirmed direct wallet debit is observed
+	// (op="debit"). DebitWalletGRPC (identity_calls.go) is this call under
+	// the whole-call identity budget; the gRPC leg it once tried never
+	// completed a call and was removed.
+	if result.Success {
+		metrics.RecordBillingDebit(productID, "debit", amount)
+	}
 	return &result, nil
 }
 
 // CreditWallet adds credits to an account's wallet in lurus-platform.
 // Used for refunds or corrections.
-func CreditWallet(ctx context.Context, accountID int64, amount float64, txType, description, productID string) error {
+func CreditWallet(ctx context.Context, accountID int64, amount float64, txType, description, productID, idempotencyKey string) error {
 	if IdentityServiceURL == "" {
 		return fmt.Errorf("identity service not configured")
 	}
@@ -454,6 +451,9 @@ func CreditWallet(ctx context.Context, accountID int64, amount float64, txType, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
@@ -475,8 +475,32 @@ type CheckoutResult struct {
 	ExpiresAt *string `json:"expires_at"`
 }
 
+// CheckoutError is returned by CreateCheckout when lurus-platform answers with
+// a non-201 HTTP status. It preserves the platform's status code/body so
+// callers can distinguish a request the platform actively rejected (e.g. 400
+// bad amount / method not configured) from a genuine outage (network error,
+// 5xx) instead of collapsing both into one generic failure. Request-level
+// failures (couldn't even reach the platform) still return a plain error, not
+// this type — callers should type-assert with errors.As and treat a miss as
+// "platform unreachable".
+type CheckoutError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *CheckoutError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	if e.Code != "" {
+		return fmt.Sprintf("checkout failed: %s (status %d)", e.Code, e.Status)
+	}
+	return fmt.Sprintf("checkout failed (status %d)", e.Status)
+}
+
 // CreateCheckout creates a checkout session on lurus-platform for wallet topup.
-// The sourceService identifies which product initiated the checkout (e.g., "lurus-api").
+// The sourceService identifies which product initiated the checkout (e.g., "llm-api").
 func CreateCheckout(ctx context.Context, accountID int64, amountCNY float64, paymentMethod, sourceService, idempotencyKey, returnURL string) (*CheckoutResult, error) {
 	if IdentityServiceURL == "" {
 		return nil, fmt.Errorf("identity service not configured")
@@ -498,6 +522,13 @@ func CreateCheckout(ctx context.Context, accountID int64, amountCNY float64, pay
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+	// The platform enforces idempotency via the Idempotency-Key HEADER and
+	// 400s without it — the body field alone has never been accepted
+	// (live-probed 2026-09-01: every checkout died on "This endpoint
+	// requires an Idempotency-Key header", previously disguised as the
+	// blanket 503). Keep the body field for older readers; the header is
+	// what the platform actually checks.
+	req.Header.Set("Idempotency-Key", idempotencyKey)
 
 	resp, err := identityClient.Do(req)
 	if err != nil {
@@ -506,9 +537,16 @@ func CreateCheckout(ctx context.Context, accountID int64, amountCNY float64, pay
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		var errResp struct{ Error string `json:"error"` }
+		var errResp struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
 		_ = json.NewDecoder(resp.Body).Decode(&errResp)
-		return nil, fmt.Errorf("checkout failed: %s (status %d)", errResp.Error, resp.StatusCode)
+		msg := errResp.Message
+		if msg == "" {
+			msg = errResp.Error
+		}
+		return nil, &CheckoutError{Status: resp.StatusCode, Code: errResp.Error, Message: msg}
 	}
 	var result CheckoutResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -519,12 +557,12 @@ func CreateCheckout(ctx context.Context, accountID int64, amountCNY float64, pay
 
 // CheckoutStatus holds the polling response for a checkout order.
 type CheckoutStatus struct {
-	OrderNo   string   `json:"order_no"`
-	Status    string   `json:"status"`
-	AmountCNY float64  `json:"amount_cny"`
-	PayURL    string   `json:"pay_url"`
-	PaidAt    *string  `json:"paid_at"`
-	ExpiresAt *string  `json:"expires_at"`
+	OrderNo   string  `json:"order_no"`
+	Status    string  `json:"status"`
+	AmountCNY float64 `json:"amount_cny"`
+	PayURL    string  `json:"pay_url"`
+	PaidAt    *string `json:"paid_at"`
+	ExpiresAt *string `json:"expires_at"`
 }
 
 // GetCheckoutStatus polls the status of a checkout order on lurus-platform.
@@ -634,31 +672,69 @@ func GetBillingSummary(ctx context.Context, accountID int64) (*BillingSummary, e
 	return &bs, nil
 }
 
-// ReportLLMUsage sends a usage record to lurus-platform for VIP accumulation.
-// Fire-and-forget — errors are logged but not propagated.
-func ReportLLMUsage(ctx context.Context, accountID int64, amountCNY float64) {
-	if IdentityServiceURL == "" {
-		return
-	}
-	body, _ := json.Marshal(map[string]any{
-		"account_id": accountID,
-		"amount_cny": amountCNY,
-	})
-	req, err := http.NewRequestWithContext(ctx,
-		http.MethodPost,
-		IdentityServiceURL+"/internal/v1/usage/report",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
-	resp, err := identityClient.Do(req)
-	if err != nil {
-		SysLog(fmt.Sprintf("identity ReportLLMUsage: %v", err))
-		return
-	}
-	resp.Body.Close()
+// WalletTransaction mirrors entity.WalletTransaction from lurus-platform. Only
+// the fields surfaced by Switch's Reseller Wallet page are decoded; the rest
+// of the JSON envelope rides through as json.RawMessage on Metadata so future
+// fields don't need a Switch release.
+type WalletTransaction struct {
+	ID            int64           `json:"id"`
+	AccountID     int64           `json:"account_id"`
+	Type          string          `json:"type"`
+	Amount        float64         `json:"amount"`
+	BalanceAfter  float64         `json:"balance_after"`
+	ProductID     string          `json:"product_id"`
+	ReferenceType string          `json:"reference_type"`
+	ReferenceID   string          `json:"reference_id"`
+	Description   string          `json:"description"`
+	Metadata      json.RawMessage `json:"metadata"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
+// WalletTransactionsPage is the {data, total} envelope returned by
+// InternalListWalletTransactions on lurus-platform.
+type WalletTransactionsPage struct {
+	Data  []WalletTransaction `json:"data"`
+	Total int64               `json:"total"`
+}
+
+// ListWalletTransactionsHTTP fetches paginated wallet transactions for an account
+// from lurus-platform. Returns nil, nil on transport / non-200 errors so callers
+// can degrade gracefully (the Switch handler renders "服务暂不可用").
+func ListWalletTransactionsHTTP(ctx context.Context, accountID int64, page, pageSize int) (*WalletTransactionsPage, error) {
+	if IdentityServiceURL == "" {
+		return nil, nil
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 200 {
+		pageSize = 20
+	}
+	// platform's parsePagination reads `page` / `page_size` (NOT this repo's
+	// own `p=` convention — sending `p` silently pinned every request to page 1)
+	// and clamps page_size to 100.
+	url := fmt.Sprintf("%s/internal/v1/accounts/%d/wallet/transactions?page=%d&page_size=%d",
+		IdentityServiceURL, accountID, page, pageSize)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return nil, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+IdentityServiceInternalKey)
+
+	resp, err := identityClient.Do(req)
+	if err != nil {
+		SysLog(fmt.Sprintf("identity ListWalletTransactions: %v", err))
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		SysLog(fmt.Sprintf("identity ListWalletTransactions: status %d", resp.StatusCode))
+		return nil, nil
+	}
+	var page1 WalletTransactionsPage
+	if err := json.NewDecoder(resp.Body).Decode(&page1); err != nil {
+		return nil, nil
+	}
+	return &page1, nil
+}

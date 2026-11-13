@@ -14,9 +14,11 @@ import (
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
+	"github.com/LurusTech/lurus-hub/internal/pkg/types"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
+	zita "github.com/hanmahong5-arch/zita-sdk-go"
 )
 
 func validUserInfo(username string, role int) bool {
@@ -30,45 +32,150 @@ func validUserInfo(username string, role int) bool {
 	return true
 }
 
-func authHelper(c *gin.Context, minRole int) {
+// resolveSessionIdentity is the shared body of authHelper: it resolves the
+// caller's identity (session cookie / SDK-bridge cookie / bearer or access
+// token), re-validates status/role/tenant on every request, and populates
+// the gin context ("id"/"role"/"username"/"tenant_context"/etc) the way
+// authHelper did before this split, including the per-request status/role
+// re-validation added in PR #167. It does NOT call c.Next() — callers that need to
+// branch on the resolved role (middleware.RootOrGranted) run after this
+// returns true instead of being forced through Next() themselves. On
+// failure it writes the existing response body and calls c.Abort() itself,
+// same as before the split; the caller only needs to stop and return.
+func resolveSessionIdentity(c *gin.Context, minRole int) bool {
 	session := sessions.Default(c)
 	username := session.Get("username")
 	role := session.Get("role")
 	id := session.Get("id")
 	status := session.Get("status")
 	useAccessToken := false
+	// sdkSelfHealed marks that the SDK-bridge branch below just wrote an
+	// Enabled status into the session from its own DB read. The cache
+	// re-validation further down is the single status authority for this
+	// request, so when the two reads disagree (cache lagging the DB, or the
+	// reverse) the session must follow the value the request was actually
+	// authorised on rather than keep a cookie claiming Enabled for a disabled
+	// user.
+	sdkSelfHealed := false
+	if username == nil {
+		// v2 console SDK-bridge path (ADR-0011 Layer C): a user who logged in
+		// through the platform SDK carries a lurus_session COOKIE — not a gin
+		// session or a bearer token. middleware.OptionalZitaIdentity resolves
+		// that cookie into the context ahead of UserAuth; admit the request by
+		// mapping the lurus account to the local newhub user.
+		if zid, ok := zita.IdentityFromContext(c); ok && zid != nil && zid.AccountID > 0 {
+			if user, lookupErr := repo.GetUserByLurusAccountID(zid.AccountID); lookupErr == nil && user != nil &&
+				user.Status == common.UserStatusEnabled && validUserInfo(user.Username, user.Role) {
+				username = user.Username
+				role = user.Role
+				id = user.Id
+				status = user.Status
+				useAccessToken = true
+				c.Set("identity_account_id", zid.AccountID)
+				// Retire the pre-authentication session id before the
+				// identity write below (session_rotation.go). This arm is the
+				// fourth place an authenticated identity is written into a
+				// browser session, and it is not a login handler: a cookie
+				// planted before the victim opens the console would otherwise
+				// become the victim's authenticated session here, exactly as
+				// it would at the three logins. A failure is logged and the
+				// request continues — the fallback inside RotateSessionID has
+				// already cleared the incoming session's values.
+				//
+				// Gated on the request having PRESENTED an id, which is what
+				// separates this arm from the three logins: it runs on any
+				// request from an SDK-bridge user whose gin session carries no
+				// identity yet, and a console first screen can fire several of
+				// those at once. With no incoming id there is nothing planted
+				// to inherit and nothing to retire, and the self-heal Save
+				// below mints an id by itself — rotating there would buy a
+				// second store write and a second Set-Cookie per request and
+				// no security. (Several requests arriving together WITH the
+				// same planted cookie still rotate one by one; see
+				// RotateSessionID's residue note.)
+				//
+				// Registry: the id this arm keeps (rotated or freshly minted)
+				// is NOT registered on this request — repo.UpsertUserSessionSeen
+				// (authHelper, further down) sits behind !useAccessToken, which
+				// this arm sets. The session appears in GET /api/v2/auth/sessions
+				// from its NEXT request on, when the cookie alone authenticates
+				// it, and cannot be revoked by id before that. Recorded in the
+				// root doc/coord/contracts.md (cycle 13).
+				if session.ID() != "" {
+					if rotErr := RotateSessionID(c); rotErr != nil {
+						logger.LogWarnKV(c.Request.Context(), "sdk identity session rotation failed",
+							"who", user.Username, "account_id", zid.AccountID, "result", rotErr.Error())
+					}
+				}
+				// Self-heal: persist the resolved identity into the gin session
+				// so later requests skip the SDK round-trip and survive a
+				// transient cookie drop. Best-effort — a save failure must not
+				// block an otherwise-valid login.
+				session.Set("id", user.Id)
+				session.Set("username", user.Username)
+				session.Set("role", user.Role)
+				session.Set("status", user.Status)
+				session.Set("group", user.Group)
+				session.Set("identity_account_id", zid.AccountID)
+				if saveErr := session.Save(); saveErr != nil {
+					logger.LogWarnKV(c.Request.Context(), "sdk identity session self-heal failed",
+						"who", user.Username, "account_id", zid.AccountID, "result", saveErr.Error())
+				} else {
+					sdkSelfHealed = true
+				}
+			}
+		}
+	}
 	if username == nil {
 		// Check access token
 		accessToken := c.Request.Header.Get("Authorization")
 		if accessToken == "" {
+			// L7 repair round 3, finding routing-resilience-limits-13#10:
+			// this is the branch a browser hits when its cookie's Redis
+			// session key was deleted by a remote revoke
+			// (repo.RevokeUserSessionByKey/redisDeleteSessionKey) — session.Get
+			// above returned nil, there is no Authorization header (a normal
+			// browser flow does not send one), so this 401 fires. Without
+			// clearing here, the SAME stale cookie keeps coming back on every
+			// retry, and redistore/boj's Save keeps whatever id an incoming
+			// cookie already carried (it does not mint a fresh one for a
+			// non-empty id) — so a fresh login attempt from this browser would
+			// recreate the identical session_<sid> key and look revoked again
+			// the moment SESSION_REGISTRY_ENABLED's check further down runs on
+			// a later request. Clearing here, exactly like the SESSION_REVOKED
+			// branch below, forces the next login to start from an empty
+			// cookie.
+			if sid := session.ID(); sid != "" {
+				session.Clear()
+				session.Options(SessionClearOptions())
+				_ = session.Save()
+			}
+			// ASCII, because this branch answers a MACHINE: it fires when the
+			// request carried neither a session cookie nor an Authorization
+			// header, which is what a bare API call looks like (a logged-out
+			// browser gets here too, but the console renders its own copy for
+			// the login screen rather than printing this string). Cycle14 L4
+			// deliberately did NOT translate the HTTP 200 refusals further
+			// down — those are the v1 console envelope, and their exact bytes
+			// are keys in admin_jwt_auth.go's rootSessionDenialsByMessage, in
+			// web/src/helpers/loadState.js and in the router tests; see
+			// auth_wire_language_test.go for the split and the pins.
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "无权进行此操作，未登录且未提供 access token",
+				"message": "Not authenticated: no session and no access token provided",
 			})
 			c.Abort()
-			return
+			return false
 		}
 
-		// Try lurus-platform session token first (HS256, zero network overhead).
+		// Platform HS256 session, then a first-party desktop OIDC access token.
 		bearerToken := accessToken
 		if strings.HasPrefix(bearerToken, "Bearer ") || strings.HasPrefix(bearerToken, "bearer ") {
 			bearerToken = strings.TrimSpace(bearerToken[7:])
 		}
-		if accountID, err := common.ValidateIdentitySessionToken(bearerToken); err == nil && accountID > 0 {
-			// Identity session token validated — resolve to local user via identity account lookup.
-			idMapping, _ := common.GetAccountByZitadelSub_ByAccountID(c.Request.Context(), accountID)
-			if idMapping != nil && idMapping.ZitadelSub != "" {
-				user, _, userErr := repo.GetUserByZitadelID(idMapping.ZitadelSub, "default")
-				if userErr == nil && user != nil {
-					username = user.Username
-					role = user.Role
-					id = user.Id
-					status = user.Status
-					useAccessToken = true
-					// Carry identity account ID for wallet bridging.
-					c.Set("identity_account_id", accountID)
-				}
-			}
+		if u, r, i, st, ok := fillFromPlatformOrDesktopBearer(c, bearerToken); ok {
+			username, role, id, status = u, r, i, st
+			useAccessToken = true
 		}
 
 		// Fall back to lurus-api access token if identity session token didn't match.
@@ -81,7 +188,7 @@ func authHelper(c *gin.Context, minRole int) {
 						"message": "无权进行此操作，用户信息无效",
 					})
 					c.Abort()
-					return
+					return false
 				}
 				// Token is valid
 				username = user.Username
@@ -95,7 +202,7 @@ func authHelper(c *gin.Context, minRole int) {
 					"message": "无权进行此操作，access token 无效",
 				})
 				c.Abort()
-				return
+				return false
 			}
 		}
 	}
@@ -107,24 +214,103 @@ func authHelper(c *gin.Context, minRole int) {
 		apiUserIdStr = c.Request.Header.Get("New-Api-User")
 	}
 	if apiUserIdStr != "" {
+		// Both refusals below are ASCII for the same reason: they can only
+		// fire for a caller that SENT the lurus-api-User / New-Api-User
+		// header, and the console never does — it is an API client's habit.
 		apiUserId, err := strconv.Atoi(apiUserIdStr)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "无权进行此操作，用户 ID 格式错误",
+				"message": "Invalid user id header: expected an integer",
 			})
 			c.Abort()
-			return
+			return false
 		}
 		if id != apiUserId {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"success": false,
-				"message": "无权进行此操作，用户 ID 与登录用户不匹配",
+				"message": "User id header does not match the authenticated session",
 			})
 			c.Abort()
-			return
+			return false
 		}
 	}
+
+	// Resolve the authoritative user ID as an int once, up front — both the
+	// session re-validation below and the tenant-context injection further
+	// down need it, and asserting it twice invited them to drift apart.
+	userId, ok := id.(int)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "invalid session data: user ID is not an integer",
+		})
+		c.Abort()
+		return false
+	}
+
+	// L7 (auth-security-08/26/29) defence in depth: reject a session whose
+	// registry row is already revoked, even if this browser's cookie/Redis
+	// session data has not been invalidated yet. Closes the window between
+	// a revoke's Redis DEL landing and this replica admitting one more
+	// request on the stale cookie, plus any future non-Redis store that
+	// never gets a DEL at all — see repo.IsUserSessionRevoked. Flag-gated
+	// (SESSION_REGISTRY_ENABLED, default false) and scoped to !useAccessToken:
+	// the bearer/access-token branch above has no gin session at all, and
+	// the SDK-bridge branch self-heals into one (session.Set+Save a few
+	// lines above) but is itself marked useAccessToken, so it is checked as
+	// a cookie session only from its NEXT request on, once it has a
+	// session_key of its own.
+	if repo.SessionRegistryEnabled() && !useAccessToken {
+		if sid := session.ID(); sid != "" {
+			if revoked, revErr := repo.IsUserSessionRevoked(sid); revErr == nil && revoked {
+				// Expire the stale cookie before responding: boj/redistore's
+				// Session.Save keeps whatever id the incoming cookie already
+				// carried (it does not mint a fresh one for a non-empty id), so
+				// without this a browser that logs back in with this same
+				// cookie would recreate session_<sid> — whose registry row
+				// is permanently revoked — and keep getting SESSION_REVOKED on
+				// every subsequent request until it manually clears cookies.
+				// Clearing here forces the NEXT login to start from an empty
+				// cookie, which the store answers with a brand-new id.
+				session.Clear()
+				session.Options(SessionClearOptions())
+				_ = session.Save()
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"success":    false,
+					"message":    "Session has been revoked",
+					"error_code": "SESSION_REVOKED",
+				})
+				c.Abort()
+				return false
+			}
+		}
+	}
+
+	// Re-validate status and role against the user cache (DB-backed) on
+	// every request. The gin session cookie snapshots status/role at login
+	// and is trusted for its whole lifetime, so without this an admin
+	// disabling a user or demoting an admin only took effect once the cookie
+	// expired or was reissued. (The access-token and platform-session
+	// branches above already read the user row per request; this closes the
+	// cookie path.) Lookup failure fails OPEN (same policy as the
+	// tenant-disabled check below) rather than hard-erroring every request
+	// on a transient Redis/DB hiccup.
+	userCache, cacheErr := repo.GetUserCache(userId)
+	if cacheErr == nil && userCache != nil {
+		status = userCache.Status
+		// Role==0 means the cache entry predates the Role field or was
+		// otherwise never populated — treat that as "unknown", never as a
+		// demotion to zero.
+		if userCache.Role > 0 {
+			role = userCache.Role
+		}
+		if sdkSelfHealed && userCache.Status != common.UserStatusEnabled {
+			session.Set("status", userCache.Status)
+			_ = session.Save()
+		}
+	}
+
 	statusVal, ok := status.(int)
 	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{
@@ -132,7 +318,7 @@ func authHelper(c *gin.Context, minRole int) {
 			"message": "invalid session data",
 		})
 		c.Abort()
-		return
+		return false
 	}
 	if statusVal == common.UserStatusDisabled {
 		c.JSON(http.StatusOK, gin.H{
@@ -140,7 +326,7 @@ func authHelper(c *gin.Context, minRole int) {
 			"message": "用户已被封禁",
 		})
 		c.Abort()
-		return
+		return false
 	}
 	roleVal, ok := role.(int)
 	if !ok {
@@ -149,7 +335,7 @@ func authHelper(c *gin.Context, minRole int) {
 			"message": "invalid session data",
 		})
 		c.Abort()
-		return
+		return false
 	}
 	if roleVal < minRole {
 		c.JSON(http.StatusOK, gin.H{
@@ -157,7 +343,7 @@ func authHelper(c *gin.Context, minRole int) {
 			"message": "无权进行此操作，权限不足",
 		})
 		c.Abort()
-		return
+		return false
 	}
 	usernameVal, ok := username.(string)
 	if !ok {
@@ -166,7 +352,7 @@ func authHelper(c *gin.Context, minRole int) {
 			"message": "invalid session data",
 		})
 		c.Abort()
-		return
+		return false
 	}
 	if !validUserInfo(usernameVal, roleVal) {
 		c.JSON(http.StatusOK, gin.H{
@@ -174,7 +360,7 @@ func authHelper(c *gin.Context, minRole int) {
 			"message": "无权进行此操作，用户信息无效",
 		})
 		c.Abort()
-		return
+		return false
 	}
 	c.Set("username", username)
 	c.Set("role", role)
@@ -186,23 +372,74 @@ func authHelper(c *gin.Context, minRole int) {
 	// Propagate user_id to context.Context for structured log correlation.
 	c.Request = c.Request.WithContext(common.WithUserID(c.Request.Context(), fmt.Sprintf("%v", id)))
 
-	// Inject tenant context for v1 API tenant isolation
-	userId, ok := id.(int)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "invalid session data: user ID is not an integer",
-		})
-		c.Abort()
-		return
-	}
+	// Inject tenant context for v1 API tenant isolation. Reuses the
+	// userCache resolved above (session re-validation) instead of a second
+	// GetUserCache round-trip.
 	tenantId := "default"
-	if userCache, cacheErr := repo.GetUserCache(userId); cacheErr == nil && userCache.TenantId != "" {
+	if cacheErr == nil && userCache != nil && userCache.TenantId != "" {
 		tenantId = userCache.TenantId
 	}
+
+	// TI-5: reject console/relay access for a disabled or suspended tenant so
+	// an admin-suspended tenant is actually locked out, not just cosmetically
+	// flagged. repo.TenantGate carries the whole decision — the "default"
+	// exemption, the fail-OPEN on a transient lookup error, and (new in cycle
+	// 12) the soft-deleted / never-created tenant behind TENANT_MISSING_MODE.
+	if ok, _ := repo.TenantGate(tenantId); !ok {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success":    false,
+			"message":    "所属租户已被禁用或暂停",
+			"error_code": "TENANT_DISABLED",
+		})
+		c.Abort()
+		return false
+	}
+
 	repo.InjectTenantContext(c, tenantId, userId)
 
-	c.Next()
+	// Also set the structured TenantContext so v2 handlers (which call
+	// GetTenantContext) work for users authenticated via session/access-token,
+	// not only via OIDC JWT.
+	emailVal, _ := c.Get("email")
+	email, _ := emailVal.(string)
+	// The tenant-scoped role (migration 046) rides along additively and never
+	// feeds the integer role checks above. sessionTenantContext documents the
+	// RoleTenantID == TenantID rule and the fail-closed cache-miss behaviour.
+	// It reuses the userCache resolved above, not a second lookup.
+	c.Set("tenant_context", sessionTenantContext(
+		tenantId, userId, email, usernameVal, userCache, cacheErr,
+	))
+
+	// L7 (auth-security-08/26/29) per-device session registry: registers or
+	// touches this session's row so it shows up in GET .../sessions and can
+	// be revoked by id. Same flag/scope gate as the revoked-check above.
+	// session.ID() is "" on a cookie-only session store (no Redis
+	// configured) — those deployments register nothing, the documented
+	// no-op case, not a bug. Best-effort: a write failure must never block
+	// the request it belongs to (the throttle inside UpsertUserSessionSeen
+	// already keeps this off the hot path — at most once per 60s per key).
+	if repo.SessionRegistryEnabled() && !useAccessToken {
+		if sid := session.ID(); sid != "" {
+			if err := repo.UpsertUserSessionSeen(c.Request.Context(), sid, userId, tenantId,
+				c.ClientIP(), c.Request.Header.Get("User-Agent"), "session"); err != nil {
+				logger.LogWarnKV(c.Request.Context(), "session registry upsert failed",
+					"user_id", userId, "result", err.Error())
+			}
+		}
+	}
+
+	return true
+}
+
+// authHelper preserves the pre-split calling contract (resolve, then
+// c.Next() on success, response-already-written + Abort() on failure) — the
+// existing middleware factories below (UserAuth/AdminAuth/RootAuth) keep
+// their prior calling behaviour and their tests were not changed for this
+// split.
+func authHelper(c *gin.Context, minRole int) {
+	if resolveSessionIdentity(c, minRole) {
+		c.Next()
+	}
 }
 
 func TryUserAuth() func(c *gin.Context) {
@@ -228,12 +465,6 @@ func AdminAuth() func(c *gin.Context) {
 	}
 }
 
-func RootAuth() func(c *gin.Context) {
-	return func(c *gin.Context) {
-		authHelper(c, common.RoleRootUser)
-	}
-}
-
 func WssAuth(c *gin.Context) {
 
 }
@@ -255,7 +486,7 @@ func TokenAuth() func(c *gin.Context) {
 			}
 			c.Request.Header.Set("Authorization", "Bearer "+key)
 		}
-		// 检查path包含/v1/messages 或 /v1/models 
+		// 检查path包含/v1/messages 或 /v1/models
 		if strings.Contains(c.Request.URL.Path, "/v1/messages") || strings.Contains(c.Request.URL.Path, "/v1/models") {
 			anthropicKey := c.Request.Header.Get("x-api-key")
 			if anthropicKey != "" {
@@ -302,10 +533,7 @@ func TokenAuth() func(c *gin.Context) {
 			}
 		}
 		if err != nil {
-			governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorToken, 0,
-				governance.ActionAuthFailed, governance.ResourceToken, 0,
-				fmt.Sprintf(`{"reason":"invalid_token"}`)))
-			abortWithOpenAiMessage(c, http.StatusUnauthorized, err.Error())
+			rejectTokenError(c, token, err)
 			return
 		}
 
@@ -315,51 +543,159 @@ func TokenAuth() func(c *gin.Context) {
 			logger.LogDebug(c, "Token has IP restrictions, checking client IP %s", clientIp)
 			ip := net.ParseIP(clientIp)
 			if ip == nil {
-				abortWithOpenAiMessage(c, http.StatusForbidden, "无法解析客户端 IP 地址")
+				abortWithOpenAiMessage(c, http.StatusForbidden, "Unable to parse client IP address", string(types.ErrorCodeIpNotAllowed))
 				return
 			}
 			if common.IsIpInCIDRList(ip, allowIps) == false {
 				governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorToken, token.UserId,
 					governance.ActionAuthIPRejected, governance.ResourceToken, token.Id,
 					fmt.Sprintf(`{"ip":%q}`, clientIp)))
-				abortWithOpenAiMessage(c, http.StatusForbidden, "您的 IP 不在令牌允许访问的列表中")
+				abortWithOpenAiMessage(c, http.StatusForbidden, "Your IP is not in the token's allowed list", string(types.ErrorCodeIpNotAllowed))
 				return
 			}
 			logger.LogDebug(c, "Client IP %s passed the token IP restrictions check", clientIp)
 		}
 
-		userCache, err := repo.GetUserCache(token.UserId)
-		if err != nil {
-			abortWithOpenAiMessage(c, http.StatusInternalServerError, err.Error())
-			return
-		}
-		userEnabled := userCache.Status == common.UserStatusEnabled
-		if !userEnabled {
-			abortWithOpenAiMessage(c, http.StatusForbidden, "用户已被封禁")
-			return
+		// Phase E2 scope enforcement: map the relay path to a required scope.
+		// Tokens with an empty Scopes field bypass the check (backward compat —
+		// every pre-migration-015 token must keep working). Tokens with a non-
+		// empty allowlist must contain the required scope, else 403.
+		if requiredScope := types.PathToRequiredScope(c.Request.Method, c.Request.URL.Path); requiredScope != "" {
+			if !token.HasScope(requiredScope) {
+				governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorToken, token.UserId,
+					governance.ActionAuthScopeRejected, governance.ResourceToken, token.Id,
+					fmt.Sprintf(`{"required_scope":%q,"path":%q}`, requiredScope, c.Request.URL.Path)))
+				abortWithOpenAiMessage(c, http.StatusForbidden,
+					fmt.Sprintf("Token is not authorized for scope %s", requiredScope), string(types.ErrorCodeScopeNotGranted))
+				return
+			}
 		}
 
-		repo.UserBaseWriteContext(userCache, c)
+		// Provisioned keys (handler/provisioning.go:110) are TENANT-scoped by
+		// ADR, not user-scoped: they are minted with UserId=0 on purpose and no
+		// user row is ever created for them. repo.GetUserCache(0) falls through
+		// to repo.GetUserById(0), which hard-errors ("id 为空！",
+		// repo/user.go:306), so every relay call on a provisioned key used to
+		// 500 right here — the whole feature was structurally dead on the relay
+		// path. Treat UserId==0 as a first-class relay principal instead: the
+		// token's own status/quota plus the tenant gates below are the
+		// authority, and the money comes only from the token quota + the tenant
+		// credit pool (app.PreConsumeQuota / app.PostConsumeQuota skip the
+		// user-quota legs for UserId==0). Everything else on this path — IP
+		// limits, scopes, tenant gates, project attribution, tenant context —
+		// keeps running exactly as it does for a user-owned token.
+		//
+		// The TenantId requirement is a positive marker: the provisioning
+		// handler always stamps a non-empty tenant, so a stray legacy row with
+		// user_id=0 AND an empty tenant must NOT inherit the relaxed user
+		// gates — it keeps the old fail-closed 500 below instead of relaying
+		// as tenant "default" with no user-status check.
+		provisioned := token.UserId == 0 && token.TenantId != ""
+		var userCache *repo.UserBase
+		if !provisioned {
+			var cacheErr error
+			userCache, cacheErr = repo.GetUserCache(token.UserId)
+			if cacheErr != nil {
+				abortWithOpenAiMessage(c, http.StatusInternalServerError, cacheErr.Error(), string(types.ErrorCodeGatewayInternal))
+				return
+			}
+			userEnabled := userCache.Status == common.UserStatusEnabled
+			if !userEnabled {
+				abortWithOpenAiMessage(c, http.StatusForbidden, "User is banned", string(types.ErrorCodeUserBanned))
+				return
+			}
+
+			repo.UserBaseWriteContext(userCache, c)
+		}
+
+		// TI (round-3 #2 + #3): resolve the token's owning tenant and enforce
+		// tenant-level gates on the relay hot path.
+		//
+		//   #2 A token whose tenant was disabled/suspended must stop relaying.
+		//      Previously only the USER status was checked here, so an
+		//      admin-suspended tenant's keys kept working. Mirrors authHelper
+		//      (session path) and TenantSlugGuard (v2). repo.TenantGate holds
+		//      the rules: the bootstrap/system tenant ("default") is exempt, a
+		//      transient lookup error fails OPEN so a DB hiccup cannot 403 the
+		//      whole relay path, and a soft-deleted tenant
+		//      follows TENANT_MISSING_MODE (cycle 12 — before that its tokens
+		//      kept relaying and spending, because the lookup error a deleted
+		//      row produces was indistinguishable from a DB fault).
+		//
+		//   #3 Inject tenant_context so the downstream PoolBalanceCheck gate
+		//      (which reads GetTenantContext) is no longer dead code on the token
+		//      path, and v2 relay handlers that call GetTenantContext work for
+		//      token-authenticated requests. The tenant is the TOKEN's tenant —
+		//      the same tenant the post-consume pool debit bills
+		//      (app.debitTenantPool uses token.TenantId) — so gate and debit agree.
+		tokenTenantId := token.TenantId
+		if tokenTenantId == "" {
+			tokenTenantId = "default"
+		}
+		if ok, reason := repo.TenantGate(tokenTenantId); !ok {
+			governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorToken, token.UserId,
+				governance.ActionAuthFailed, governance.ResourceToken, token.Id,
+				fmt.Sprintf(`{"reason":%q,"tenant_id":%q}`, reason, tokenTenantId)))
+			abortWithOpenAiMessage(c, http.StatusForbidden, "Owning tenant is disabled or suspended", string(types.ErrorCodeTenantSuspended))
+			return
+		}
+		// A provisioned key has no user row, so it carries no email/username —
+		// logs and audit rows for that traffic show them empty. Accepted: the
+		// tenant id (right above) is the attribution unit for tenant-scoped keys.
+		tenantCtxEmail := ""
+		tenantCtxUsername := ""
+		if userCache != nil {
+			tenantCtxEmail = userCache.Email
+			tenantCtxUsername = userCache.Username
+		}
+		repo.InjectTenantContext(c, tokenTenantId, token.UserId)
+		c.Set("tenant_context", &TenantContext{
+			TenantID: tokenTenantId,
+			UserID:   token.UserId,
+			Email:    tenantCtxEmail,
+			Username: tenantCtxUsername,
+			Roles:    []string{},
+		})
 
 		// Propagate user_id to context.Context for structured log correlation.
 		c.Request = c.Request.WithContext(common.WithUserID(c.Request.Context(), fmt.Sprintf("%d", token.UserId)))
 
-		userGroup := userCache.Group
-		tokenGroup := token.Group
-		if tokenGroup != "" {
-			// check common.UserUsableGroups[userGroup]
-			if _, ok := app.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
-				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("无权访问 %s 分组", tokenGroup))
-				return
+		var userGroup string
+		if provisioned {
+			// No user row ⇒ nothing to validate the token group AGAINST: the
+			// usable-groups check below keys on the owning user's group
+			// (app.GetUserUsableGroups(userGroup)), which for a tenant-scoped
+			// key does not exist. The token's own group is the sole authority
+			// here; empty falls back to "default" — the same default the
+			// provisioning handler stamps when the caller omits it.
+			userGroup = token.Group
+			if userGroup == "" {
+				userGroup = "default"
 			}
-			// check group in common.GroupRatio
-			if !ratio_setting.ContainsGroupRatio(tokenGroup) {
-				if tokenGroup != "auto" {
-					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("分组 %s 已被弃用", tokenGroup))
+			// UserBaseWriteContext is skipped for provisioned keys, so the
+			// "auto"-group resolution inputs (ContextKeyUserGroup, read by the
+			// distributor and channel selection via app.GetUserAutoGroup) must
+			// be seeded here or an auto-group token would resolve against an
+			// empty owner group.
+			common.SetContextKey(c, constant.ContextKeyUserGroup, userGroup)
+		} else {
+			userGroup = userCache.Group
+			tokenGroup := token.Group
+			if tokenGroup != "" {
+				// check common.UserUsableGroups[userGroup]
+				if _, ok := app.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
+					abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("Not authorized to access group %s", tokenGroup), string(types.ErrorCodeGroupNotAllowed))
 					return
 				}
+				// check group in common.GroupRatio
+				if !ratio_setting.ContainsGroupRatio(tokenGroup) {
+					if tokenGroup != "auto" {
+						abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("Group %s has been deprecated", tokenGroup), string(types.ErrorCodeGroupNotAllowed))
+						return
+					}
+				}
+				userGroup = tokenGroup
 			}
-			userGroup = tokenGroup
 		}
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, userGroup)
 
@@ -367,99 +703,12 @@ func TokenAuth() func(c *gin.Context) {
 		if err != nil {
 			return
 		}
-		c.Next()
-	}
-}
-
-func SetupContextForToken(c *gin.Context, token *repo.Token, parts ...string) error {
-	if token == nil {
-		return fmt.Errorf("token is nil")
-	}
-	c.Set("id", token.UserId)
-	c.Set("token_id", token.Id)
-	c.Set("token_key", token.Key)
-	c.Set("token_name", token.Name)
-	c.Set("token_unlimited_quota", token.UnlimitedQuota)
-	if !token.UnlimitedQuota {
-		c.Set("token_quota", token.RemainQuota)
-	}
-	if token.ModelLimitsEnabled {
-		c.Set("token_model_limit_enabled", true)
-		c.Set("token_model_limit", token.GetModelLimitsMap())
-	} else {
-		c.Set("token_model_limit_enabled", false)
-	}
-	common.SetContextKey(c, constant.ContextKeyTokenGroup, token.Group)
-	common.SetContextKey(c, constant.ContextKeyTokenCrossGroupRetry, token.CrossGroupRetry)
-	// Carry identity account ID from token for platform billing (if not already set by session auth).
-	if token.IdentityAccountID > 0 {
-		if _, exists := c.Get("identity_account_id"); !exists {
-			c.Set("identity_account_id", token.IdentityAccountID)
-		}
-	}
-	if len(parts) > 1 {
-		if repo.IsAdmin(token.UserId) {
-			c.Set("specific_channel_id", parts[1])
-		} else {
-			abortWithOpenAiMessage(c, http.StatusForbidden, "普通用户不支持指定渠道")
-			return fmt.Errorf("普通用户不支持指定渠道")
-		}
-	}
-	return nil
-}
-
-// PlaygroundAuth authenticates via session and auto-resolves the user's first
-// active token. This lets the web UI playground work without requiring users
-// to manually create and select API tokens.
-// If a Bearer token IS provided, it falls through to standard TokenAuth behavior.
-func PlaygroundAuth() func(c *gin.Context) {
-	return func(c *gin.Context) {
-		// If Bearer token provided, use standard TokenAuth flow.
-		if authHeader := c.Request.Header.Get("Authorization"); authHeader != "" {
-			TokenAuth()(c)
-			return
-		}
-
-		// Session-based: authenticate user first.
-		session := sessions.Default(c)
-		id := session.Get("id")
-		if id == nil {
-			abortWithOpenAiMessage(c, http.StatusUnauthorized, "未登录，请先登录")
-			return
-		}
-		userId, ok := id.(int)
-		if !ok {
-			abortWithOpenAiMessage(c, http.StatusUnauthorized, "会话无效")
-			return
-		}
-
-		// Find user's first active token.
-		tokens, err := repo.GetAllUserTokens(userId, 0, 1)
-		if err != nil || len(tokens) == 0 {
-			// Auto-create a default token for the user.
-			token, createErr := repo.AutoCreateDefaultToken(userId)
-			if createErr != nil {
-				common.SysError(fmt.Sprintf("PlaygroundAuth: failed to auto-create token for user %d: %v", userId, createErr))
-				abortWithOpenAiMessage(c, http.StatusInternalServerError, "无法创建默认令牌")
-				return
-			}
-			tokens = []*repo.Token{token}
-			common.SysLog(fmt.Sprintf("PlaygroundAuth: auto-created default token for user %d", userId))
-		}
-
-		token := tokens[0]
-		if token.Status != common.TokenStatusEnabled {
-			abortWithOpenAiMessage(c, http.StatusForbidden, "令牌已禁用，请到令牌管理中启用或创建新令牌")
-			return
-		}
-
-		// Set up token context for relay.
-		c.Set("id", token.UserId)
-		if err := SetupContextForToken(c, token); err != nil {
-			abortWithOpenAiMessage(c, http.StatusInternalServerError, "令牌上下文初始化失败")
-			return
-		}
-
+		// PHASE B SEAM (project budget enforcement / chargeback) — NOT
+		// IMPLEMENTED. The pre-request rejection belongs in a separate
+		// middleware.ProjectBudgetGate() mounted AFTER TokenAuth on the relay
+		// routes, reading constant.ContextKeyProjectId set just above; the
+		// paired post-settlement check is marked in app.PostConsumeQuota.
+		// Migration 029 is showback only and ships no budget column.
 		c.Next()
 	}
 }

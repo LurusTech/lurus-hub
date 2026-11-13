@@ -79,7 +79,7 @@ func NativeGeminiEmbeddingHandler(c *gin.Context, resp *http.Response, info *rel
 func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	helper.SetEventStreamHeaders(c)
 
-	return geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
+	usage, complete, err := geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
 		err := helper.StringData(c, data)
 		if err != nil {
 			logger.LogError(c, "failed to write stream data: "+err.Error())
@@ -88,4 +88,21 @@ func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 		info.SendResponseCount++
 		return true
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Incomplete and nothing delivered yet: fail over instead of the in-band
+	// frame below (see GeminiChatStreamHandler).
+	if !complete {
+		if apiErr := helper.FailoverIncompleteStream(c, info); apiErr != nil {
+			return &dto.Usage{}, apiErr
+		}
+	}
+	// Native passthrough: the frames went out verbatim, so an upstream that
+	// stopped without finishReason left the Gemini-wire caller with a bare
+	// EOF its SDK treats as a normal end. Tell it in the wire's own envelope.
+	if !complete && helper.ClientListening(c, info) {
+		return &dto.Usage{}, helper.SurfaceIncompleteStream(c, types.RelayFormatGemini, info)
+	}
+	return usage, nil
 }

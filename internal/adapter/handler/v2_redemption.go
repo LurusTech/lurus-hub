@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
-	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,6 +17,22 @@ import (
 // V2 Redemption Controllers
 // Redemption code management with tenant isolation
 // ============================================================================
+
+// redemptionView is the field-whitelisted projection returned by
+// ListRedemptionsV2. Excludes user_id (creator), tenant_id (implicit from
+// route), and deleted_at (soft-delete marker) so the wire shape is the
+// minimum the v2 console needs.
+type redemptionView struct {
+	Id           int    `json:"id"`
+	Name         string `json:"name"`
+	Key          string `json:"key"`
+	Status       int    `json:"status"`
+	Quota        int    `json:"quota"`
+	CreatedTime  int64  `json:"created_time"`
+	ExpiredTime  int64  `json:"expired_time"`
+	RedeemedTime int64  `json:"redeemed_time"`
+	UsedUserId   int    `json:"used_user_id"`
+}
 
 // RedeemCodeV2 redeems a code for quota
 // Route: POST /api/v2/:tenant_slug/redeem
@@ -66,15 +84,24 @@ func RedeemCodeV2(c *gin.Context) {
 		return
 	}
 
-	// Redeem the code
+	// Redeem the code. repo.RedemptionErrorMessage/RedemptionErrorCode (not
+	// err.Error() directly) — cycle13 L3: a genuine transaction/driver
+	// failure inside repo.Redeem used to reach this response body verbatim
+	// (constraint/column names included); repo.Redeem itself no longer
+	// returns that raw text, and RedemptionErrorMessage is defence in depth
+	// on top. error_code lets a v2 console/API caller branch without
+	// string-matching the (Chinese, switch-contract-pinned) message.
 	quota, err := repo.Redeem(redeemCode, tenantCtx.UserID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
+		// 400 for the caller's mistakes, 500 for a hub-side fault
+		// (REDEMPTION_FAILED) — see redemptionFailureStatus.
+		c.JSON(redemptionFailureStatus(err, http.StatusBadRequest), redemptionFailureBody(err))
 		return
 	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, tenantCtx.UserID,
+		governance.ActionRedemptionRedeemed, governance.ResourceRedemption, 0,
+		fmt.Sprintf(`{"quota_added":%d}`, quota)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -99,7 +126,7 @@ func ListRedemptionsV2(c *gin.Context) {
 	}
 
 	// Check admin role
-	if !hasRole(tenantCtx.Roles, "admin") {
+	if !isPlatformStaff(c, tenantCtx) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Admin role required",
@@ -127,11 +154,9 @@ func ListRedemptionsV2(c *gin.Context) {
 	var total int64
 
 	if keyword != "" {
-		// Search redemptions
-		redemptions, total, err = repo.SearchRedemptions(keyword, startIdx, pageSize)
+		redemptions, total, err = repo.SearchRedemptionsByTenant(tenantCtx.TenantID, keyword, startIdx, pageSize)
 	} else {
-		// Get all redemptions
-		redemptions, total, err = repo.GetAllRedemptions(startIdx, pageSize)
+		redemptions, total, err = repo.GetRedemptionsByTenant(tenantCtx.TenantID, startIdx, pageSize)
 	}
 
 	if err != nil {
@@ -143,18 +168,29 @@ func ListRedemptionsV2(c *gin.Context) {
 		return
 	}
 
-	// Mask redemption keys for security
+	items := make([]redemptionView, 0, len(redemptions))
 	for _, r := range redemptions {
+		key := r.Key
 		if r.Status == common.RedemptionCodeStatusEnabled {
-			// Only mask enabled codes
-			r.Key = maskRedemptionKey(r.Key)
+			key = maskRedemptionKey(key)
 		}
+		items = append(items, redemptionView{
+			Id:           r.Id,
+			Name:         r.Name,
+			Key:          key,
+			Status:       r.Status,
+			Quota:        r.Quota,
+			CreatedTime:  r.CreatedTime,
+			ExpiredTime:  r.ExpiredTime,
+			RedeemedTime: r.RedeemedTime,
+			UsedUserId:   r.UsedUserId,
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"redemptions": redemptions,
+			"redemptions": items,
 			"total":       total,
 			"page":        page,
 			"page_size":   pageSize,
@@ -176,7 +212,7 @@ func CreateRedemptionV2(c *gin.Context) {
 	}
 
 	// Check admin role
-	if !hasRole(tenantCtx.Roles, "admin") {
+	if !isPlatformStaff(c, tenantCtx) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Admin role required",
@@ -266,6 +302,11 @@ func CreateRedemptionV2(c *gin.Context) {
 		return
 	}
 
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, tenantCtx.UserID,
+		governance.ActionRedemptionCreated, governance.ResourceRedemption, 0,
+		fmt.Sprintf(`{"name":%q,"count":%d,"quota":%d,"created":%d}`,
+			req.Name, req.Count, req.Quota, len(createdCodes))))
+
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
 		"message": "Redemption codes created successfully",
@@ -291,7 +332,7 @@ func DeleteRedemptionV2(c *gin.Context) {
 	}
 
 	// Check admin role
-	if !hasRole(tenantCtx.Roles, "admin") {
+	if !isPlatformStaff(c, tenantCtx) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Admin role required",
@@ -337,6 +378,10 @@ func DeleteRedemptionV2(c *gin.Context) {
 		})
 		return
 	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, tenantCtx.UserID,
+		governance.ActionRedemptionDeleted, governance.ResourceRedemption, redemptionID,
+		fmt.Sprintf(`{"name":%q}`, redemption.Name)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

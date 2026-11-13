@@ -1,14 +1,16 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 
-	"github.com/LurusTech/lurus-hub/internal/app"
-	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/middleware"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,8 +41,10 @@ func GetSelfV2(c *gin.Context) {
 		return
 	}
 
-	// Get user's token count
-	tokenCount, _ := repo.CountUserTokens(user.Id)
+	// Token count is TENANT-SCOPED. CountUserTokens counts every token the user
+	// owns across all tenants, which on a multi-tenant hub both over-reports the
+	// dashboard's "active keys" card and leaks a cross-tenant cardinality.
+	tokenCount, _ := repo.CountUserTokensByTenant(user.Id, tenantCtx.TenantID)
 
 	// Get daily quota info
 	dailyQuotaInfo, _ := repo.GetUserDailyQuotaInfo(user.Id)
@@ -57,26 +61,55 @@ func GetSelfV2(c *gin.Context) {
 		}
 	}
 
+	// This response is a strict SUPERSET of the v1 GetSelf projection: the
+	// route used to be wired to GetSelf, and dropping setting / sidebar_modules
+	// / permissions would change the response shape out from under whichever
+	// caller parses it next (today: pages/v2/Dashboard/index.jsx and
+	// pages/v2/Settings/index.jsx, which read remaining_quota / used_quota /
+	// token_count from this same payload).
+	userSetting := user.GetSetting()
+	permissions := calculateUserPermissions(user.Role)
+	// Admin remarks are not the user's to see (same rule as GetSelf).
+	user.Remark = ""
+	tenantRole, isPayer := tenantRoleView(user)
+
 	// Build response (exclude sensitive fields)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"id":              user.Id,
-			"username":        user.Username,
-			"display_name":    user.DisplayName,
-			"email":           user.Email,
-			"role":            user.Role,
-			"status":          user.Status,
-			"quota":           user.Quota,
-			"used_quota":      user.UsedQuota,
-			"remaining_quota": user.Quota - user.UsedQuota,
+			"id":           user.Id,
+			"username":     user.Username,
+			"display_name": user.DisplayName,
+			"email":        user.Email,
+			"role":         user.Role,
+			"status":       user.Status,
+			"quota":        user.Quota,
+			"used_quota":   user.UsedQuota,
+			// `quota` IS the spendable balance — the relay path decrements it and
+			// increments used_quota on the same settlement, so remaining is quota
+			// itself. The previous `user.Quota - user.UsedQuota` subtracted the
+			// spend a second time and under-reported the balance by exactly the
+			// lifetime spend (measured on a live account: quota=19998688,
+			// used_quota=1312, funded 20000000 — the sum, not the difference, is
+			// the invariant).
+			"remaining_quota": user.Quota,
 			"request_count":   user.RequestCount,
-			"group":        user.Group,
-			"tenant_id":    tenantCtx.TenantID,
-			"token_count":     tokenCount,
-			"zitadel_user":    tenantCtx.ZitadelUserID,
-			"roles":           tenantCtx.Roles,
-			"daily_quota":     dailyQuota,
+			"group":           user.Group,
+			"tenant_id":       tenantCtx.TenantID,
+			"tenant_role":     tenantRole,
+			"is_payer":        isPayer,
+			// The real slug even when the request came in as the self-tenant
+			// alias: TenantSlugGuard rewrites the param before this runs. The
+			// console calls this route as /api/v2/~/user/me and shows this.
+			"tenant_slug": c.Param("tenant_slug"),
+			"token_count": tokenCount,
+			"idp_user":    tenantCtx.IDPSubject,
+			"roles":       tenantCtx.Roles,
+			"daily_quota": dailyQuota,
+			// v1 GetSelf parity (kept so this payload stays a strict superset)
+			"setting":         user.Setting,
+			"sidebar_modules": userSetting.SidebarModules,
+			"permissions":     permissions,
 		},
 	})
 }
@@ -154,6 +187,11 @@ func UpdateSelfV2(c *gin.Context) {
 		})
 		return
 	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, user.Id,
+		governance.ActionUserSelfUpdated, governance.ResourceUser, user.Id,
+		fmt.Sprintf(`{"display_name_changed":%t,"email_changed":%t}`,
+			req.DisplayName != "", req.Email != "")))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

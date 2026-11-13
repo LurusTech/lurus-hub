@@ -35,6 +35,11 @@ type LogDocument struct {
 	RelayMode      int    `json:"relay_mode"`
 	UpstreamModel  string `json:"upstream_model,omitempty"`
 	TotalLatencyMs int    `json:"total_latency_ms"`
+	// Cost-attribution project (migration 029); 0 = unassigned. Registered as
+	// a filterable attribute in config.go so per-project log search works.
+	ProjectID int `json:"project_id"`
+	// EmployeeRef (migration 045): employee the request is attributed to; "" = none.
+	EmployeeRef string `json:"employee_ref"`
 }
 
 // Log represents the log model (to avoid circular import with model package)
@@ -63,6 +68,8 @@ type Log struct {
 	RelayMode        int
 	UpstreamModel    string
 	TotalLatencyMs   int
+	ProjectId        int
+	EmployeeRef      string
 }
 
 // ConvertLogToDocument converts a Log to LogDocument
@@ -91,6 +98,8 @@ func ConvertLogToDocument(log *Log) *LogDocument {
 		RelayMode:        log.RelayMode,
 		UpstreamModel:    log.UpstreamModel,
 		TotalLatencyMs:   log.TotalLatencyMs,
+		ProjectID:        log.ProjectId,
+		EmployeeRef:      log.EmployeeRef,
 	}
 }
 
@@ -116,6 +125,12 @@ func ConvertDocumentToLog(doc *LogDocument) *Log {
 		ChannelName:      doc.ChannelName,
 		Group:            doc.Group,
 		Ip:               doc.IP,
+		ProjectId:        doc.ProjectID,
+		EmployeeRef:      doc.EmployeeRef,
+		ChannelType:      doc.ChannelType,
+		RelayMode:        doc.RelayMode,
+		UpstreamModel:    doc.UpstreamModel,
+		TotalLatencyMs:   doc.TotalLatencyMs,
 	}
 }
 

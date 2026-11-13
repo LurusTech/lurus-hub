@@ -99,6 +99,14 @@ var defaultModelRatio = map[string]float64{
 	"gpt-5-mini-2025-08-07":            0.125,
 	"gpt-5-nano":                       0.025,
 	"gpt-5-nano-2025-08-07":            0.025,
+	// GPT-6 Sol / Luna (released 2026-09-22) and GPT-6.1 Sol (2026-09-29), Standard
+	// tier list prices: Sol $2 in / $10 out, Luna $0.10 / $0.50 per 1M tokens.
+	// Without these rows the "gpt-" family fallback (1.25) overcharged Sol by
+	// 25% and Luna by 25x. Completion ratio 5 for the family lives in
+	// getHardcodedCompletionModelRatio; cache read 0.1 / write 1.25 in cache_ratio.go.
+	"gpt-6-sol":   1.0,
+	"gpt-6-luna":  0.05,
+	"gpt-6.1-sol": 1.0,
 	//"gpt-3.5-turbo-0301":           0.75, //deprecated
 	"gpt-3.5-turbo":          0.25,
 	"gpt-3.5-turbo-0613":     0.75,
@@ -246,9 +254,15 @@ var defaultModelRatio = map[string]float64{
 	"command-r-plus":         1.5,
 	"command-r-08-2024":      0.075,
 	"command-r-plus-08-2024": 1.25,
-	"deepseek-chat":          0.27 / 2,
-	"deepseek-coder":         0.27 / 2,
-	"deepseek-reasoner":      0.55 / 2, // 0.55 / 1k tokens
+	// DeepSeek list (peak) prices, api-docs.deepseek.com, 2026-09-23. The
+	// legacy names are served by deepseek-flash ($0.30/1M in); off-peak is
+	// half, which a flat ratio cannot express, so the peak price is charged.
+	"deepseek-chat":     0.30 / 2,
+	"deepseek-coder":    0.30 / 2,
+	"deepseek-reasoner": 0.30 / 2,
+	"deepseek-flash":    0.30 / 2,
+	"deepseek-v4-flash": 0.30 / 2,
+	"deepseek-v4-pro":   1.32 / 2,
 	// Perplexity online 模型对搜索额外收费，有需要应自行调整，此处不计入搜索费用
 	"llama-3-sonar-small-32k-chat":   0.2 / 1000 * USD,
 	"llama-3-sonar-small-32k-online": 0.2 / 1000 * USD,
@@ -383,6 +397,12 @@ func InitRatioSettings() {
 	audioCompletionRatioMapMutex.Lock()
 	audioCompletionRatioMap = defaultAudioCompletionRatio
 	audioCompletionRatioMapMutex.Unlock()
+
+	// initialize contextTiersMap (billing-pricing-14: default empty, see
+	// context_tiers.go)
+	contextTiersMapMutex.Lock()
+	contextTiersMap = defaultContextTiers
+	contextTiersMapMutex.Unlock()
 }
 
 func GetModelPriceMap() map[string]float64 {
@@ -403,14 +423,17 @@ func ModelPrice2JSONString() string {
 }
 
 func UpdateModelPriceByJSONString(jsonStr string) error {
-	modelPriceMapMutex.Lock()
-	defer modelPriceMapMutex.Unlock()
-	modelPriceMap = make(map[string]float64)
-	err := json.Unmarshal([]byte(jsonStr), &modelPriceMap)
-	if err == nil {
-		InvalidateExposedDataCache()
+	// 先解析到临时 map，只有成功才替换live状态：
+	// 否则一次畸形输入会先清空线上定价再返回错误。
+	tmp := make(map[string]float64)
+	if err := json.Unmarshal([]byte(jsonStr), &tmp); err != nil {
+		return err
 	}
-	return err
+	modelPriceMapMutex.Lock()
+	modelPriceMap = tmp
+	modelPriceMapMutex.Unlock()
+	InvalidateExposedDataCache()
+	return nil
 }
 
 // GetModelPrice 返回模型的价格，如果模型不存在则返回-1，false
@@ -431,14 +454,17 @@ func GetModelPrice(name string, printErr bool) (float64, bool) {
 }
 
 func UpdateModelRatioByJSONString(jsonStr string) error {
-	modelRatioMapMutex.Lock()
-	defer modelRatioMapMutex.Unlock()
-	modelRatioMap = make(map[string]float64)
-	err := common.Unmarshal([]byte(jsonStr), &modelRatioMap)
-	if err == nil {
-		InvalidateExposedDataCache()
+	// 先解析到临时 map，只有成功才替换live状态：
+	// 否则一次畸形输入会先清空线上倍率再返回错误，全站计费随即失准。
+	tmp := make(map[string]float64)
+	if err := common.Unmarshal([]byte(jsonStr), &tmp); err != nil {
+		return err
 	}
-	return err
+	modelRatioMapMutex.Lock()
+	modelRatioMap = tmp
+	modelRatioMapMutex.Unlock()
+	InvalidateExposedDataCache()
+	return nil
 }
 
 // 处理带有思考预算的模型名称，方便统一定价
@@ -460,6 +486,9 @@ func GetModelRatio(name string) (float64, bool, string) {
 	if ok {
 		return ratio, true, name
 	}
+	if ratio, ok := systemOneDefaultRatio(name); ok {
+		return ratio, true, name
+	}
 
 	// 2. Family-based fallback: match by provider prefix + tier keyword,
 	//    apply configurable markup (default 25%)
@@ -477,7 +506,7 @@ func GetModelRatio(name string) (float64, bool, string) {
 
 // PricingSource holds the pricing source details for a model.
 type PricingSource struct {
-	Source    string  `json:"source"`               // "explicit", "family_fallback", "none"
+	Source    string  `json:"source"` // "explicit", "family_fallback", "none"
 	Ratio     float64 `json:"ratio"`
 	Family    string  `json:"family,omitempty"`
 	BaseRatio float64 `json:"base_ratio,omitempty"`
@@ -543,32 +572,17 @@ func GetDefaultAudioCompletionRatioMap() map[string]float64 {
 	return defaultAudioCompletionRatio
 }
 
-func GetCompletionRatioMap() map[string]float64 {
-	CompletionRatioMutex.RLock()
-	defer CompletionRatioMutex.RUnlock()
-	return CompletionRatio
-}
-
-func CompletionRatio2JSONString() string {
-	CompletionRatioMutex.RLock()
-	defer CompletionRatioMutex.RUnlock()
-
-	jsonBytes, err := json.Marshal(CompletionRatio)
-	if err != nil {
-		common.SysError("error marshalling completion ratio: " + err.Error())
-	}
-	return string(jsonBytes)
-}
-
 func UpdateCompletionRatioByJSONString(jsonStr string) error {
-	CompletionRatioMutex.Lock()
-	defer CompletionRatioMutex.Unlock()
-	CompletionRatio = make(map[string]float64)
-	err := common.Unmarshal([]byte(jsonStr), &CompletionRatio)
-	if err == nil {
-		InvalidateExposedDataCache()
+	// 同 UpdateModelRatioByJSONString：解析失败不得破坏已生效的补全倍率。
+	tmp := make(map[string]float64)
+	if err := common.Unmarshal([]byte(jsonStr), &tmp); err != nil {
+		return err
 	}
-	return err
+	CompletionRatioMutex.Lock()
+	CompletionRatio = tmp
+	CompletionRatioMutex.Unlock()
+	InvalidateExposedDataCache()
+	return nil
 }
 
 func GetCompletionRatio(name string) float64 {
@@ -593,7 +607,9 @@ func GetCompletionRatio(name string) float64 {
 }
 
 func getHardcodedCompletionModelRatio(name string) (float64, bool) {
-
+	if _, ok := systemOneDefaultRatio(name); ok {
+		return 0, true // output is free: the relay bills input tokens only
+	}
 	isReservedModel := strings.HasSuffix(name, "-all") || strings.HasSuffix(name, "-gizmo-*")
 	if isReservedModel {
 		return 2, false
@@ -612,6 +628,11 @@ func getHardcodedCompletionModelRatio(name string) (float64, bool) {
 		// gpt-5 匹配
 		if strings.HasPrefix(name, "gpt-5") {
 			return 8, true
+		}
+		// gpt-6 family: output is 5x input on every published Sol / Luna rate
+		// ($10/$2, $0.50/$0.10, and the same 5x on Batch, Flex and Fast tiers).
+		if strings.HasPrefix(name, "gpt-6") {
+			return 5, true
 		}
 		// gpt-4.5-preview匹配
 		if strings.HasPrefix(name, "gpt-4.5-preview") {
@@ -718,6 +739,19 @@ func getHardcodedCompletionModelRatio(name string) (float64, bool) {
 	case "llama3-70b-8192":
 		return 0.79 / 0.59, true
 	}
+	// DeepSeek's own API (api-docs.deepseek.com/quick_start/pricing, read
+	// 2026-09-23): deepseek-v4-pro outputs at 3x its input price; every
+	// other name it accepts (deepseek-chat, -reasoner, -v4-flash are legacy
+	// aliases, answered by deepseek-flash) at 4x. Without this they fell to
+	// 1 and output was billed at the input price. Names with a "/" are other
+	// hosts' DeepSeek builds, priced by those hosts. Not locked: an admin
+	// CompletionRatio entry still wins.
+	if strings.HasPrefix(name, "deepseek-") && !strings.Contains(name, "/") {
+		if strings.HasPrefix(name, "deepseek-v4-pro") {
+			return 3, false
+		}
+		return 4, false
+	}
 	return 1, false
 }
 
@@ -769,11 +803,6 @@ func ModelRatio2JSONString() string {
 	return string(jsonBytes)
 }
 
-var defaultImageRatio = map[string]float64{
-	"gpt-image-1": 2,
-}
-var imageRatioMap map[string]float64
-var imageRatioMapMutex sync.RWMutex
 var (
 	audioRatioMap      map[string]float64 = nil
 	audioRatioMapMutex                    = sync.RWMutex{}
@@ -782,33 +811,6 @@ var (
 	audioCompletionRatioMap      map[string]float64 = nil
 	audioCompletionRatioMapMutex                    = sync.RWMutex{}
 )
-
-func ImageRatio2JSONString() string {
-	imageRatioMapMutex.RLock()
-	defer imageRatioMapMutex.RUnlock()
-	jsonBytes, err := common.Marshal(imageRatioMap)
-	if err != nil {
-		common.SysError("error marshalling cache ratio: " + err.Error())
-	}
-	return string(jsonBytes)
-}
-
-func UpdateImageRatioByJSONString(jsonStr string) error {
-	imageRatioMapMutex.Lock()
-	defer imageRatioMapMutex.Unlock()
-	imageRatioMap = make(map[string]float64)
-	return common.Unmarshal([]byte(jsonStr), &imageRatioMap)
-}
-
-func GetImageRatio(name string) (float64, bool) {
-	imageRatioMapMutex.RLock()
-	defer imageRatioMapMutex.RUnlock()
-	ratio, ok := imageRatioMap[name]
-	if !ok {
-		return 1, false // Default to 1 if not found
-	}
-	return ratio, true
-}
 
 func AudioRatio2JSONString() string {
 	audioRatioMapMutex.RLock()

@@ -10,6 +10,7 @@ import (
 
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
 	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
@@ -20,7 +21,15 @@ import (
 
 func GetAllUsers(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
-	users, total, err := repo.GetAllUsers(pageInfo)
+	var users []*repo.User
+	var total int64
+	var err error
+	// Non-root callers see only their own tenant's users.
+	if c.GetInt("role") >= common.RoleRootUser {
+		users, total, err = repo.GetAllUsers(pageInfo)
+	} else {
+		users, total, err = repo.GetUsersByTenant(c.GetString("tenant_id"), pageInfo)
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -38,6 +47,9 @@ func SearchUsers(c *gin.Context) {
 	group := c.Query("group")
 	pageInfo := common.GetPageQuery(c)
 
+	isRoot := c.GetInt("role") >= common.RoleRootUser
+	callerTenant := c.GetString("tenant_id")
+
 	// Parse status parameter
 	status := 0
 	if statusStr := c.Query("status"); statusStr != "" {
@@ -46,8 +58,10 @@ func SearchUsers(c *gin.Context) {
 		}
 	}
 
-	// Try Meilisearch first if enabled
-	if search.IsEnabled() {
+	// Try Meilisearch first if enabled. Root/platform-operator only: the
+	// Meilisearch index is not tenant-filtered, so non-root callers fall through
+	// to the tenant-scoped DB query below.
+	if isRoot && search.IsEnabled() {
 		page := (pageInfo.GetStartIdx() / pageInfo.GetPageSize()) + 1
 		if page < 1 {
 			page = 1
@@ -97,7 +111,14 @@ func SearchUsers(c *gin.Context) {
 		common.SysLog(fmt.Sprintf("Meilisearch search failed, falling back to database: %v", err))
 	}
 
-	users, total, err := repo.SearchUsers(keyword, group, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	var users []*repo.User
+	var total int64
+	var err error
+	if isRoot {
+		users, total, err = repo.SearchUsers(keyword, group, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	} else {
+		users, total, err = repo.SearchUsersByTenant(callerTenant, keyword, group, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -126,6 +147,9 @@ func GetUser(c *gin.Context) {
 			"success": false,
 			"message": "无权获取同级或更高等级用户的信息",
 		})
+		return
+	}
+	if enforceTenantScope(c, user.TenantId) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -167,6 +191,10 @@ func GenerateAccessToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, id,
+		governance.ActionAuthTokenRotated, governance.ResourceUser, id,
+		`{"kind":"access_token"}`))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -303,9 +331,20 @@ func GetUserModels(c *gin.Context) {
 		return
 	}
 	groups := app.GetUserUsableGroups(user.Group)
+	// Non-root callers see only what their own tenant can route — the
+	// platform-shared channels plus their tenant's own. Unscoped, this
+	// endpoint listed every model any tenant's channel served, including
+	// private fine-tune ids, to any logged-in user.
+	tenantID, isRoot := tenantScopeForDiscovery(c)
 	var models []string
 	for group := range groups {
-		for _, g := range repo.GetGroupEnabledModels(group) {
+		var groupModels []string
+		if isRoot {
+			groupModels = repo.GetGroupEnabledModels(group)
+		} else {
+			groupModels = repo.GetGroupEnabledModelsForTenant(group, tenantID)
+		}
+		for _, g := range groupModels {
 			if !common.StringsContains(models, g) {
 				models = append(models, g)
 			}
@@ -341,6 +380,9 @@ func UpdateUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if enforceTenantScope(c, originUser.TenantId) {
+		return
+	}
 	myRole := c.GetInt("role")
 	if err := app.CheckPermission(myRole, originUser.Role); err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -356,13 +398,42 @@ func UpdateUser(c *gin.Context) {
 		})
 		return
 	}
+	if err := app.CheckSelfDemotion(c.GetInt("id"), updatedUser.Id, myRole, updatedUser.Role); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "不能降低自己的权限等级",
+		})
+		return
+	}
 	if err := updatedUser.Edit(); err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	// Same rule as the v2 admin user update (v2_admin_users.go): a demotion
+	// below RoleAdminUser revokes the user's delegated permission grants, so
+	// re-promoting the same id later does not silently restore the narrow
+	// root-gated access they held before (cycle-8 L4).
+	if originUser.Role >= common.RoleAdminUser && updatedUser.Role < common.RoleAdminUser {
+		if _, grantErr := repo.RevokePermissionGrantsForUser(updatedUser.Id); grantErr != nil {
+			common.SysError(fmt.Sprintf("UpdateUser: revoke permission grants for demoted user id=%d failed: %v", updatedUser.Id, grantErr))
+		}
+	}
 	if originUser.Quota != updatedUser.Quota {
 		repo.RecordLog(originUser.Id, repo.LogTypeManage, fmt.Sprintf("管理员将用户额度从 %s修改为 %s", logger.LogQuota(originUser.Quota), logger.LogQuota(updatedUser.Quota)))
+		governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+			governance.ActionUserQuotaAdjusted, governance.ResourceUser, originUser.Id,
+			fmt.Sprintf(`{"old_quota":%d,"new_quota":%d}`, originUser.Quota, updatedUser.Quota)))
 	}
+	action := governance.ActionUserUpdated
+	auditDetail := fmt.Sprintf(`{"username":%q}`, updatedUser.Username)
+	// Role 0 means "not provided" in the payload; repo.Edit skips persisting it,
+	// so only emit the role-change audit event when the change was actually saved.
+	if updatedUser.Role != 0 && originUser.Role != updatedUser.Role {
+		action = governance.ActionUserRoleChanged
+		auditDetail = fmt.Sprintf(`{"old_role":%d,"new_role":%d}`, originUser.Role, updatedUser.Role)
+	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, c.GetInt("id"),
+		action, governance.ResourceUser, originUser.Id, auditDetail))
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -446,6 +517,10 @@ func UpdateSelf(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, cleanUser.Id,
+		governance.ActionUserSelfUpdated, governance.ResourceUser, cleanUser.Id,
+		fmt.Sprintf(`{"username":%q}`, cleanUser.Username)))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -583,12 +658,25 @@ func UpdateUserSetting(c *gin.Context) {
 		return
 	}
 
-	settings := dto.UserSetting{
-		NotifyType:            req.QuotaWarningType,
-		QuotaWarningThreshold: req.QuotaWarningThreshold,
-		AcceptUnsetRatioModel: req.AcceptUnsetModelRatioModel,
-		RecordIpLog:           req.RecordIpLog,
-	}
+	// Start from what is stored and overwrite only the fields this request
+	// owns. Building a fresh dto.UserSetting here dropped every member the
+	// request does not carry — sidebar_modules (written by PUT /api/user/self,
+	// read back by GetSelfV2) and log_detail_level — so saving a notification
+	// preference silently reset the user's sidebar layout. The per-type target
+	// fields below are still assigned rather than merged: switching notify_type
+	// is meant to retire the previous channel's target.
+	settings := user.GetSetting()
+	settings.NotifyType = req.QuotaWarningType
+	settings.QuotaWarningThreshold = req.QuotaWarningThreshold
+	settings.AcceptUnsetRatioModel = req.AcceptUnsetModelRatioModel
+	settings.RecordIpLog = req.RecordIpLog
+	settings.WebhookUrl = ""
+	settings.WebhookSecret = ""
+	settings.NotificationEmail = ""
+	settings.BarkUrl = ""
+	settings.GotifyUrl = ""
+	settings.GotifyToken = ""
+	settings.GotifyPriority = 0
 
 	if req.QuotaWarningType == dto.NotifyTypeWebhook {
 		settings.WebhookUrl = req.WebhookUrl
@@ -624,6 +712,10 @@ func UpdateUserSetting(c *gin.Context) {
 		return
 	}
 
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, userId,
+		governance.ActionUserSelfUpdated, governance.ResourceUser, userId,
+		fmt.Sprintf(`{"notify_type":%q}`, req.QuotaWarningType)))
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "设置已更新",
@@ -632,6 +724,8 @@ func UpdateUserSetting(c *gin.Context) {
 
 // Logout clears the v1 session cookie.
 func Logout(c *gin.Context) {
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorUser, c.GetInt("id"),
+		governance.ActionAuthLogout, governance.ResourceUser, c.GetInt("id"), ""))
 	c.JSON(http.StatusOK, gin.H{
 		"message": "",
 		"success": true,

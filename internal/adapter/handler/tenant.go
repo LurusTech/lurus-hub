@@ -1,11 +1,15 @@
 package handler
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
-	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 
 	"github.com/gin-gonic/gin"
 )
@@ -63,8 +67,14 @@ func GetTenant(c *gin.Context) {
 		return
 	}
 
-	// Get tenant statistics
-	userCount, _ := repo.GetTenantUserCount(tenantID)
+	// Seat occupancy — the same number the seat cap enforces
+	// (repo.TenantHasFreeSeat -> TenantUserSeatCount) and the same one
+	// repo.GetTenantStats reports, so the count the console shows beside
+	// max_users cannot disagree with the ceiling on the bridge paths (the OIDC
+	// provisioning ceiling, TenantCanAddUser, still counts identity mappings).
+	// It used to be repo.GetTenantUserCount, which counts identity mappings
+	// and therefore reads 0 for a tenant filled through the session bridge.
+	userCount, _ := repo.TenantUserSeatCount(tenantID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -79,12 +89,20 @@ func GetTenant(c *gin.Context) {
 // Route: POST /api/v2/admin/tenants
 func CreateTenant(c *gin.Context) {
 	var req struct {
-		ZitadelOrgID string `json:"zitadel_org_id" binding:"required"`
-		Slug         string `json:"slug" binding:"required"`
-		Name         string `json:"name" binding:"required"`
-		PlanType     string `json:"plan_type"`
-		MaxUsers     int    `json:"max_users"`
-		MaxQuota     int64  `json:"max_quota"`
+		// IDPOrgID is the upstream OIDC org id. JSON wire key stays zitadel_org_id
+		// for back-compat (= physical column; admin clients/tests still post it).
+		// TODO(idp-migration): flip wire key to idp_org_id alongside the DB column
+		// rename (owner-gated migration).
+		IDPOrgID string `json:"zitadel_org_id" binding:"required"`
+		Slug     string `json:"slug" binding:"required"`
+		Name     string `json:"name" binding:"required"`
+		PlanType string `json:"plan_type"`
+		MaxUsers int    `json:"max_users"`
+		MaxQuota int64  `json:"max_quota"`
+		// Aggregate per-minute request / LLM-token caps across all the
+		// tenant's tokens (middleware.BusinessRateLimit). 0 = unlimited.
+		RateLimitRPM int `json:"rate_limit_rpm"`
+		RateLimitTPM int `json:"rate_limit_tpm"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -92,6 +110,28 @@ func CreateTenant(c *gin.Context) {
 			"success": false,
 			"message": "Invalid request parameters",
 			"error":   err.Error(),
+		})
+		return
+	}
+
+	if err := app.ValidateRateLimits(req.RateLimitRPM, req.RateLimitTPM); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// A stand-in org id (see orgIDPlaceholderSuffix in oauth.go) makes the row
+	// indistinguishable from the two the SQL baseline seeds, and silently opts
+	// the tenant out of every organization-bound check: no organization hint on
+	// its authorize URL, and no org equality check on its OIDC callback. Refuse
+	// it at creation time rather than let an admin mint one by hand.
+	if !orgIDIsBound(req.IDPOrgID) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success":    false,
+			"message":    "zitadel_org_id must be a real IdP organization id, not a " + orgIDPlaceholderSuffix + " stand-in",
+			"error_code": "TENANT_ORG_ID_PLACEHOLDER",
 		})
 		return
 	}
@@ -108,13 +148,29 @@ func CreateTenant(c *gin.Context) {
 	}
 
 	// Create tenant
-	tenant, err := repo.CreateTenantFromZitadel(req.ZitadelOrgID, req.Slug, req.Name)
+	tenant, err := repo.CreateTenantFromIDP(req.IDPOrgID, req.Slug, req.Name)
 	if err != nil {
+		if errors.Is(err, repo.ErrReservedTenantSlug) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "Slug \"" + req.Slug + "\" is reserved by a platform route and cannot be used for a tenant; choose a different slug",
+				"error":   err.Error(),
+			})
+			return
+		}
+		if errors.Is(err, repo.ErrTenantConflict) {
+			c.JSON(http.StatusConflict, gin.H{
+				"success":    false,
+				"message":    "Slug \"" + req.Slug + "\" or this IdP organization id already belongs to another tenant",
+				"error_code": "TENANT_CONFLICT",
+			})
+			return
+		}
+		// The driver error names tables and constraints: log it, don't return it.
 		common.SysError("Failed to create tenant: " + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Failed to create tenant",
-			"error":   err.Error(),
 		})
 		return
 	}
@@ -124,9 +180,19 @@ func CreateTenant(c *gin.Context) {
 		"plan_type": req.PlanType,
 		"max_users": req.MaxUsers,
 		"max_quota": req.MaxQuota,
+		"rpm_limit": req.RateLimitRPM,
+		"tpm_limit": req.RateLimitTPM,
 	})
 	if err != nil {
 		common.SysError("Failed to update tenant: " + err.Error())
+	} else {
+		// The response must reflect what was persisted: `tenant` is the
+		// pre-update snapshot, so mirror the applied fields before marshal.
+		tenant.PlanType = req.PlanType
+		tenant.MaxUsers = req.MaxUsers
+		tenant.MaxQuota = req.MaxQuota //nolint:staticcheck // SA1019: legacy field stays part of the create API until its Q4 removal (ADR 2026-05-18)
+		tenant.RateLimitRPM = req.RateLimitRPM
+		tenant.RateLimitTPM = req.RateLimitTPM
 	}
 
 	// Initialize default configs for new tenant
@@ -134,6 +200,10 @@ func CreateTenant(c *gin.Context) {
 	if err != nil {
 		common.SysError("Failed to initialize tenant configs: " + err.Error())
 	}
+
+	actorID, _ := repo.GetUserID(c)
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, actorID,
+		governance.ActionTenantCreated, governance.ResourceTenant, 0, tenant.Id))
 
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
@@ -153,6 +223,14 @@ func UpdateTenant(c *gin.Context) {
 		PlanType string `json:"plan_type"`
 		MaxUsers int    `json:"max_users"`
 		MaxQuota int64  `json:"max_quota"`
+		// Pointers, unlike the legacy fields above: an explicit 0 must be
+		// distinguishable from "field omitted" so admins can RESET a limit
+		// back to unlimited (0) — the non-zero-only map pattern can't.
+		RateLimitRPM *int `json:"rate_limit_rpm"`
+		RateLimitTPM *int `json:"rate_limit_tpm"`
+		// Root-only switch (migration 046): the platform wallet is the only
+		// balance gate. Pointer so an explicit false turns it back off.
+		WalletAuthoritative *bool `json:"wallet_authoritative"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -162,6 +240,23 @@ func UpdateTenant(c *gin.Context) {
 			"error":   err.Error(),
 		})
 		return
+	}
+
+	if req.RateLimitRPM != nil || req.RateLimitTPM != nil {
+		rpm, tpm := 0, 0
+		if req.RateLimitRPM != nil {
+			rpm = *req.RateLimitRPM
+		}
+		if req.RateLimitTPM != nil {
+			tpm = *req.RateLimitTPM
+		}
+		if err := app.ValidateRateLimits(rpm, tpm); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 
 	// Build updates map (only include non-zero fields)
@@ -180,6 +275,15 @@ func UpdateTenant(c *gin.Context) {
 	}
 	if req.MaxQuota > 0 {
 		updates["max_quota"] = req.MaxQuota
+	}
+	if req.RateLimitRPM != nil {
+		updates["rpm_limit"] = *req.RateLimitRPM
+	}
+	if req.RateLimitTPM != nil {
+		updates["tpm_limit"] = *req.RateLimitTPM
+	}
+	if req.WalletAuthoritative != nil {
+		updates["wallet_authoritative"] = *req.WalletAuthoritative
 	}
 
 	if len(updates) == 0 {
@@ -211,6 +315,16 @@ func UpdateTenant(c *gin.Context) {
 		})
 		return
 	}
+
+	actorID, _ := repo.GetUserID(c)
+	auditDetail := tenantID
+	if req.WalletAuthoritative != nil {
+		// The flag gates local balance enforcement; keep who-flipped-what
+		// traceable, as one machine-readable JSON detail.
+		auditDetail = fmt.Sprintf(`{"tenant_id":%q,"wallet_authoritative":%t}`, tenantID, *req.WalletAuthoritative)
+	}
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, actorID,
+		governance.ActionTenantUpdated, governance.ResourceTenant, 0, auditDetail))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -255,6 +369,10 @@ func DeleteTenant(c *gin.Context) {
 		return
 	}
 
+	actorID, _ := repo.GetUserID(c)
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, actorID,
+		governance.ActionTenantDeleted, governance.ResourceTenant, 0, tenantID))
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Tenant deleted successfully",
@@ -277,6 +395,12 @@ func EnableTenant(c *gin.Context) {
 		})
 		return
 	}
+
+	// No dedicated "tenant.enabled" action constant exists yet — ActionTenantUpdated
+	// is the closest fit (a status-field update); details disambiguates the verb.
+	actorID, _ := repo.GetUserID(c)
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, actorID,
+		governance.ActionTenantUpdated, governance.ResourceTenant, 0, "enable: "+tenantID))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -309,6 +433,12 @@ func DisableTenant(c *gin.Context) {
 		return
 	}
 
+	// No dedicated "tenant.disabled" action constant exists yet — ActionTenantUpdated
+	// is the closest fit (a status-field update); details disambiguates the verb.
+	actorID, _ := repo.GetUserID(c)
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, actorID,
+		governance.ActionTenantUpdated, governance.ResourceTenant, 0, "disable: "+tenantID))
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Tenant disabled successfully",
@@ -340,6 +470,12 @@ func SuspendTenant(c *gin.Context) {
 		return
 	}
 
+	// No dedicated "tenant.suspended" action constant exists yet — ActionTenantUpdated
+	// is the closest fit (a status-field update); details disambiguates the verb.
+	actorID, _ := repo.GetUserID(c)
+	governance.RecordAuditEvent(governance.NewAuditEvent(c, governance.ActorAdmin, actorID,
+		governance.ActionTenantUpdated, governance.ResourceTenant, 0, "suspend: "+tenantID))
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Tenant suspended successfully",
@@ -364,99 +500,5 @@ func GetTenantStats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    stats,
-	})
-}
-
-// GetTenantConfigs retrieves all configurations for a tenant
-// Route: GET /api/v2/:tenant_slug/config
-func GetTenantConfigs(c *gin.Context) {
-	// Get tenant ID from context
-	tenantID, err := repo.GetTenantID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "Tenant context not found",
-		})
-		return
-	}
-
-	// Get all configs (exclude system configs for non-admin users)
-	includeSystem := c.Query("include_system") == "true"
-	configs, err := repo.ListTenantConfigs(tenantID, includeSystem)
-	if err != nil {
-		common.SysError("Failed to list tenant configs: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Failed to retrieve configurations",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data":    configs,
-	})
-}
-
-// UpdateTenantConfig updates a single tenant configuration
-// Route: PUT /api/v2/:tenant_slug/config/:key
-func UpdateTenantConfig(c *gin.Context) {
-	// Get tenant ID from context
-	tenantID, err := repo.GetTenantID(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": "Tenant context not found",
-		})
-		return
-	}
-
-	configKey := c.Param("key")
-
-	var req struct {
-		Value       string `json:"value" binding:"required"`
-		ConfigType  string `json:"config_type"`
-		Description string `json:"description"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid request parameters",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	// Set defaults
-	if req.ConfigType == "" {
-		req.ConfigType = repo.ConfigTypeString
-	}
-
-	// Check if config exists and is not a system config
-	existingConfig, err := repo.GetTenantConfig(tenantID, configKey)
-	if err == nil && existingConfig.IsSystem {
-		c.JSON(http.StatusForbidden, gin.H{
-			"success": false,
-			"message": "Cannot modify system configuration",
-		})
-		return
-	}
-
-	// Set config
-	err = repo.SetTenantConfig(tenantID, configKey, req.Value, req.ConfigType, req.Description, false)
-	if err != nil {
-		common.SysError("Failed to set tenant config: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Failed to update configuration",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Configuration updated successfully",
 	})
 }

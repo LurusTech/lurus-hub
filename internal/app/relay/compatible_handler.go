@@ -8,15 +8,18 @@ import (
 	"strings"
 	"time"
 
+	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
+	relayconstant "github.com/LurusTech/lurus-hub/internal/adapter/provider/constant"
+	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
+	"github.com/LurusTech/lurus-hub/internal/app"
+	"github.com/LurusTech/lurus-hub/internal/app/governance"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/bifrosteng"
+	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
 	"github.com/LurusTech/lurus-hub/internal/pkg/common"
 	"github.com/LurusTech/lurus-hub/internal/pkg/constant"
 	"github.com/LurusTech/lurus-hub/internal/pkg/dto"
 	"github.com/LurusTech/lurus-hub/internal/pkg/logger"
-	"github.com/LurusTech/lurus-hub/internal/adapter/repo"
-	relaycommon "github.com/LurusTech/lurus-hub/internal/adapter/provider/common"
-	"github.com/LurusTech/lurus-hub/internal/app"
-	"github.com/LurusTech/lurus-hub/internal/app/governance"
-	"github.com/LurusTech/lurus-hub/internal/app/relay/helper"
+	"github.com/LurusTech/lurus-hub/internal/pkg/metrics"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/model_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/operation_setting"
 	"github.com/LurusTech/lurus-hub/internal/pkg/setting/ratio_setting"
@@ -69,6 +72,25 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	info.ShouldIncludeUsage = includeUsage
 
+	// Bifrost dispatch (RELAY_ENGINE=bifrost + mapped apiType + chat mode).
+	// Pass-through channels and unconvertible payloads fall through to GetAdaptor.
+	passThrough := model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled
+	if bifrosteng.ShouldHandleChat(info.ApiType, request, passThrough) {
+		usage, bifrostErr := bifrosteng.DispatchChat(c, info, request)
+		if bifrostErr != nil {
+			return bifrostErr
+		}
+		containAudioTokens := usage.CompletionTokenDetails.AudioTokens > 0 || usage.PromptTokensDetails.AudioTokens > 0
+		containsAudioRatios := ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
+		if containAudioTokens && containsAudioRatios {
+			app.PostAudioConsumeQuota(c, info, usage, "")
+		} else {
+			postConsumeQuota(c, info, usage)
+		}
+		return nil
+	}
+	bifrosteng.ObserveEngine(bifrosteng.EngineLegacy, bifrosteng.ModeChat, "ok")
+
 	adaptor := GetAdaptor(info.ApiType)
 	if adaptor == nil {
 		return types.NewError(fmt.Errorf("invalid api type: %d", info.ApiType), types.ErrorCodeInvalidApiType, types.ErrOptionWithSkipRetry())
@@ -76,7 +98,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	adaptor.Init(info)
 	var requestBody io.Reader
 
-	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
+	if passThrough {
 		body, err := common.GetRequestBody(c)
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
@@ -195,6 +217,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 }
 
 func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent ...string) {
+	usageWasNil := usage == nil
 	if usage == nil {
 		usage = &dto.Usage{
 			PromptTokens:     relayInfo.GetEstimatePromptTokens(),
@@ -203,15 +226,43 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		}
 		extraContent = append(extraContent, "上游无计费信息")
 	}
+	if !usageWasNil {
+		app.RecordUpstreamCost(relayInfo, usage)
+	}
 	useTimeSeconds := time.Now().Unix() - relayInfo.StartTime.Unix()
 	promptTokens := usage.PromptTokens
+	// Rerank vendors (Jina) report only total_tokens. The handler keeps the
+	// upstream's fields as sent, so the billable count is taken from total
+	// here, at the one place that needs it, instead of rewriting the usage.
+	if relayInfo.RelayMode == relayconstant.RelayModeRerank && usage.PromptTokens == 0 &&
+		usage.CompletionTokens == 0 && usage.TotalTokens > 0 {
+		promptTokens = usage.TotalTokens
+	}
 	cacheTokens := usage.PromptTokensDetails.CachedTokens
 	imageTokens := usage.PromptTokensDetails.ImageTokens
 	audioTokens := usage.PromptTokensDetails.AudioTokens
 	completionTokens := usage.CompletionTokens
 	cachedCreationTokens := usage.PromptTokensDetails.CachedCreationTokens
+	cachedCreation5mTokens := usage.ClaudeCacheCreation5mTokens
+	cachedCreation1hTokens := usage.ClaudeCacheCreation1hTokens
 
 	modelName := relayInfo.OriginModelName
+
+	// Declarative context-length pricing tier (billing-pricing-14): the
+	// pre-consume estimate may have chosen a different tier than the actual
+	// context length qualifies for; re-evaluate before reading
+	// ModelRatio/CompletionRatio/CacheRatio below so the logged ratio and
+	// prompt_tokens agree on which side of the threshold this call landed on.
+	// The tier must be chosen on the FULL context length, not the raw wire
+	// prompt-token field: on the Anthropic wire that field excludes cache
+	// read/creation tokens (usage.PromptTokensIncludeCached=false), so a
+	// heavily-cached long-context call would otherwise select the cheap tier
+	// (cycle-8 plan §8 L5 B-F1). usage.AsOpenAIWire().PromptTokens adds those
+	// back when the flag is false and is a no-op when it is already true.
+	// No-op for UsePrice models and for any model with no tiers configured
+	// (helper.ResettleContextTier).
+	contextLengthTokens := usage.AsOpenAIWire().PromptTokens
+	helper.ResettleContextTier(&relayInfo.PriceData, modelName, contextLengthTokens)
 
 	tokenName := ctx.GetString("token_name")
 	completionRatio := relayInfo.PriceData.CompletionRatio
@@ -220,7 +271,12 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	modelRatio := relayInfo.PriceData.ModelRatio
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
 	modelPrice := relayInfo.PriceData.ModelPrice
-	cachedCreationRatio := relayInfo.PriceData.CacheCreationRatio
+	// Wire-keyed: an OpenAI-wire cache write (cache_write_tokens) is billed at
+	// the plain input rate unless the operator listed the model; the Anthropic
+	// wire keeps the 1.25 default. See types.PriceData.CacheCreationRatioForWire.
+	cachedCreationRatio := relayInfo.PriceData.CacheCreationRatioForWire(usage.PromptTokensIncludeCached)
+	cachedCreation5mRatio := relayInfo.PriceData.CacheCreation5mRatio
+	cachedCreation1hRatio := relayInfo.PriceData.CacheCreation1hRatio
 
 	// Convert values to decimal for precise calculation
 	dPromptTokens := decimal.NewFromInt(int64(promptTokens))
@@ -229,6 +285,8 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	dAudioTokens := decimal.NewFromInt(int64(audioTokens))
 	dCompletionTokens := decimal.NewFromInt(int64(completionTokens))
 	dCachedCreationTokens := decimal.NewFromInt(int64(cachedCreationTokens))
+	dCachedCreation5mTokens := decimal.NewFromInt(int64(cachedCreation5mTokens))
+	dCachedCreation1hTokens := decimal.NewFromInt(int64(cachedCreation1hTokens))
 	dCompletionRatio := decimal.NewFromFloat(completionRatio)
 	dCacheRatio := decimal.NewFromFloat(cacheRatio)
 	dImageRatio := decimal.NewFromFloat(imageRatio)
@@ -236,6 +294,8 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	dGroupRatio := decimal.NewFromFloat(groupRatio)
 	dModelPrice := decimal.NewFromFloat(modelPrice)
 	dCachedCreationRatio := decimal.NewFromFloat(cachedCreationRatio)
+	dCachedCreation5mRatio := decimal.NewFromFloat(cachedCreation5mRatio)
+	dCachedCreation1hRatio := decimal.NewFromFloat(cachedCreation1hRatio)
 	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 
 	ratio := dModelRatio.Mul(dGroupRatio)
@@ -304,23 +364,37 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	var audioInputPrice float64
 	if !relayInfo.PriceData.UsePrice {
 		baseTokens := dPromptTokens
-		// 减去 cached tokens
-		// Anthropic API 的 input_tokens 已经不包含缓存 tokens，不需要减去
-		// OpenAI/OpenRouter 等 API 的 prompt_tokens 包含缓存 tokens，需要减去
+		// 减去 cached tokens——判据是 usage 解析点打的 wire 标
+		// (dto.Usage.PromptTokensIncludeCached),不再猜渠道类型:
+		// OpenAI-wire 的 prompt_tokens 包含缓存 tokens,需要减去;
+		// Anthropic-wire 的 input_tokens 本就不含缓存。旧判据
+		// `ChannelType != Anthropic` 对「OpenAI 格式打在 aws/vertex-claude
+		// 渠道」是错的——那些 usage 走 claude wire(不含缓存),照减会把底数
+		// 减成负数、整单被 floor 到 1(实际免单)。cache-creation 同理:它只在
+		// claude wire 上非零,而那时恰不该减,旧代码的这条减法执行必错。
 		var cachedTokensWithRatio decimal.Decimal
 		if !dCacheTokens.IsZero() {
-			if relayInfo.ChannelType != constant.ChannelTypeAnthropic {
+			if usage.PromptTokensIncludeCached {
 				baseTokens = baseTokens.Sub(dCacheTokens)
 			}
 			cachedTokensWithRatio = dCacheTokens.Mul(dCacheRatio)
 		}
-		var dCachedCreationTokensWithRatio decimal.Decimal
 		if !dCachedCreationTokens.IsZero() {
-			if relayInfo.ChannelType != constant.ChannelTypeAnthropic {
+			if usage.PromptTokensIncludeCached {
 				baseTokens = baseTokens.Sub(dCachedCreationTokens)
 			}
-			dCachedCreationTokensWithRatio = dCachedCreationTokens.Mul(dCachedCreationRatio)
 		}
+		// Claude 把缓存写入拆成 5m/1h 两档且 1h 单价更高。这里必须和原生
+		// /v1/messages 路径（app.PostClaudeConsumeQuota）拆同样的桶，否则同一渠道
+		// 同一模型经 OpenAI 兼容格式转发时 1h 写入会按 5m 价少收。只上报总数的上游
+		// 落在 remainder 上，仍按 CacheCreationRatio 计价，行为不变。
+		remainingCachedCreationTokens := cachedCreationTokens - cachedCreation5mTokens - cachedCreation1hTokens
+		if remainingCachedCreationTokens < 0 {
+			remainingCachedCreationTokens = 0
+		}
+		dCachedCreationTokensWithRatio := dCachedCreation5mTokens.Mul(dCachedCreation5mRatio).
+			Add(dCachedCreation1hTokens.Mul(dCachedCreation1hRatio)).
+			Add(decimal.NewFromInt(int64(remainingCachedCreationTokens)).Mul(dCachedCreationRatio))
 
 		// 减去 image tokens
 		var imageTokensWithRatio decimal.Decimal
@@ -347,7 +421,14 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 
 		quotaCalculateDecimal = promptQuota.Add(completionQuota).Mul(ratio)
 
-		if !ratio.IsZero() && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) {
+		// Predicate centralized in app.ChargeableInputNonZero (see that
+		// function's doc comment in internal/app/r5a_price_floor.go). This
+		// branch only ever runs under !UsePrice (guarded above), so this call
+		// always evaluates to modelRatio!=0 — dropping the groupRatio factor
+		// `ratio.IsZero()` used to carry. That is a deliberate cross-path
+		// consistency fix: it now matches app.PostClaudeConsumeQuota's
+		// equivalent pre-round guard, which never depended on groupRatio.
+		if app.ChargeableInputNonZero(relayInfo.PriceData.UsePrice, modelPrice, modelRatio) && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) {
 			quotaCalculateDecimal = decimal.NewFromInt(1)
 		}
 	} else {
@@ -355,6 +436,9 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	}
 	// 添加 responses tools call 调用的配额
 	quotaCalculateDecimal = quotaCalculateDecimal.Add(dWebSearchQuota)
+	// claude web search 与其它工具费同样入账；此前只写进了日志的 other 里，
+	// 等于按"已收费"记账却从未扣款
+	quotaCalculateDecimal = quotaCalculateDecimal.Add(dClaudeWebSearchQuota)
 	quotaCalculateDecimal = quotaCalculateDecimal.Add(dFileSearchQuota)
 	// 添加 audio input 独立计费
 	quotaCalculateDecimal = quotaCalculateDecimal.Add(audioInputQuota)
@@ -369,13 +453,28 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		}
 	}
 
+	// Search-unit settlement (rerank with a configured SearchUnitPrice):
+	// quota = price x units x group ratio, independent of token counts. Tool
+	// fees above do not apply to rerank, so the amount replaces the base.
+	usageUnit := "token"
+	searchUnits := int64(0)
+	searchUnitMode := false
+	if sup, ok := helper.SearchUnitPriced(relayInfo); ok {
+		searchUnitMode = true
+		usageUnit = "search_unit"
+		searchUnits = helper.RerankSearchUnits(relayInfo)
+		quotaCalculateDecimal = decimal.NewFromFloat(sup).
+			Mul(decimal.NewFromInt(searchUnits)).Mul(dGroupRatio).Mul(dQuotaPerUnit)
+		extraContent = append(extraContent, fmt.Sprintf("Search unit %d x %v", searchUnits, sup))
+	}
+
 	quota := int(quotaCalculateDecimal.Round(0).IntPart())
 	totalTokens := promptTokens + completionTokens
 
 	//var logContent string
 
 	// record all the consume log even if quota is 0
-	if totalTokens == 0 {
+	if totalTokens == 0 && !searchUnitMode {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
 		quota = 0
@@ -383,11 +482,18 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, "+
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, modelName, relayInfo.FinalPreConsumedQuota))
 	} else {
-		if !ratio.IsZero() && quota == 0 {
+		// This site DOES run under UsePrice (unlike the branch-scoped floor
+		// above): before this fix `!ratio.IsZero()` (ratio =
+		// dModelRatio.Mul(dGroupRatio), :249) was always false under UsePrice
+		// because ModelRatio is never assigned by helper.ModelPriceHelper's
+		// UsePrice branch — see internal/app/r5a_price_floor.go's header
+		// comment for the full chain. That made this floor dead exactly when
+		// a per-call-priced model's modelPrice*groupRatio*QuotaPerUnit rounded
+		// to 0: the call settled to quota==0, i.e. free, despite a real
+		// upstream response already served.
+		if app.ChargeableInputNonZero(relayInfo.PriceData.UsePrice, modelPrice, modelRatio) && quota == 0 {
 			quota = 1
 		}
-		repo.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		repo.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	quotaDelta := quota - relayInfo.FinalPreConsumedQuota
@@ -408,12 +514,12 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		))
 	}
 
-	if quotaDelta != 0 {
-		err := app.PostConsumeQuota(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true)
-		if err != nil {
-			logger.LogError(ctx, "error consuming token remain quota: "+err.Error())
-		}
-	}
+	// Always settle, even when quotaDelta == 0 (exact estimate, e.g. fixed-price
+	// models) — see the same note in app.PostClaudeConsumeQuota. Skipping the
+	// call on a zero delta also skipped the tenant-pool debit and the platform
+	// pre-auth settlement, letting the pre-auth TTL expire and release revenue.
+	settleErr := app.SettleConsume(ctx, relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, "text")
+	app.CommitUsedQuota(relayInfo, quota, settleErr, totalTokens != 0 || searchUnitMode)
 
 	logModel := modelName
 	if strings.HasPrefix(logModel, "gpt-4-gizmo") {
@@ -426,6 +532,7 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	}
 	logContent := strings.Join(extraContent, ", ")
 	other := app.GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, cacheTokens, cacheRatio, modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
+	app.FlagSettlementOutcome(other, settleErr)
 	if imageTokens != 0 {
 		other["image"] = true
 		other["image_ratio"] = imageRatio
@@ -482,6 +589,52 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
 	}
+	// Unified metering (migration 053): what was charged, in which unit, and
+	// whether the figure is the vendor's or our estimate.
+	logParams.UsageUnit = usageUnit
+	logParams.UsageQuantity = int64(totalTokens)
+	if searchUnitMode {
+		logParams.UsageQuantity = searchUnits
+	}
+	switch {
+	case usageWasNil:
+		logParams.UsageSource = "estimated"
+	case relayInfo.UsageSource != "":
+		logParams.UsageSource = relayInfo.UsageSource
+	case totalTokens == 0 && !searchUnitMode:
+		logParams.UsageSource = "unreported"
+	default:
+		logParams.UsageSource = "upstream"
+	}
+	logParams.RetrievalDocuments = retrievalDocuments(relayInfo)
+	if relayInfo.RelayMode == relayconstant.RelayModeRerank || relayInfo.RelayMode == relayconstant.RelayModeEmbeddings {
+		metrics.RecordRetrievalUsage(logParams.UsageUnit, logParams.UsageSource)
+	}
 	governance.EnrichLogParams(ctx, relayInfo, &logParams)
 	repo.RecordConsumeLog(ctx, relayInfo.UserId, logParams)
+
+	// Update the user's lifetime token counter and emit a milestone event if
+	// this request crosses one of the tracked thresholds (1k/10k/100k/1M).
+	// No-op when totalTokens is 0 or Redis is unavailable.
+	if totalTokens > 0 {
+		app.CheckAndPublishUsageMilestone(ctx.Request.Context(), relayInfo.UserId, totalTokens)
+	}
+}
+
+// retrievalDocuments is the number of documents a retrieval call processed:
+// rerank = documents scored, embeddings = inputs embedded, taken from the
+// request (never from the response) so a vendor cannot inflate it. 0 for any
+// other mode.
+func retrievalDocuments(info *relaycommon.RelayInfo) int {
+	switch info.RelayMode {
+	case relayconstant.RelayModeRerank:
+		if info.RerankerInfo != nil {
+			return len(info.Documents)
+		}
+	case relayconstant.RelayModeEmbeddings:
+		if req, ok := info.Request.(*dto.EmbeddingRequest); ok && req != nil {
+			return len(req.ParseInput())
+		}
+	}
+	return 0
 }

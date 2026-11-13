@@ -7,6 +7,14 @@ const (
 	ContextKeyPromptTokens    ContextKey = "prompt_tokens"
 	ContextKeyEstimatedTokens ContextKey = "estimated_tokens"
 
+	// ContextKeyRelayMode is the request's relay mode (provider/constant
+	// RelayMode*) resolved ONCE from the URL path at the distributor entry, for
+	// the modality route filter. It is deliberately NOT the bare "relay_mode"
+	// key: that slot is written later by the mj/video/audio branches and read
+	// by RelayInfo and the error log, and pre-filling it here would change
+	// what those readers see (e.g. the video branch's "only if unset" check).
+	ContextKeyRelayMode ContextKey = "routing_relay_mode"
+
 	ContextKeyOriginalModel    ContextKey = "original_model"
 	ContextKeyRequestStartTime ContextKey = "request_start_time"
 
@@ -16,9 +24,26 @@ const (
 	ContextKeyTokenId                ContextKey = "token_id"
 	ContextKeyTokenGroup             ContextKey = "token_group"
 	ContextKeyTokenSpecificChannelId ContextKey = "specific_channel_id"
-	ContextKeyTokenModelLimitEnabled ContextKey = "token_model_limit_enabled"
-	ContextKeyTokenModelLimit        ContextKey = "token_model_limit"
-	ContextKeyTokenCrossGroupRetry   ContextKey = "token_cross_group_retry"
+	// ContextKeyTokenSpecificChannelRootOverride marks that the sk-<key>-<channelId>
+	// override was issued by a root (cross-tenant) operator, so middleware.Distribute
+	// lets it target a channel owned by any tenant. Absent/false = a mere
+	// tenant-admin override, which Distribute confines to the caller's own tenant.
+	ContextKeyTokenSpecificChannelRootOverride ContextKey = "specific_channel_root_override"
+	ContextKeyTokenModelLimitEnabled           ContextKey = "token_model_limit_enabled"
+	ContextKeyTokenModelLimit                  ContextKey = "token_model_limit"
+	ContextKeyTokenCrossGroupRetry             ContextKey = "token_cross_group_retry"
+	// ContextKeyProjectId carries the authenticated token's cost-attribution
+	// project (migration 029). 0 = unassigned. Set by SetupContextForToken and
+	// copied into RelayInfo.ProjectId, because the settlement path has no
+	// gin.Context. A label, not an authorization claim — never gate on it.
+	ContextKeyProjectId ContextKey = "project_id"
+	// ContextKeyEmployeeRef carries the resolved employee attribution
+	// (migration 045): a validated trusted X-Lurus-Employee header, else the
+	// token's employee_ref, else "". A label, never an authorization claim.
+	ContextKeyEmployeeRef ContextKey = "employee_ref"
+	// ContextKeyTokenSourceProduct carries the product the authenticated token is
+	// bound to (migration 049); the relay default when no allow-listed header.
+	ContextKeyTokenSourceProduct ContextKey = "token_source_product"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"
@@ -55,4 +80,34 @@ const (
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
+
+	// ContextKeySessionAffinity carries the hashed conversation identifier used
+	// to pin multi-turn traffic to one channel. Empty for one-shot requests.
+	ContextKeySessionAffinity ContextKey = "session_affinity_key"
+
+	// ContextKeyRouteAttempts carries the per-attempt routing trace
+	// ([]app.RouteAttempt) assembled during retries and written to the log row.
+	ContextKeyRouteAttempts ContextKey = "route_attempts"
+
+	// ContextKeyRelayFormat carries the wire format (types.RelayFormat) the
+	// inbound request speaks, stamped by middleware.StampRelayFormat from the
+	// request path before any middleware that might reject it. handler.Relay
+	// only learns this deep inside itself — too late for a middleware-stage
+	// 401/402/429 to answer in the caller's own wire shape instead of always
+	// answering OpenAI's, which a Claude/Gemini SDK cannot parse.
+	ContextKeyRelayFormat ContextKey = "relay_format"
+
+	// ContextKeyProviderFilter carries the request's routing constraint
+	// (dto.ProviderFilter: region / zero-data-retention), parsed by the
+	// distributor from the body's `provider` object and consumed by
+	// app.CacheGetRandomSatisfiedChannel on every attempt, including the
+	// session-affinity lookup. Absent when the request sent no constraint.
+	ContextKeyProviderFilter ContextKey = "provider_filter"
+
+	// ContextKeyResponseText carries the final assistant text of a NON-streaming
+	// response (string), stashed by the provider handler that already parsed it.
+	// Read only by the opt-in body archive (repo.archiveLogBody); absent for
+	// streams and for handlers that do not stash, which the archive records as
+	// response_captured=false.
+	ContextKeyResponseText ContextKey = "response_text"
 )
